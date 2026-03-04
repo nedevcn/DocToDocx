@@ -10,6 +10,7 @@ A high‑fidelity `.doc` → `.docx` converter for .NET 10 with no third‑party
 - **Sections & page setup**: Multiple sections with page size/orientation, margins, starting page number, and First/Odd/Even headers/footers mapped to separate DOCX parts.
 - **Images**: Extracts embedded images from the `WordDocument` and `Data` streams (PNG/JPEG/GIF/BMP/OfficeArt BLIPs), writes `word/media/*`, generates `w:drawing` with size inferred from image dimensions and auto‑scaled to page width, respects per‑image scale, and attaches basic alt text.
 - **OfficeArt pictures & floating anchors**: Parses Escher/OfficeArt records and FSPA anchors from `PlcSpaMom` to recover picture shapes; maps them to `wp:anchor` floating images positioned relative to the page, falling back to inline images when anchors are unavailable.
+- **Basic charts (experimental)**: When `.doc` files contain embedded OLE chart-like streams, the converter can emit minimal, editable DOCX chart parts (`word/charts/chartN.xml`) with placeholder data, so charts remain editable in Word even if the original series data is not yet fully understood.
 - **Footnotes, endnotes, comments, textboxes**: Reads and writes common note and annotation structures into DOCX footnotes/endnotes parts and DrawingML textboxes.
 - **Encryption (XOR)**: Supports Word’s XOR‑obfuscated streams via `EncryptionHelper` and decrypted CFB streams.
 - **No external dependencies**: Pure .NET, streaming writers (`XmlWriter`) for high performance and low memory usage.
@@ -23,7 +24,7 @@ A high‑fidelity `.doc` → `.docx` converter for .NET 10 with no third‑party
   - Vertical merges (`vMerge restart/continue`) and horizontal merges (`gridSpan`) are inferred using a combination of TAP merge flags and content heuristics, which significantly improves the appearance of common merged‑cell tables.
 - **Known limitations (deliberate)**:
   - Deeply nested tables and extremely exotic merge patterns may still be flattened or approximated; the goal is a robust, readable DOCX rather than a byte‑perfect structural clone of the original MS‑DOC.
-  - Complex OfficeArt vector shapes, SmartArt, charts, OLE objects, and other advanced drawing features continue to be out of scope; when encountered they are either ignored or downgraded to simpler picture representations where possible.
+  - Complex OfficeArt vector shapes, SmartArt, rich chart types (with full Excel-backed data), OLE objects, and other advanced drawing features continue to be out of scope; when encountered they are either ignored or downgraded to simpler picture or placeholder chart representations where possible.
 
 ## Library usage
 

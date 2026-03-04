@@ -218,6 +218,13 @@ public class DocReader : IDisposable
             OfficeArtMapper.AttachShapes(Document, _officeArtReader, _fspaAnchors);
         }
 
+        // Step 6.6: Best-effort chart detection. For now we only recognise
+        // streams whose names contain "Chart" in the OLE container and attach
+        // a minimal ChartModel with placeholder data so that the writer can
+        // emit editable DOCX chart parts. This is intentionally conservative
+        // and does not attempt to recover real series data yet.
+        AttachPlaceholderCharts();
+
         // Step 7: Read footnotes
         if (_footnoteReader != null)
         {
@@ -250,6 +257,65 @@ public class DocReader : IDisposable
         }
 
         IsLoaded = true;
+    }
+
+    /// <summary>
+    /// Creates placeholder ChartModel instances for any OLE streams whose names
+    /// look like chart containers. This gives callers a basic, editable chart
+    /// in the resulting DOCX even when we do not yet understand the underlying
+    /// binary chart format.
+    /// </summary>
+    private void AttachPlaceholderCharts()
+    {
+        if (_cfb == null) return;
+
+        // Look for streams which strongly suggest embedded charts. In many
+        // real-world documents these names come from OLE chart objects.
+        var chartLikeStreams = _cfb.StreamNames
+            .Where(n => n.IndexOf("Chart", StringComparison.OrdinalIgnoreCase) >= 0)
+            .ToList();
+
+        if (chartLikeStreams.Count == 0)
+            return;
+
+        int existingCount = Document.Charts.Count;
+        for (int i = 0; i < chartLikeStreams.Count; i++)
+        {
+            var name = chartLikeStreams[i];
+
+            // Try to capture the raw OLE stream bytes for this chart so that
+            // future phases (or callers) can recover real series data from the
+            // original container (e.g. MS Graph or embedded Excel workbook).
+            byte[]? sourceBytes = null;
+            try
+            {
+                sourceBytes = _cfb.GetStreamBytes(name);
+            }
+            catch
+            {
+                // best-effort only; leave SourceBytes as null on failure
+            }
+
+            var model = new ChartModel
+            {
+                Index = existingCount + i,
+                Title = name,
+                Type = ChartType.Column,
+                Categories = new List<string> { "Category 1", "Category 2", "Category 3" },
+                Series =
+                {
+                    new ChartSeries
+                    {
+                        Name = "Series 1",
+                        Values = new List<double> { 1, 2, 3 }
+                    }
+                },
+                SourceStreamName = name,
+                SourceBytes = sourceBytes
+            };
+
+            Document.Charts.Add(model);
+        }
     }
 
     /// <summary>

@@ -28,6 +28,20 @@ public class ChartModel
     /// (paragraph index). -1 means "no specific placement".
     /// </summary>
     public int ParagraphIndexHint { get; set; } = -1;
+
+    /// <summary>
+    /// Original OLE stream name from which this chart was detected
+    /// (for example "Chart1"), when available.
+    /// </summary>
+    public string? SourceStreamName { get; set; }
+
+    /// <summary>
+    /// Raw bytes of the embedded chart container stream. This allows
+    /// future phases or external tools to perform deeper parsing
+    /// (e.g. BIFF/Excel/MSGraph) without having to touch the .doc again.
+    /// May be null when the stream could not be read.
+    /// </summary>
+    public byte[]? SourceBytes { get; set; }
 }
 
 public enum ChartType
