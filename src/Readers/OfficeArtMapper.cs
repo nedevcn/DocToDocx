@@ -26,6 +26,9 @@ public static class OfficeArtMapper
             Traverse(root, shapes, document, ref imageIndexCursor);
         }
 
+        // 为图片形状分配一个粗略的段落位置提示，使其在 DOCX 中更接近正文位置。
+        AssignParagraphHints(document, shapes);
+
         if (shapes.Count > 0)
         {
             document.Shapes.AddRange(shapes);
@@ -47,6 +50,36 @@ public static class OfficeArtMapper
         foreach (var child in record.Children)
         {
             Traverse(child, shapes, document, ref imageIndexCursor);
+        }
+    }
+
+    private static void AssignParagraphHints(DocumentModel document, List<ShapeModel> shapes)
+    {
+        if (shapes.Count == 0 || document.Paragraphs.Count == 0) return;
+
+        var pictureShapes = shapes
+            .Where(s => s.Type == ShapeType.Picture && s.ImageIndex is not null)
+            .ToList();
+        if (pictureShapes.Count == 0) return;
+
+        // 优先选择普通段落作为锚点候选；如果没有，则退回全部段落。
+        var candidateParagraphIndices = document.Paragraphs
+            .Where(p => p.Type == ParagraphType.Normal)
+            .Select(p => p.Index)
+            .ToList();
+
+        if (candidateParagraphIndices.Count == 0)
+        {
+            candidateParagraphIndices = document.Paragraphs.Select(p => p.Index).ToList();
+        }
+
+        if (candidateParagraphIndices.Count == 0) return;
+
+        // 将图片形状均匀分布到候选段落索引上，作为“段落位置提示”。
+        for (int i = 0; i < pictureShapes.Count; i++)
+        {
+            var target = candidateParagraphIndices[(int)((long)i * candidateParagraphIndices.Count / pictureShapes.Count)];
+            pictureShapes[i].ParagraphIndexHint = target;
         }
     }
 

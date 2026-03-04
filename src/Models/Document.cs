@@ -272,6 +272,11 @@ public class ShapeModel
     public ShapeAnchor? Anchor { get; set; }
     public int? ImageIndex { get; set; }
     public string? Text { get; set; }
+    /// <summary>
+    /// Hint for where this shape should be emitted relative to paragraphs.
+    /// -1 means "no preference / fall back to document-level placement".
+    /// </summary>
+    public int ParagraphIndexHint { get; set; } = -1;
 }
 
 public enum ShapeType

@@ -63,6 +63,9 @@ public class DocumentWriter
             }
         }
         
+        // Precompute shapes to emit near specific paragraphs and avoid duplicate images
+        var shapesByParagraph = BuildShapesByParagraphMap(document, out var usedImageIndices);
+
         // Write content: paragraphs and tables
         int paraIndex = 0;
         while (paraIndex < document.Paragraphs.Count)
@@ -99,15 +102,21 @@ public class DocumentWriter
                     _writer.WriteEndElement();
                 }
 
+                // Emit any shapes that are associated with this paragraph
+                if (shapesByParagraph.TryGetValue(paragraph.Index, out var shapesForParagraph))
+                {
+                    foreach (var shape in shapesForParagraph)
+                    {
+                        WriteInlinePictureShape(shape, document);
+                    }
+                }
+
                 paraIndex++;
             }
         }
         
         // Write textboxes after main body content
         WriteTextboxes(document);
-
-        // Write shapes (currently pictures only) after main body content.
-        WriteShapes(document);
         
         WriteSections(document);
         
@@ -115,37 +124,127 @@ public class DocumentWriter
     }
 
     /// <summary>
-    /// Writes shapes captured from OfficeArt/Escher as inline pictures for now.
-    /// 后续可以根据 ShapeAnchor 信息改为真正的 wp:anchor 浮动形状。
+    /// Builds a mapping from paragraph index to shapes that should be emitted
+    /// near that paragraph, while also avoiding duplicate image indices that
+    /// are already used elsewhere in the document.
     /// </summary>
-    private void WriteShapes(DocumentModel document)
+    private Dictionary<int, List<ShapeModel>> BuildShapesByParagraphMap(DocumentModel document, out HashSet<int> usedImageIndices)
     {
+        usedImageIndices = CollectUsedImageIndices(document);
+        var map = new Dictionary<int, List<ShapeModel>>();
+
         if (document.Shapes == null || document.Shapes.Count == 0)
-            return;
+            return map;
 
         foreach (var shape in document.Shapes)
         {
             if (shape.Type != ShapeType.Picture || shape.ImageIndex is null)
                 continue;
-
-            var imageIndex = shape.ImageIndex.Value;
-            if (imageIndex < 0 || imageIndex >= document.Images.Count)
+            if (shape.ParagraphIndexHint < 0)
                 continue;
 
-            // Reuse existing picture-writing logic by creating a minimal RunModel.
-            var run = new RunModel
-            {
-                IsPicture = true,
-                ImageIndex = imageIndex,
-                Properties = new RunProperties()
-            };
+            var imageIndex = shape.ImageIndex.Value;
+            // 如果该图片已经在正文中出现过，则跳过以避免重复。
+            if (!usedImageIndices.Add(imageIndex))
+                continue;
 
-            _writer.WriteStartElement("w", "p", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
-            _writer.WriteStartElement("w", "r", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
-            WriteRun(run);
-            _writer.WriteEndElement(); // w:r
-            _writer.WriteEndElement(); // w:p
+            if (!map.TryGetValue(shape.ParagraphIndexHint, out var list))
+            {
+                list = new List<ShapeModel>();
+                map[shape.ParagraphIndexHint] = list;
+            }
+            list.Add(shape);
         }
+
+        return map;
+    }
+
+    /// <summary>
+    /// Collects all image indices that are already used in paragraphs, tables
+    /// and textboxes so that we can avoid emitting duplicate images for shapes.
+    /// </summary>
+    private HashSet<int> CollectUsedImageIndices(DocumentModel document)
+    {
+        var used = new HashSet<int>();
+
+        // Paragraph-level runs
+        foreach (var para in document.Paragraphs)
+        {
+            foreach (var run in para.Runs)
+            {
+                if (run.IsPicture && run.ImageIndex >= 0)
+                {
+                    used.Add(run.ImageIndex);
+                }
+            }
+        }
+
+        // Tables
+        foreach (var table in document.Tables)
+        {
+            foreach (var row in table.Rows)
+            {
+                foreach (var cell in row.Cells)
+                {
+                    foreach (var para in cell.Paragraphs)
+                    {
+                        foreach (var run in para.Runs)
+                        {
+                            if (run.IsPicture && run.ImageIndex >= 0)
+                            {
+                                used.Add(run.ImageIndex);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        // Textboxes
+        foreach (var textbox in document.Textboxes)
+        {
+            if (textbox.Paragraphs != null)
+            {
+                foreach (var para in textbox.Paragraphs)
+                {
+                    foreach (var run in para.Runs)
+                    {
+                        if (run.IsPicture && run.ImageIndex >= 0)
+                        {
+                            used.Add(run.ImageIndex);
+                        }
+                    }
+                }
+            }
+        }
+
+        return used;
+    }
+
+    /// <summary>
+    /// Writes a single picture shape inline using the existing picture run logic.
+    /// </summary>
+    private void WriteInlinePictureShape(ShapeModel shape, DocumentModel document)
+    {
+        if (shape.ImageIndex is null)
+            return;
+
+        var imageIndex = shape.ImageIndex.Value;
+        if (imageIndex < 0 || imageIndex >= document.Images.Count)
+            return;
+
+        var run = new RunModel
+        {
+            IsPicture = true,
+            ImageIndex = imageIndex,
+            Properties = new RunProperties()
+        };
+
+        _writer.WriteStartElement("w", "p", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+        _writer.WriteStartElement("w", "r", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+        WriteRun(run);
+        _writer.WriteEndElement(); // w:r
+        _writer.WriteEndElement(); // w:p
     }
     
     private void WriteSections(DocumentModel document)
