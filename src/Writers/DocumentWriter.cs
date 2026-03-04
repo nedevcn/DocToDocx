@@ -335,7 +335,9 @@ public class DocumentWriter
         _writer.WriteAttributeString("distL", "0");
         _writer.WriteAttributeString("distR", "0");
         _writer.WriteAttributeString("simplePos", "0");
-        _writer.WriteAttributeString("relativeHeight", "0");
+        var relHeight = anchor.ZOrder;
+        if (relHeight < 0) relHeight = 0;
+        _writer.WriteAttributeString("relativeHeight", relHeight.ToString());
         _writer.WriteAttributeString("behindDoc", "0");
         _writer.WriteAttributeString("locked", "0");
         _writer.WriteAttributeString("layoutInCell", "1");

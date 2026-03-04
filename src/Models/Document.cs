@@ -303,6 +303,7 @@ public class ShapeAnchor
     public ShapeRelativeTo HorizontalRelativeTo { get; set; } = ShapeRelativeTo.Page;
     public ShapeRelativeTo VerticalRelativeTo { get; set; } = ShapeRelativeTo.Page;
     public ShapeWrapType WrapType { get; set; } = ShapeWrapType.Square;
+    public int ZOrder { get; set; }
 }
 
 /// <summary>

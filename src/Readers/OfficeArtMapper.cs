@@ -165,6 +165,8 @@ public static class OfficeArtMapper
             .OrderBy(p => p.MinCp)
             .ToList();
 
+        int zOrderCounter = 0;
+
         foreach (var shape in shapes)
         {
             if (!fspaBySpid.TryGetValue(shape.Id, out var fspa))
@@ -187,7 +189,8 @@ public static class OfficeArtMapper
                 Height = height,
                 HorizontalRelativeTo = MapRelativeToHorizontal(fspa.Flags),
                 VerticalRelativeTo = MapRelativeToVertical(fspa.Flags),
-                WrapType = MapWrapType(fspa.Flags)
+                WrapType = MapWrapType(fspa.Flags),
+                ZOrder = zOrderCounter++
             };
 
             // Map CP to nearest paragraph by MinCp.
