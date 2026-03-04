@@ -186,7 +186,8 @@ public static class OfficeArtMapper
                 Width = width,
                 Height = height,
                 HorizontalRelativeTo = MapRelativeToHorizontal(fspa.Flags),
-                VerticalRelativeTo = MapRelativeToVertical(fspa.Flags)
+                VerticalRelativeTo = MapRelativeToVertical(fspa.Flags),
+                WrapType = MapWrapType(fspa.Flags)
             };
 
             // Map CP to nearest paragraph by MinCp.
@@ -224,6 +225,17 @@ public static class OfficeArtMapper
     {
         // TODO: refine based on full MS-DOC FSPA specification and real-world docs.
         return ShapeRelativeTo.Page;
+    }
+
+    /// <summary>
+    /// Maps FSPA flags to a wrapping mode. For now we conservatively default to
+    /// square wrapping, which matches the most common Word behavior for floating
+    /// pictures, and fall back to no-wrap only when explicitly requested later.
+    /// </summary>
+    private static ShapeWrapType MapWrapType(ushort flags)
+    {
+        // TODO: inspect real FSPA samples and MS-DOC to distinguish wrapNone vs wrapSquare.
+        return ShapeWrapType.Square;
     }
 }
 

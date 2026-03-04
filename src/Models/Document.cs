@@ -300,6 +300,9 @@ public class ShapeAnchor
     public int Y { get; set; }
     public int Width { get; set; }
     public int Height { get; set; }
+    public ShapeRelativeTo HorizontalRelativeTo { get; set; } = ShapeRelativeTo.Page;
+    public ShapeRelativeTo VerticalRelativeTo { get; set; } = ShapeRelativeTo.Page;
+    public ShapeWrapType WrapType { get; set; } = ShapeWrapType.Square;
 }
 
 /// <summary>
@@ -311,6 +314,15 @@ public enum ShapeRelativeTo
     Margin,
     Column,
     Paragraph
+}
+
+/// <summary>
+/// Text wrapping mode for floating shapes.
+/// </summary>
+public enum ShapeWrapType
+{
+    None,
+    Square
 }
 
 /// <summary>

@@ -378,9 +378,18 @@ public class DocumentWriter
         _writer.WriteAttributeString("b", "0");
         _writer.WriteEndElement();
 
-        // No wrap (can be adjusted to wrapSquare later)
-        _writer.WriteStartElement("wp", "wrapNone", "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing");
-        _writer.WriteEndElement();
+        // Text wrapping
+        if (anchor.WrapType == ShapeWrapType.None)
+        {
+            _writer.WriteStartElement("wp", "wrapNone", "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing");
+            _writer.WriteEndElement();
+        }
+        else
+        {
+            _writer.WriteStartElement("wp", "wrapSquare", "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing");
+            _writer.WriteAttributeString("wrapText", "bothSides");
+            _writer.WriteEndElement();
+        }
 
         // Doc properties
         _writer.WriteStartElement("wp", "docPr", "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing");
