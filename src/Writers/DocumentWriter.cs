@@ -1110,6 +1110,16 @@ public class DocumentWriter
         var widthEmu = image.WidthEMU > 0 ? image.WidthEMU : 5715000; // Default ~6 inches
         var heightEmu = image.HeightEMU > 0 ? image.HeightEMU : 3810000; // Default ~4 inches
 
+        // Respect per-image scale factors when present (100000 = 100%)
+        if (image.ScaleX > 0 && image.ScaleX != 100000)
+        {
+            widthEmu = (int)(widthEmu * (image.ScaleX / 100000.0));
+        }
+        if (image.ScaleY > 0 && image.ScaleY != 100000)
+        {
+            heightEmu = (int)(heightEmu * (image.ScaleY / 100000.0));
+        }
+
         // Clamp image width to page width (inside margins) while preserving aspect ratio
         if (_document != null && _document.Properties != null)
         {
