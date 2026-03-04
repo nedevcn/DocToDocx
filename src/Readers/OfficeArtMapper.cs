@@ -93,19 +93,23 @@ public static class OfficeArtMapper
 
     /// <summary>
     /// Best-effort extraction of a shape from an SpContainer: we look for the
-    /// EscherSp record and use its shapeId as the ShapeModel.Id。当前阶段还不解析
-    /// 复杂的 OfficeArt 属性，只是尝试按顺序将形状与已提取的 Images 对应起来，
-    /// 将其视为 Picture 形状。这是一种启发式映射，但在常见场景中通常是合理的。
+    /// EscherSp record, use its shapeId as the ShapeModel.Id, and map the
+    /// MSOSPT shape type (from the Escher header instance) into a coarse
+    /// ShapeType (rectangle, ellipse, textbox, picture). When we detect a
+    /// picture frame we opportunistically associate it with the next extracted
+    /// ImageModel so that OfficeArt picture shapes line up with decoded BLIPs.
     /// </summary>
     private static ShapeModel? CreateShapeFromSpContainer(EscherRecord spContainer, DocumentModel document, ref int imageIndexCursor)
     {
         int? shapeId = null;
+        ShapeType mappedType = ShapeType.Unknown;
 
         foreach (var child in spContainer.Children)
         {
             if (child.Type == RecordTypeSp && child.Data.Length >= 4)
             {
                 shapeId = BitConverter.ToInt32(child.Data, 0);
+                mappedType = MapMsosptToShapeType(child.Instance);
                 break;
             }
         }
@@ -115,13 +119,24 @@ public static class OfficeArtMapper
             return null;
         }
 
-        // 启发式：如果还有未消费的 ImageModel，就将该形状视为 Picture，
-        // 并与当前游标指向的图片绑定。这样可以在很多实际文档中，把
-        // OfficeArt 图片形状与已经抽取的图像数据对齐。
-        ShapeType type = ShapeType.Unknown;
+        // 启发式：当 MSOSPT 表明是图片框 (PictureFrame) 时，尝试与下一个
+        // ImageModel 绑定；否则按矢量形状（矩形/椭圆/文本框等）处理。对于
+        // 未知类型，如果还有未消费的 ImageModel，则维持之前的回退行为：
+        // 把它当成 Picture 以最大化兼容性。
+        ShapeType type = mappedType;
         int? imageIndex = null;
 
-        if (imageIndexCursor >= 0 && imageIndexCursor < document.Images.Count)
+        // Picture frame shapes get first chance to claim an image.
+        if (mappedType == ShapeType.Picture &&
+            imageIndexCursor >= 0 && imageIndexCursor < document.Images.Count)
+        {
+            type = ShapeType.Picture;
+            imageIndex = imageIndexCursor;
+            imageIndexCursor++;
+        }
+        // Fallback for unknown types to keep previous behavior for legacy docs.
+        else if (mappedType == ShapeType.Unknown &&
+                 imageIndexCursor >= 0 && imageIndexCursor < document.Images.Count)
         {
             type = ShapeType.Picture;
             imageIndex = imageIndexCursor;
@@ -138,6 +153,49 @@ public static class OfficeArtMapper
             FillColor = 0,
             LineColor = 0,
             LineWidth = 0
+        };
+    }
+
+    /// <summary>
+    /// Maps MSOSPT (preset shape type from MS-ODRAW, see MSOSPT enum) to our
+    /// coarse ShapeType. This is intentionally lossy but helps distinguish
+    /// rectangles, ellipses, textboxes and picture frames for better visual
+    /// fidelity and SmartArt fallbacks.
+    /// </summary>
+    private static ShapeType MapMsosptToShapeType(ushort msospt)
+    {
+        return msospt switch
+        {
+            // Basic rectangles and rectangle-like shapes
+            0x0001 or // msosptRectangle
+            0x0002 or // msosptRoundRectangle
+            0x0004 or // msosptDiamond
+            0x0007 or // msosptParallelogram
+            0x0008 or // msosptTrapezoid
+            0x0015 or // msosptPlaque
+            0x0041 or // msosptFoldedCorner
+            0x0054 or // msosptBevel
+            0x006D or // msosptFlowChartProcess
+            0x0072 or // msosptFlowChartDocument
+            0x0074 or // msosptFlowChartTerminator
+            0x00B0 or // msosptFlowChartAlternateProcess
+            0x00B1     // msosptFlowChartOffpageConnector
+                => ShapeType.Rectangle,
+
+            // Ellipses and ellipse-like
+            0x0003 or // msosptEllipse
+            0x0003F   // msosptWedgeEllipseCallout
+                => ShapeType.Ellipse,
+
+            // Text boxes
+            0x00CA // msosptTextBox
+                => ShapeType.Textbox,
+
+            // Picture frame
+            0x004B // msosptPictureFrame
+                => ShapeType.Picture,
+
+            _ => ShapeType.Unknown
         };
     }
 
