@@ -521,26 +521,28 @@ public class TableReader
     private readonly FibReader _fib;
     private readonly FkpParser _fkpParser;
 
-    public TableReader(BinaryReader wordDocReader, BinaryReader tableReader, FibReader fib, FkpParser fkpParser)
-    {
-        _wordDocReader = wordDocReader;
-        _tableReader = tableReader;
-        _fib = fib;
+        public TableReader(BinaryReader wordDocReader, BinaryReader tableReader, FibReader fib, FkpParser fkpParser)
+        {
+            _wordDocReader = wordDocReader;
+            _tableReader = tableReader;
+            _fib = fib;
             _fkpParser = fkpParser;
-    }
+        }
 
     /// <summary>
     /// Parses tables from the document by examining paragraph types.
     /// Groups contiguous ParagraphType.TableCell 段落为一张张独立的表格。
     /// </summary>
-    public void ParseTables(DocumentModel document)
-    {
-        var tables = new List<TableModel>();
-        TableModel? currentTable = null;
-        var rowIndex = 0;
-        var cellsInCurrentRow = new List<TableCellModel>();
-        int lastTableParagraphIndex = -1;
-        TapBase? currentRowTap = null;
+        public void ParseTables(DocumentModel document)
+        {
+            var tables = new List<TableModel>();
+            TableModel? currentTable = null;
+            var rowIndex = 0;
+            var cellsInCurrentRow = new List<TableCellModel>();
+            int lastTableParagraphIndex = -1;
+            TapBase? currentRowTap = null;
+            // 保留每一行对应的 TAP 信息，用于之后根据 TC.grfw 计算单元格纵向合并。
+            var rowTaps = new List<TapBase?>();
 
         foreach (var para in document.Paragraphs.OrderBy(p => p.Index))
         {
@@ -661,148 +663,210 @@ public class TableReader
         }
 
         // 文档结束时，如仍在表格中，收尾
-        if (currentTable != null)
-        {
-            FlushCurrentRow();
-            FinalizeCurrentTable();
-        }
-
-        document.Tables = tables;
-
-        // 本地帮助方法：结束当前行
-        void FlushCurrentRow()
-        {
-            if (currentTable == null) return;
-            if (cellsInCurrentRow.Count == 0) return;
-
-            var row = new TableRowModel
+            if (currentTable != null)
             {
-                Index = rowIndex++,
-                Cells = new List<TableCellModel>(cellsInCurrentRow)
-            };
-
-            if (currentRowTap != null)
-            {
-                row.Properties ??= new TableRowProperties();
-                if (currentRowTap.RowHeight > 0)
-                {
-                    row.Properties.Height = currentRowTap.RowHeight;
-                    row.Properties.HeightIsExact = currentRowTap.HeightIsExact;
-                }
-                if (currentRowTap.IsHeaderRow)
-                {
-                    row.Properties.IsHeaderRow = true;
-                }
-                row.Properties.AllowBreakAcrossPages = !currentRowTap.CantSplit;
+                FlushCurrentRow();
+                FinalizeCurrentTable();
             }
 
-            currentTable.Rows.Add(row);
-            cellsInCurrentRow.Clear();
-            currentRowTap = null;
-        }
+            document.Tables = tables;
 
-        // 本地帮助方法：计算行列数并添加到集合
-        void FinalizeCurrentTable()
-        {
-            if (currentTable == null) return;
-            if (currentTable.Rows.Count == 0)
+            // 本地帮助方法：结束当前行
+            void FlushCurrentRow()
             {
+                if (currentTable == null) return;
+                if (cellsInCurrentRow.Count == 0) return;
+
+                var row = new TableRowModel
+                {
+                    Index = rowIndex++,
+                    Cells = new List<TableCellModel>(cellsInCurrentRow)
+                };
+
+                if (currentRowTap != null)
+                {
+                    row.Properties ??= new TableRowProperties();
+                    if (currentRowTap.RowHeight > 0)
+                    {
+                        row.Properties.Height = currentRowTap.RowHeight;
+                        row.Properties.HeightIsExact = currentRowTap.HeightIsExact;
+                    }
+                    if (currentRowTap.IsHeaderRow)
+                    {
+                        row.Properties.IsHeaderRow = true;
+                    }
+                    row.Properties.AllowBreakAcrossPages = !currentRowTap.CantSplit;
+                }
+
+                currentTable.Rows.Add(row);
+                rowTaps.Add(currentRowTap);
+                cellsInCurrentRow.Clear();
+                currentRowTap = null;
+            }
+
+            // 本地帮助方法：计算行列数并添加到集合
+            void FinalizeCurrentTable()
+            {
+                if (currentTable == null) return;
+                if (currentTable.Rows.Count == 0)
+                {
+                    currentTable = null;
+                    rowTaps.Clear();
+                    return;
+                }
+
+                currentTable.EndParagraphIndex = lastTableParagraphIndex;
+                currentTable.RowCount = currentTable.Rows.Count;
+                currentTable.ColumnCount = currentTable.Rows.Max(r => r.Cells.Count);
+
+                // 默认将每张表的第一行标记为表头行，便于在 Word 中重复显示在每页顶部。
+                var firstRow = currentTable.Rows.FirstOrDefault();
+                if (firstRow != null)
+                {
+                    firstRow.Properties ??= new TableRowProperties();
+                    firstRow.Properties.IsHeaderRow = true;
+                }
+
+                // 1) 基于 TAP / TC 的精确信息推断纵向合并（RowSpan）
+                bool hasTapMergeInfo = rowTaps.Any(t => t?.CellMerges != null);
+                if (hasTapMergeInfo && currentTable.ColumnCount > 0)
+                {
+                    for (int col = 0; col < currentTable.ColumnCount; col++)
+                    {
+                        int row = 0;
+                        while (row < currentTable.Rows.Count)
+                        {
+                            var startCell = GetCell(currentTable, row, col);
+                            if (startCell == null)
+                            {
+                                row++;
+                                continue;
+                            }
+
+                            var tap = row < rowTaps.Count ? rowTaps[row] : null;
+                            var mergeArray = tap?.CellMerges;
+                            CellMergeFlags? flags = null;
+                            if (mergeArray != null && col < mergeArray.Length)
+                            {
+                                flags = mergeArray[col];
+                            }
+
+                            if (flags == null || !flags.VertFirst)
+                            {
+                                row++;
+                                continue;
+                            }
+
+                            int span = 1;
+                            int nextRow = row + 1;
+                            while (nextRow < currentTable.Rows.Count)
+                            {
+                                var nextTap = nextRow < rowTaps.Count ? rowTaps[nextRow] : null;
+                                var nextArray = nextTap?.CellMerges;
+                                CellMergeFlags? nextFlags = null;
+                                if (nextArray != null && col < nextArray.Length)
+                                {
+                                    nextFlags = nextArray[col];
+                                }
+
+                                if (nextFlags == null || !nextFlags.VertMerged)
+                                {
+                                    break;
+                                }
+
+                                span++;
+                                nextRow++;
+                            }
+
+                            if (span > 1)
+                            {
+                                startCell.RowSpan = span;
+                                row += span;
+                            }
+                            else
+                            {
+                                row++;
+                            }
+                        }
+                    }
+                }
+                // 2) 回退：基于内容的启发式纵向合并（与之前版本保持兼容）
+                else if (currentTable.ColumnCount > 0)
+                {
+                    for (int col = 0; col < currentTable.ColumnCount; col++)
+                    {
+                        int row = 0;
+                        while (row < currentTable.Rows.Count)
+                        {
+                            var startCell = GetCell(currentTable, row, col);
+                            if (startCell == null)
+                            {
+                                row++;
+                                continue;
+                            }
+
+                            if (!CellHasContent(startCell))
+                            {
+                                row++;
+                                continue;
+                            }
+
+                            int span = 1;
+                            int nextRow = row + 1;
+                            while (nextRow < currentTable.Rows.Count)
+                            {
+                                var nextCell = GetCell(currentTable, nextRow, col);
+                                if (nextCell == null)
+                                {
+                                    break;
+                                }
+
+                                if (CellHasContent(nextCell))
+                                {
+                                    break;
+                                }
+
+                                span++;
+                                nextRow++;
+                            }
+
+                            if (span > 1)
+                            {
+                                startCell.RowSpan = span;
+                                row += span;
+                            }
+                            else
+                            {
+                                row++;
+                            }
+                        }
+                    }
+                }
+
+                tables.Add(currentTable);
                 currentTable = null;
-                return;
-            }
+                rowTaps.Clear();
 
-            currentTable.EndParagraphIndex = lastTableParagraphIndex;
-            currentTable.RowCount = currentTable.Rows.Count;
-            currentTable.ColumnCount = currentTable.Rows.Max(r => r.Cells.Count);
-
-            // 默认将每张表的第一行标记为表头行，便于在 Word 中重复显示在每页顶部。
-            var firstRow = currentTable.Rows.FirstOrDefault();
-            if (firstRow != null)
-            {
-                firstRow.Properties ??= new TableRowProperties();
-                firstRow.Properties.IsHeaderRow = true;
-            }
-
-            // 基于内容的启发式：推断纵向合并（RowSpan）。
-            // 如果同一列中连续多行的单元格，只有首行有文本内容，而后续行对应单元格为空，
-            // 则认为这些单元格在原始文档中是一个“纵向合并单元格”，设置首单元格的 RowSpan。
-            if (currentTable.ColumnCount > 0)
-            {
-                for (int col = 0; col < currentTable.ColumnCount; col++)
+                static TableCellModel? GetCell(TableModel table, int rowIndex, int columnIndex)
                 {
-                    int row = 0;
-                    while (row < currentTable.Rows.Count)
+                    if (rowIndex < 0 || rowIndex >= table.Rows.Count) return null;
+                    var row = table.Rows[rowIndex];
+                    if (columnIndex < 0 || columnIndex >= row.Cells.Count) return null;
+                    return row.Cells[columnIndex];
+                }
+
+                static bool CellHasContent(TableCellModel cell)
+                {
+                    foreach (var para in cell.Paragraphs)
                     {
-                        var startCell = GetCell(currentTable, row, col);
-                        if (startCell == null)
+                        if (para.Runs.Any(r => !string.IsNullOrEmpty(r.Text)))
                         {
-                            row++;
-                            continue;
-                        }
-
-                        // 仅当首单元格包含可见文本时才尝试纵向合并，避免误合并多个空白行。
-                        if (!CellHasContent(startCell))
-                        {
-                            row++;
-                            continue;
-                        }
-
-                        int span = 1;
-                        int nextRow = row + 1;
-                        while (nextRow < currentTable.Rows.Count)
-                        {
-                            var nextCell = GetCell(currentTable, nextRow, col);
-                            if (nextCell == null)
-                            {
-                                break;
-                            }
-
-                            // 一旦遇到包含内容的单元格，就停止扩展合并区域。
-                            if (CellHasContent(nextCell))
-                            {
-                                break;
-                            }
-
-                            span++;
-                            nextRow++;
-                        }
-
-                        if (span > 1)
-                        {
-                            startCell.RowSpan = span;
-                            row += span;
-                        }
-                        else
-                        {
-                            row++;
+                            return true;
                         }
                     }
+                    return false;
                 }
             }
-
-            tables.Add(currentTable);
-            currentTable = null;
-
-            static TableCellModel? GetCell(TableModel table, int rowIndex, int columnIndex)
-            {
-                if (rowIndex < 0 || rowIndex >= table.Rows.Count) return null;
-                var row = table.Rows[rowIndex];
-                if (columnIndex < 0 || columnIndex >= row.Cells.Count) return null;
-                return row.Cells[columnIndex];
-            }
-
-            static bool CellHasContent(TableCellModel cell)
-            {
-                foreach (var para in cell.Paragraphs)
-                {
-                    if (para.Runs.Any(r => !string.IsNullOrEmpty(r.Text)))
-                    {
-                        return true;
-                    }
-                }
-                return false;
-            }
-        }
     }
 }
 

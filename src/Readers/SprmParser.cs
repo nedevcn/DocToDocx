@@ -211,7 +211,7 @@ public class SprmParser
             case 0x05: break; // sprmTTableBorders
             case 0x06: tap.Justification = (byte)sprm.Operand; break; // sprmTJc
             case 0x07: break;
-            case 0x08: // sprmTDefTable - cell widths definition
+            case 0x08: // sprmTDefTable - cell boundaries and TC (cell) descriptors
                 if (sprm.VariableOperand != null && sprm.VariableOperand.Length > 0)
                 {
                     try
@@ -230,9 +230,52 @@ public class SprmParser
                             tap.CellWidths = new int[cellCount];
                             for (int i = 0; i < cellCount; i++)
                                 tap.CellWidths[i] = Math.Abs(boundaries[i + 1] - boundaries[i]);
+
+                            // After rgdxaCenter comes rgTc (TC structures). The exact size of TC
+                            // can vary between Word versions; for our purposes we only require
+                            // the first 2 bytes (grfw bitfield), which contain the merge flags.
+                            // We conservatively assume a fixed TC size and advance cautiously.
+                            var merges = new CellMergeFlags[cellCount];
+                            const int assumedTcSize = 20; // bytes per TC (>= 2, includes padding/other fields)
+
+                            for (int i = 0; i < cellCount; i++)
+                            {
+                                if (defMs.Position + 2 > defMs.Length)
+                                {
+                                    break;
+                                }
+
+                                var grfw = defReader.ReadUInt16();
+                                var flags = new CellMergeFlags
+                                {
+                                    // Bit meanings follow the TC.grfw definition in MS‑DOC:
+                                    // 0x0001 = fFirstMerged, 0x0002 = fMerged,
+                                    // 0x0004 = fFirstVertMerge, 0x0008 = fVertMerge.
+                                    HorizFirst = (grfw & 0x0001) != 0,
+                                    HorizMerged = (grfw & 0x0002) != 0,
+                                    VertFirst = (grfw & 0x0004) != 0,
+                                    VertMerged = (grfw & 0x0008) != 0
+                                };
+                                merges[i] = flags;
+
+                                // Skip the remainder of the TC structure, if present.
+                                if (assumedTcSize > 2 && defMs.Position + (assumedTcSize - 2) <= defMs.Length)
+                                {
+                                    defMs.Seek(assumedTcSize - 2, SeekOrigin.Current);
+                                }
+                                else if (defMs.Position > defMs.Length)
+                                {
+                                    break;
+                                }
+                            }
+
+                            tap.CellMerges = merges;
                         }
                     }
-                    catch { /* ignore parse errors */ }
+                    catch
+                    {
+                        // Ignore parse errors; table layout will fall back to widths only.
+                    }
                 }
                 break;
             case 0x09: break; // sprmTSetBrc (cell borders)
@@ -371,4 +414,33 @@ public class TapBase
     /// When true, the row must not be split across pages (cantSplit).
     /// </summary>
     public bool CantSplit { get; set; }
+
+    /// <summary>
+    /// Per‑cell merge flags decoded from the TC structures that follow TDefTable.
+    /// This captures both horizontal (grid) and vertical merge intentions as stored
+    /// in the binary document.
+    /// </summary>
+    public CellMergeFlags[]? CellMerges { get; set; }
+}
+
+/// <summary>
+/// Merge flags for a single table cell, as decoded from the TC.grfw bitfield
+/// in the TAP/row formatting. The exact semantics follow the MS‑DOC TC structure:
+/// fFirstMerged/fMerged for horizontal merges; fFirstVertMerge/fVertMerge for
+/// vertical merges. We expose them in a neutral form here so higher‑level
+/// table reconstruction code can decide how to map them into RowSpan/ColumnSpan.
+/// </summary>
+public class CellMergeFlags
+{
+    /// <summary>True if this cell is the first cell in a horizontal merge sequence.</summary>
+    public bool HorizFirst { get; set; }
+
+    /// <summary>True if this cell is horizontally merged into a previous cell.</summary>
+    public bool HorizMerged { get; set; }
+
+    /// <summary>True if this cell is the first cell in a vertical merge sequence.</summary>
+    public bool VertFirst { get; set; }
+
+    /// <summary>True if this cell is vertically merged into a cell above.</summary>
+    public bool VertMerged { get; set; }
 }
