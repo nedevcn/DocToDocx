@@ -512,8 +512,10 @@ public class DocumentWriter
     }
 
     /// <summary>
-    /// Writes a table cell, including vertical merge (vMerge) start/continue based on
-    /// RowSpan and cells in previous rows.
+    /// Writes a table cell, including vertical (vMerge) and horizontal (gridSpan)
+    /// merges. For vertical merges we emit w:vMerge restart/continue based on
+    /// RowSpan and cells in previous rows; for horizontal merges we emit
+    /// w:gridSpan on the first cell and suppress content in covered cells.
     /// </summary>
     private void WriteTableCell(TableCellModel cell, TableRowModel row, TableModel table)
     {
@@ -522,6 +524,7 @@ public class DocumentWriter
         // Determine vertical merge role for this cell
         bool isVmergeStart = cell.RowSpan > 1;
         bool isVmergeContinue = !isVmergeStart && IsCoveredByVerticalMerge(table, row.Index, cell.ColumnIndex);
+        bool isHmergeCovered = IsCoveredByHorizontalMerge(table, row.Index, cell.ColumnIndex);
         
         bool hasTcPr = cell.Properties?.Width > 0 || cell.ColumnSpan > 1 || cell.RowSpan > 1 || isVmergeContinue ||
                        cell.Properties?.BorderTop != null || cell.Properties?.BorderBottom != null ||
@@ -543,8 +546,8 @@ public class DocumentWriter
                 _writer.WriteEndElement();
             }
             
-            // Grid span (column span)
-            if (cell.ColumnSpan > 1)
+            // Grid span (column span) — only on the first (uncovered) cell
+            if (cell.ColumnSpan > 1 && !isHmergeCovered)
             {
                 _writer.WriteStartElement("w", "gridSpan", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
                 _writer.WriteAttributeString("w", "val", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", cell.ColumnSpan.ToString());
@@ -605,8 +608,11 @@ public class DocumentWriter
             _writer.WriteEndElement(); // w:tcPr
         }
         
-        // Write cell content (paragraphs) only for the starting cell of a vertical merge
-        if (!IsCoveredByVerticalMerge(table, row.Index, cell.ColumnIndex))
+        // Write cell content (paragraphs) only for:
+        //   - vertical-merge starting cells
+        //   - horizontal-merge starting cells
+        if (!IsCoveredByVerticalMerge(table, row.Index, cell.ColumnIndex) &&
+            !isHmergeCovered)
         {
             foreach (var para in cell.Paragraphs)
             {
@@ -640,6 +646,33 @@ public class DocumentWriter
                         // This row is within the vertical span of the cell starting at 'start'
                         return rowIndex > start; // true for continuation rows only
                     }
+                }
+            }
+        }
+
+        return false;
+    }
+    
+    /// <summary>
+    /// Returns true if the cell at (rowIndex, columnIndex) is horizontally covered
+    /// by a previous cell in the same row with ColumnSpan &gt; 1.
+    /// </summary>
+    private static bool IsCoveredByHorizontalMerge(TableModel table, int rowIndex, int columnIndex)
+    {
+        if (rowIndex < 0 || rowIndex >= table.Rows.Count) return false;
+        var row = table.Rows[rowIndex];
+        if (columnIndex < 0 || columnIndex >= row.Cells.Count) return false;
+
+        for (int c = 0; c < row.Cells.Count; c++)
+        {
+            var cell = row.Cells[c];
+            if (cell.ColumnSpan > 1)
+            {
+                int spanStart = cell.ColumnIndex;
+                int spanEnd = cell.ColumnIndex + cell.ColumnSpan - 1;
+                if (columnIndex > spanStart && columnIndex <= spanEnd)
+                {
+                    return true;
                 }
             }
         }

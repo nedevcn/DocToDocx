@@ -843,6 +843,58 @@ public class TableReader
                     }
                 }
 
+                // 3) 基于 TAP / TC 的精确信息推断横向合并（ColumnSpan）
+                if (hasTapMergeInfo && currentTable.ColumnCount > 0)
+                {
+                    for (int row = 0; row < currentTable.Rows.Count; row++)
+                    {
+                        var tap = row < rowTaps.Count ? rowTaps[row] : null;
+                        var mergeArray = tap?.CellMerges;
+                        if (mergeArray == null || mergeArray.Length == 0) continue;
+
+                        int col = 0;
+                        while (col < currentTable.ColumnCount)
+                        {
+                            var cell = GetCell(currentTable, row, col);
+                            if (cell == null)
+                            {
+                                col++;
+                                continue;
+                            }
+
+                            CellMergeFlags? flags = col < mergeArray.Length ? mergeArray[col] : null;
+                            if (flags == null || !flags.HorizFirst)
+                            {
+                                col++;
+                                continue;
+                            }
+
+                            int span = 1;
+                            int nextCol = col + 1;
+                            while (nextCol < currentTable.ColumnCount)
+                            {
+                                var nextFlags = nextCol < mergeArray.Length ? mergeArray[nextCol] : null;
+                                if (nextFlags == null || !nextFlags.HorizMerged)
+                                {
+                                    break;
+                                }
+                                span++;
+                                nextCol++;
+                            }
+
+                            if (span > 1)
+                            {
+                                cell.ColumnSpan = span;
+                                col += span;
+                            }
+                            else
+                            {
+                                col++;
+                            }
+                        }
+                    }
+                }
+
                 tables.Add(currentTable);
                 currentTable = null;
                 rowTaps.Clear();
