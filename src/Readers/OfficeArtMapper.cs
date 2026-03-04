@@ -12,7 +12,7 @@ public static class OfficeArtMapper
     private const ushort RecordTypeSpContainer = 0xF004;
     private const ushort RecordTypeSp = 0xF00A;
 
-    public static void AttachShapes(DocumentModel document, OfficeArtReader? officeArtReader)
+    public static void AttachShapes(DocumentModel document, OfficeArtReader? officeArtReader, IReadOnlyList<FspaInfo>? fspaAnchors)
     {
         if (document == null) throw new ArgumentNullException(nameof(document));
         if (officeArtReader == null) return;
@@ -26,8 +26,16 @@ public static class OfficeArtMapper
             Traverse(root, shapes, document, ref imageIndexCursor);
         }
 
-        // 为图片形状分配一个粗略的段落位置提示，使其在 DOCX 中更接近正文位置。
-        AssignParagraphHints(document, shapes);
+        // 从 FSPA 中为形状附加锚点信息（位置/大小），并结合 CP 映射到段落。
+        if (fspaAnchors != null && fspaAnchors.Count > 0)
+        {
+            AttachAnchorsFromFspa(document, shapes, fspaAnchors);
+        }
+        else
+        {
+            // 如果没有 FSPA 信息，则回退到基于段落分布的启发式。
+            AssignParagraphHints(document, shapes);
+        }
 
         if (shapes.Count > 0)
         {
@@ -128,6 +136,71 @@ public static class OfficeArtMapper
             ImageIndex = imageIndex,
             Text = null
         };
+    }
+
+    /// <summary>
+    /// Uses FSPA anchors to populate ShapeAnchor (floating position/size) and
+    /// ParagraphIndexHint based on CP values.
+    /// </summary>
+    private static void AttachAnchorsFromFspa(DocumentModel document, List<ShapeModel> shapes, IReadOnlyList<FspaInfo> fspaAnchors)
+    {
+        if (shapes.Count == 0 || fspaAnchors.Count == 0 || document.Paragraphs.Count == 0)
+            return;
+
+        // Build a quick lookup from spid to FSPA info (last one wins if duplicates).
+        var fspaBySpid = new Dictionary<int, FspaInfo>();
+        foreach (var fspa in fspaAnchors)
+        {
+            fspaBySpid[fspa.Spid] = fspa;
+        }
+
+        // Precompute paragraphs sorted by minimum CP (CharacterPosition) to
+        // approximate where shapes should be attached.
+        var paraInfos = document.Paragraphs
+            .Select(p => new
+            {
+                Paragraph = p,
+                MinCp = p.Runs.Count > 0 ? p.Runs.Min(r => r.CharacterPosition) : int.MaxValue
+            })
+            .OrderBy(p => p.MinCp)
+            .ToList();
+
+        foreach (var shape in shapes)
+        {
+            if (!fspaBySpid.TryGetValue(shape.Id, out var fspa))
+                continue;
+
+            // Populate anchor position and size from the FSPA bounding box.
+            var width = fspa.XaRight - fspa.XaLeft;
+            var height = fspa.YaBottom - fspa.YaTop;
+            if (width <= 0 || height <= 0)
+                continue;
+
+            shape.Anchor = new ShapeAnchor
+            {
+                IsFloating = true,
+                PageIndex = 0,
+                ParagraphIndex = -1,
+                X = fspa.XaLeft,
+                Y = fspa.YaTop,
+                Width = width,
+                Height = height
+            };
+
+            // Map CP to nearest paragraph by MinCp.
+            var cp = fspa.Cp;
+            var bestPara = paraInfos.FirstOrDefault(p => p.MinCp != int.MaxValue && p.MinCp >= cp);
+            if (bestPara == null)
+            {
+                bestPara = paraInfos.FirstOrDefault(p => p.MinCp != int.MaxValue);
+            }
+
+            if (bestPara != null)
+            {
+                shape.ParagraphIndexHint = bestPara.Paragraph.Index;
+                shape.Anchor.ParagraphIndex = bestPara.Paragraph.Index;
+            }
+        }
     }
 }
 

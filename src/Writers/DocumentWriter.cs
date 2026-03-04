@@ -222,7 +222,9 @@ public class DocumentWriter
     }
 
     /// <summary>
-    /// Writes a single picture shape inline using the existing picture run logic.
+    /// Writes a single picture shape either as a true floating image (wp:anchor)
+    /// when ShapeAnchor indicates IsFloating, or falls back to inline picture
+    /// using the existing run-based logic.
     /// </summary>
     private void WriteInlinePictureShape(ShapeModel shape, DocumentModel document)
     {
@@ -233,6 +235,14 @@ public class DocumentWriter
         if (imageIndex < 0 || imageIndex >= document.Images.Count)
             return;
 
+        // Prefer floating output when we have a valid anchor.
+        if (shape.Anchor is { IsFloating: true })
+        {
+            WriteFloatingPictureShape(shape, document);
+            return;
+        }
+
+        // Fallback: inline picture using existing run-based logic.
         var run = new RunModel
         {
             IsPicture = true,
@@ -243,6 +253,201 @@ public class DocumentWriter
         _writer.WriteStartElement("w", "p", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
         _writer.WriteStartElement("w", "r", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
         WriteRun(run);
+        _writer.WriteEndElement(); // w:r
+        _writer.WriteEndElement(); // w:p
+    }
+    
+    /// <summary>
+    /// Writes a floating picture using wp:anchor based on ShapeAnchor coordinates.
+    /// </summary>
+    private void WriteFloatingPictureShape(ShapeModel shape, DocumentModel document)
+    {
+        if (shape.ImageIndex is null || _document == null)
+            return;
+
+        var imageIndex = shape.ImageIndex.Value;
+        if (imageIndex < 0 || imageIndex >= document.Images.Count)
+            return;
+
+        var image = document.Images[imageIndex];
+        var anchor = shape.Anchor!;
+
+        // Relationship ID and doc-level image id
+        var ids = RelationshipsWriter.ComputeRelationshipIds(_document);
+        var relId = $"rId{ids.FirstImageRId + imageIndex}";
+        var imageId = imageIndex + 1;
+
+        // Compute size in EMUs, preferring anchor size when available.
+        const int emuPerTwip = 635;
+        int widthEmu;
+        int heightEmu;
+
+        if (anchor.Width > 0 && anchor.Height > 0)
+        {
+            widthEmu = anchor.Width * emuPerTwip;
+            heightEmu = anchor.Height * emuPerTwip;
+        }
+        else
+        {
+            widthEmu = image.WidthEMU > 0 ? image.WidthEMU : 5715000;
+            heightEmu = image.HeightEMU > 0 ? image.HeightEMU : 3810000;
+        }
+
+        // Respect per-image scale factors
+        if (image.ScaleX > 0 && image.ScaleX != 100000)
+        {
+            widthEmu = (int)(widthEmu * (image.ScaleX / 100000.0));
+        }
+        if (image.ScaleY > 0 && image.ScaleY != 100000)
+        {
+            heightEmu = (int)(heightEmu * (image.ScaleY / 100000.0));
+        }
+
+        // Clamp width to page width (inside margins) while preserving aspect ratio
+        if (_document.Properties != null)
+        {
+            var page = _document.Properties;
+            var maxWidthTwips = page.PageWidth - page.MarginLeft - page.MarginRight;
+            if (maxWidthTwips > 0)
+            {
+                var maxWidthEmu = maxWidthTwips * emuPerTwip;
+                if (widthEmu > maxWidthEmu && widthEmu > 0 && heightEmu > 0)
+                {
+                    var scale = (double)maxWidthEmu / widthEmu;
+                    widthEmu = maxWidthEmu;
+                    heightEmu = (int)(heightEmu * scale);
+                }
+            }
+        }
+
+        // Convert anchor position from twips to EMUs; clamp to non-negative.
+        var xEmu = Math.Max(0, anchor.X * emuPerTwip);
+        var yEmu = Math.Max(0, anchor.Y * emuPerTwip);
+
+        _writer.WriteStartElement("w", "p", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+        _writer.WriteStartElement("w", "r", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+        _writer.WriteStartElement("w", "drawing", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+
+        // Floating anchor
+        _writer.WriteStartElement("wp", "anchor", "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing");
+        _writer.WriteAttributeString("distT", "0");
+        _writer.WriteAttributeString("distB", "0");
+        _writer.WriteAttributeString("distL", "0");
+        _writer.WriteAttributeString("distR", "0");
+        _writer.WriteAttributeString("simplePos", "0");
+        _writer.WriteAttributeString("relativeHeight", "0");
+        _writer.WriteAttributeString("behindDoc", "0");
+        _writer.WriteAttributeString("locked", "0");
+        _writer.WriteAttributeString("layoutInCell", "1");
+        _writer.WriteAttributeString("allowOverlap", "1");
+
+        // Position
+        _writer.WriteStartElement("wp", "positionH", "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing");
+        _writer.WriteAttributeString("relativeFrom", "page");
+        _writer.WriteStartElement("wp", "posOffset", "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing");
+        _writer.WriteString(xEmu.ToString());
+        _writer.WriteEndElement(); // wp:posOffset
+        _writer.WriteEndElement(); // wp:positionH
+
+        _writer.WriteStartElement("wp", "positionV", "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing");
+        _writer.WriteAttributeString("relativeFrom", "page");
+        _writer.WriteStartElement("wp", "posOffset", "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing");
+        _writer.WriteString(yEmu.ToString());
+        _writer.WriteEndElement(); // wp:posOffset
+        _writer.WriteEndElement(); // wp:positionV
+
+        // Extent
+        _writer.WriteStartElement("wp", "extent", "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing");
+        _writer.WriteAttributeString("cx", widthEmu.ToString());
+        _writer.WriteAttributeString("cy", heightEmu.ToString());
+        _writer.WriteEndElement();
+
+        // Effect extent
+        _writer.WriteStartElement("wp", "effectExtent", "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing");
+        _writer.WriteAttributeString("l", "0");
+        _writer.WriteAttributeString("t", "0");
+        _writer.WriteAttributeString("r", "0");
+        _writer.WriteAttributeString("b", "0");
+        _writer.WriteEndElement();
+
+        // No wrap (can be adjusted to wrapSquare later)
+        _writer.WriteStartElement("wp", "wrapNone", "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing");
+        _writer.WriteEndElement();
+
+        // Doc properties
+        _writer.WriteStartElement("wp", "docPr", "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing");
+        _writer.WriteAttributeString("id", imageId.ToString());
+        var baseName = !string.IsNullOrEmpty(image.FileName) ? image.FileName : $"Picture {imageId}";
+        _writer.WriteAttributeString("name", baseName);
+        var altText = baseName;
+        var dotIndex = baseName.LastIndexOf('.');
+        if (dotIndex > 0)
+        {
+            altText = baseName.Substring(0, dotIndex);
+        }
+        _writer.WriteAttributeString("descr", altText);
+        _writer.WriteEndElement(); // wp:docPr
+
+        // Non-visual graphic frame properties
+        _writer.WriteStartElement("wp", "cNvGraphicFramePr", "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing");
+        _writer.WriteStartElement("a", "graphicFrameLocks", "http://schemas.openxmlformats.org/drawingml/2006/main");
+        _writer.WriteAttributeString("noChangeAspect", "1");
+        _writer.WriteEndElement();
+        _writer.WriteEndElement();
+
+        // Graphic
+        _writer.WriteStartElement("a", "graphic", "http://schemas.openxmlformats.org/drawingml/2006/main");
+        _writer.WriteStartElement("a", "graphicData", "http://schemas.openxmlformats.org/drawingml/2006/main");
+        _writer.WriteAttributeString("uri", "http://schemas.openxmlformats.org/drawingml/2006/picture");
+
+        // Picture
+        _writer.WriteStartElement("pic", "pic", "http://schemas.openxmlformats.org/drawingml/2006/picture");
+
+        // Non-visual picture properties
+        _writer.WriteStartElement("pic", "nvPicPr", "http://schemas.openxmlformats.org/drawingml/2006/picture");
+        _writer.WriteStartElement("pic", "cNvPr", "http://schemas.openxmlformats.org/drawingml/2006/picture");
+        _writer.WriteAttributeString("id", "0");
+        _writer.WriteAttributeString("name", image.FileName);
+        _writer.WriteEndElement();
+        _writer.WriteStartElement("pic", "cNvPicPr", "http://schemas.openxmlformats.org/drawingml/2006/picture");
+        _writer.WriteEndElement();
+        _writer.WriteEndElement(); // pic:nvPicPr
+
+        // Blip fill
+        _writer.WriteStartElement("pic", "blipFill", "http://schemas.openxmlformats.org/drawingml/2006/picture");
+        _writer.WriteStartElement("a", "blip", "http://schemas.openxmlformats.org/drawingml/2006/main");
+        _writer.WriteAttributeString("r", "embed", "http://schemas.openxmlformats.org/officeDocument/2006/relationships", relId);
+        _writer.WriteEndElement();
+        _writer.WriteStartElement("a", "stretch", "http://schemas.openxmlformats.org/drawingml/2006/main");
+        _writer.WriteStartElement("a", "fillRect", "http://schemas.openxmlformats.org/drawingml/2006/main");
+        _writer.WriteEndElement();
+        _writer.WriteEndElement();
+        _writer.WriteEndElement(); // pic:blipFill
+
+        // Shape properties
+        _writer.WriteStartElement("pic", "spPr", "http://schemas.openxmlformats.org/drawingml/2006/picture");
+        _writer.WriteStartElement("a", "xfrm", "http://schemas.openxmlformats.org/drawingml/2006/main");
+        _writer.WriteStartElement("a", "off", "http://schemas.openxmlformats.org/drawingml/2006/main");
+        _writer.WriteAttributeString("x", "0");
+        _writer.WriteAttributeString("y", "0");
+        _writer.WriteEndElement();
+        _writer.WriteStartElement("a", "ext", "http://schemas.openxmlformats.org/drawingml/2006/main");
+        _writer.WriteAttributeString("cx", widthEmu.ToString());
+        _writer.WriteAttributeString("cy", heightEmu.ToString());
+        _writer.WriteEndElement();
+        _writer.WriteEndElement();
+        _writer.WriteStartElement("a", "prstGeom", "http://schemas.openxmlformats.org/drawingml/2006/main");
+        _writer.WriteAttributeString("prst", "rect");
+        _writer.WriteStartElement("a", "avLst", "http://schemas.openxmlformats.org/drawingml/2006/main");
+        _writer.WriteEndElement();
+        _writer.WriteEndElement();
+        _writer.WriteEndElement(); // pic:spPr
+
+        _writer.WriteEndElement(); // pic:pic
+        _writer.WriteEndElement(); // a:graphicData
+        _writer.WriteEndElement(); // a:graphic
+        _writer.WriteEndElement(); // wp:anchor
+        _writer.WriteEndElement(); // w:drawing
         _writer.WriteEndElement(); // w:r
         _writer.WriteEndElement(); // w:p
     }

@@ -38,6 +38,7 @@ public class DocReader : IDisposable
     private FieldReader? _fieldReader;
     private HyperlinkReader? _hyperlinkReader;
     private OfficeArtReader? _officeArtReader;
+    private List<FspaInfo> _fspaAnchors = new();
 
     // Keep streams alive for reader lifetime
     private MemoryStream? _wordDocStream;
@@ -103,6 +104,16 @@ public class DocReader : IDisposable
             ? _cfb.GetDecryptedStream(tableName)
             : _cfb.GetStream(tableName);
         _tableReader = new BinaryReader(_tableStream, Encoding.Default, leaveOpen: true);
+
+        // Read floating shape anchors from PlcfSpaMom (best-effort).
+        try
+        {
+            _fspaAnchors = FspaReader.ReadPlcSpaMom(_tableReader, _fibReader);
+        }
+        catch
+        {
+            _fspaAnchors = new List<FspaInfo>();
+        }
 
         // Extract Data stream (optional — contains pictures, OLE objects)
         if (_cfb.HasStream("Data"))
@@ -201,10 +212,10 @@ public class DocReader : IDisposable
         // Step 6: Extract images
         _imageReader!.ExtractImages(Document);
 
-        // Step 6.5: Parse OfficeArt/Escher shapes (best-effort, does not affect text flow)
+        // Step 6.5: Parse OfficeArt/Escher shapes and map basic anchors
         if (_officeArtReader != null)
         {
-            OfficeArtMapper.AttachShapes(Document, _officeArtReader);
+            OfficeArtMapper.AttachShapes(Document, _officeArtReader, _fspaAnchors);
         }
 
         // Step 7: Read footnotes
