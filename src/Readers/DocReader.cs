@@ -583,7 +583,8 @@ public class TableReader
                 if (tapForParagraph != null && currentTable.Properties == null)
                 {
                     // Map TAP‑level table properties into the high‑level model so that
-                    // the writer can faithfully reproduce alignment, indent and spacing.
+                    // the writer can faithfully reproduce alignment, indent, spacing
+                    // and table‑wide borders / shading.
                     currentTable.Properties = new TableProperties
                     {
                         Alignment = tapForParagraph.Justification switch
@@ -597,7 +598,14 @@ public class TableReader
                         CellSpacing = tapForParagraph.CellSpacing != 0
                             ? tapForParagraph.CellSpacing
                             : (tapForParagraph.GapHalf != 0 ? tapForParagraph.GapHalf * 2 : 0),
-                        Indent = tapForParagraph.IndentLeft
+                        Indent = tapForParagraph.IndentLeft,
+                        BorderTop = tapForParagraph.BorderTop,
+                        BorderBottom = tapForParagraph.BorderBottom,
+                        BorderLeft = tapForParagraph.BorderLeft,
+                        BorderRight = tapForParagraph.BorderRight,
+                        BorderInsideH = tapForParagraph.BorderInsideH,
+                        BorderInsideV = tapForParagraph.BorderInsideV,
+                        Shading = tapForParagraph.Shading
                     };
                 }
 

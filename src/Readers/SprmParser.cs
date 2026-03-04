@@ -208,7 +208,40 @@ public class SprmParser
                 break;
             case 0x03: tap.CantSplit = sprm.Operand != 0; break; // sprmTFCantSplit
             case 0x04: tap.IsHeaderRow = sprm.Operand != 0; break; // sprmTHeader
-            case 0x05: break; // sprmTTableBorders
+            // sprmTTableBorders — table-wide borders (top/bottom/left/right/insideH/insideV).
+            // The variable operand is an array of 6 BRC structures in the order:
+            // top, left, bottom, right, insideH, insideV. Each BRC is 4 bytes in
+            // the Word 97 binary format. We decode width/style/color into BorderInfo.
+            case 0x05:
+                if (sprm.VariableOperand != null && sprm.VariableOperand.Length >= 6 * 4)
+                {
+                    try
+                    {
+                        using var brcMs = new MemoryStream(sprm.VariableOperand);
+                        using var brcReader = new BinaryReader(brcMs);
+                        var borders = new BorderInfo[6];
+                        for (int i = 0; i < 6; i++)
+                        {
+                            if (brcReader.BaseStream.Position + 4 > brcReader.BaseStream.Length)
+                                break;
+
+                            var brc = brcReader.ReadUInt32();
+                            borders[i] = DecodeBrc(brc);
+                        }
+
+                        if (borders[0] != null) tap.BorderTop = borders[0];
+                        if (borders[2] != null) tap.BorderBottom = borders[2];
+                        if (borders[1] != null) tap.BorderLeft = borders[1];
+                        if (borders[3] != null) tap.BorderRight = borders[3];
+                        if (borders[4] != null) tap.BorderInsideH = borders[4];
+                        if (borders[5] != null) tap.BorderInsideV = borders[5];
+                    }
+                    catch
+                    {
+                        // best-effort only
+                    }
+                }
+                break;
             case 0x06: tap.Justification = (byte)sprm.Operand; break; // sprmTJc
             case 0x07: break;
             case 0x08: // sprmTDefTable - cell boundaries and TC (cell) descriptors
@@ -278,11 +311,32 @@ public class SprmParser
                     }
                 }
                 break;
-            case 0x09: break; // sprmTSetBrc (cell borders)
+            case 0x09: break; // sprmTSetBrc (cell borders) — not yet mapped per-cell in this version
             case 0x0A: break;
             case 0x0B: break;
             case 0x0C: break;
-            case 0x0D: break; // sprmTShd (cell shading)
+            // sprmTShd — table shading for the whole table (fallback when no per-cell SHD).
+            // The operand is a SHD structure; for now we only map foreground/background colors.
+            case 0x0D:
+                if (sprm.VariableOperand != null && sprm.VariableOperand.Length >= 2 * 2)
+                {
+                    try
+                    {
+                        using var shdMs = new MemoryStream(sprm.VariableOperand);
+                        using var shdReader = new BinaryReader(shdMs);
+                        // Per MS-DOC, SHD starts with two WORDs: icoFore, icoBack (or similar).
+                        var icoFore = shdReader.ReadUInt16();
+                        var icoBack = shdReader.ReadUInt16();
+                        tap.Shading ??= new ShadingInfo();
+                        tap.Shading.ForegroundColor = icoFore;
+                        tap.Shading.BackgroundColor = icoBack;
+                    }
+                    catch
+                    {
+                        // ignore shading parse errors
+                    }
+                }
+                break;
             case 0x0E: break;
             case 0x0F: break;
             case 0x10: tap.RowHeight = (int)sprm.Operand; break;
@@ -302,6 +356,57 @@ public class SprmParser
             case 0x1E: break;
             case 0x1F: break;
         }
+    }
+
+    /// <summary>
+    /// Decodes a Word binary BRC (Border Code) value into a high-level BorderInfo.
+    /// This is a best-effort mapping based on the MS-DOC BRC layout where:
+    ///  - bits 0-4  (5 bits)  = border type
+    ///  - bits 5-8  (4 bits)  = border width
+    ///  - bits 9-15 (7 bits)  = color index (ICO)
+    /// We map these into our BorderStyle/Width/Color fields.
+    /// </summary>
+    private static BorderInfo DecodeBrc(uint brc)
+    {
+        var styleBits = (int)(brc & 0x1F);
+        var widthBits = (int)((brc >> 5) & 0x0F);
+        var colorBits = (int)((brc >> 9) & 0x7F);
+
+        var style = styleBits switch
+        {
+            0 => BorderStyle.None,
+            1 => BorderStyle.Single,
+            2 => BorderStyle.Thick,
+            3 => BorderStyle.Double,
+            4 => BorderStyle.Dotted,
+            5 => BorderStyle.Dashed,
+            6 => BorderStyle.DotDash,
+            7 => BorderStyle.DotDotDash,
+            8 => BorderStyle.Triple,
+            9 => BorderStyle.ThinThickSmallGap,
+            10 => BorderStyle.ThickThinSmallGap,
+            11 => BorderStyle.ThinThickThinSmallGap,
+            12 => BorderStyle.ThinThickMediumGap,
+            13 => BorderStyle.ThickThinMediumGap,
+            14 => BorderStyle.ThinThickThinMediumGap,
+            15 => BorderStyle.ThinThickLargeGap,
+            16 => BorderStyle.ThickThinLargeGap,
+            17 => BorderStyle.ThinThickThinLargeGap,
+            18 => BorderStyle.Wave,
+            _ => BorderStyle.Single
+        };
+
+        // Width in twips is usually derived from widthBits; we approximate by
+        // mapping the 0-15 range into a 0-96 twip range (compatible with DOCX sz*8).
+        var widthTwips = widthBits * 8;
+
+        return new BorderInfo
+        {
+            Style = style,
+            Width = widthTwips,
+            Color = colorBits,
+            Space = 0
+        };
     }
 
     private class Sprm
@@ -421,6 +526,23 @@ public class TapBase
     /// in the binary document.
     /// </summary>
     public CellMergeFlags[]? CellMerges { get; set; }
+
+    /// <summary>
+    /// Table-level borders derived from sprmTTableBorders, mapped into the same
+    /// shape as the high-level TableProperties so that table writers can reuse
+    /// a single mapping path.
+    /// </summary>
+    public BorderInfo? BorderTop { get; set; }
+    public BorderInfo? BorderBottom { get; set; }
+    public BorderInfo? BorderLeft { get; set; }
+    public BorderInfo? BorderRight { get; set; }
+    public BorderInfo? BorderInsideH { get; set; }
+    public BorderInfo? BorderInsideV { get; set; }
+
+    /// <summary>
+    /// Table-level shading (background) for the whole table, when present.
+    /// </summary>
+    public ShadingInfo? Shading { get; set; }
 }
 
 /// <summary>
