@@ -1,0 +1,33 @@
+## Build outputs
+bin/
+obj/
+
+/tests
+
+## Visual Studio / VSCode / Rider
+.vs/
+.vscode/
+*.user
+*.suo
+*.userprefs
+
+## NuGet
+*.nupkg
+packages/
+
+## Logs and diagnostics
+*.log
+TestResult*/
+*.trx
+
+## Dotnet artifacts
+artifacts/
+
+## OS-specific junk
+Thumbs.db
+Desktop.ini
+.DS_Store
+
+## Cursor / IDE metadata
+.cursor/
+
