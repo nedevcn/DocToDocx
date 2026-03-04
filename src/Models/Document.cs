@@ -12,6 +12,13 @@ public class DocumentModel
     public List<TableModel> Tables { get; set; } = new();
     public List<ImageModel> Images { get; set; } = new();
     public List<ShapeModel> Shapes { get; set; } = new();
+    /// <summary>
+    /// High-level chart objects extracted from OLE/OfficeArt structures.
+    /// For the initial implementation charts may carry only minimal metadata
+    /// and placeholder data series but are emitted as real DOCX charts so
+    /// they can be edited inside Word.
+    /// </summary>
+    public List<ChartModel> Charts { get; set; } = new();
     public List<BookmarkModel> Bookmarks { get; set; } = new();
     public List<HyperlinkModel> Hyperlinks { get; set; } = new();
     public List<FootnoteModel> Footnotes { get; set; } = new();

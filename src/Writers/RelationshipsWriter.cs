@@ -67,6 +67,18 @@ public class RelationshipsWriter
             var extension = GetImageExtension(document.Images[i].Type);
             WriteRelationship($"rId{ids.FirstImageRId + i}", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image", $"media/image{i + 1}{extension}");
         }
+
+        // Chart relationships (one per chart part, if any)
+        if (document.Charts.Count > 0 && ids.FirstChartRId > 0)
+        {
+            for (int i = 0; i < document.Charts.Count; i++)
+            {
+                WriteRelationship(
+                    $"rId{ids.FirstChartRId + i}",
+                    "http://schemas.openxmlformats.org/officeDocument/2006/relationships/chart",
+                    $"charts/chart{i + 1}.xml");
+            }
+        }
         
         // Numbering relationship
         if (ids.NumberingRId > 0)
@@ -133,6 +145,14 @@ public class RelationshipsWriter
         
         ids.FirstImageRId = nextId;
         nextId += document.Images.Count;
+
+        // Reserve a contiguous block of relationship IDs for charts after images.
+        // Charts are emitted as separate parts under word/charts/chartN.xml.
+        if (document.Charts.Count > 0)
+        {
+            ids.FirstChartRId = nextId;
+            nextId += document.Charts.Count;
+        }
         
         bool hasNumbering = document.Paragraphs.Any(p => p.ListFormatId > 0) || document.NumberingDefinitions.Count > 0;
         if (hasNumbering)
@@ -217,6 +237,7 @@ public class DocumentRelationshipIds
 {
     public int SettingsRId { get; set; }
     public int FirstImageRId { get; set; }
+    public int FirstChartRId { get; set; }
     public int NumberingRId { get; set; }
     public int FootnotesRId { get; set; }
     public int EndnotesRId { get; set; }
@@ -542,6 +563,15 @@ public class ContentTypesWriter
         if (document.Paragraphs.Any(p => p.ListFormatId > 0) || document.NumberingDefinitions.Count > 0)
         {
             WriteOverride("/word/numbering.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.numbering+xml");
+        }
+
+        // Charts
+        if (document.Charts.Count > 0)
+        {
+            // Chart parts all share the same content type; we only need to
+            // register the first one explicitly because Word will infer the
+            // others from relationships and matching names.
+            WriteOverride("/word/charts/chart1.xml", "application/vnd.openxmlformats-officedocument.drawingml.chart+xml");
         }
         
         _writer.WriteEndElement();

@@ -177,6 +177,13 @@ public class ZipWriter : IDisposable
         {
             WriteEndnotes(document);
         }
+
+        // Write charts (if any). For now we emit one chart part per ChartModel
+        // using a very small, self-contained ChartsWriter.
+        if (document.Charts.Count > 0)
+        {
+            WriteCharts(document);
+        }
     }
     
     /// <summary>
@@ -301,6 +308,23 @@ public class ZipWriter : IDisposable
             var writer = new FootnotesWriter(w);
             writer.WriteEndnotes(document.Endnotes);
         });
+    }
+
+    /// <summary>
+    /// Writes chart parts (word/charts/chartN.xml) for all charts in the document.
+    /// </summary>
+    private void WriteCharts(DocumentModel document)
+    {
+        for (int i = 0; i < document.Charts.Count; i++)
+        {
+            var chart = document.Charts[i];
+            chart.Index = i;
+            AddXmlEntry($"word/charts/chart{i + 1}.xml", w =>
+            {
+                var writer = new ChartsWriter(w);
+                writer.WriteChart(chart);
+            });
+        }
     }
 }
 
