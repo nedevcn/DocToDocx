@@ -124,6 +124,67 @@ namespace Nedev.DocToDocx.Tests
         }
 
         [Fact]
+        public void WriteDocument_HeaderFooterAndFootnotes_CreateParts()
+        {
+            var doc = new DocumentModel();
+
+            // header/ footer
+            doc.HeadersFooters.Headers.Add(new HeaderFooterModel { Type = HeaderFooterType.HeaderOdd, Text = "HDR" });
+            doc.HeadersFooters.Footers.Add(new HeaderFooterModel { Type = HeaderFooterType.FooterOdd, Text = "FTR" });
+
+            // footnote
+            var note = new FootnoteModel { Index = 1 };
+            note.Paragraphs.Add(new ParagraphModel { Runs = { new RunModel { Text = "fn" } } });
+            doc.Footnotes.Add(note);
+
+            byte[] package;
+            using (var ms = new MemoryStream())
+            {
+                var zw = new ZipWriter(ms);
+                zw.WriteDocument(doc);
+                zw.Dispose();
+                package = ms.ToArray();
+            }
+
+            using var zip = new System.IO.Compression.ZipArchive(new MemoryStream(package), System.IO.Compression.ZipArchiveMode.Read);
+            Assert.NotNull(zip.GetEntry("word/header2.xml"));
+            Assert.NotNull(zip.GetEntry("word/footer2.xml"));
+            Assert.NotNull(zip.GetEntry("word/footnotes.xml"));
+
+            var hdr = new StreamReader(zip.GetEntry("word/header2.xml").Open()).ReadToEnd();
+            Assert.Contains("HDR", hdr);
+            var ftr = new StreamReader(zip.GetEntry("word/footer2.xml").Open()).ReadToEnd();
+            Assert.Contains("FTR", ftr);
+            var fnxml = new StreamReader(zip.GetEntry("word/footnotes.xml").Open()).ReadToEnd();
+            Assert.Contains("fn", fnxml);
+        }
+
+        [Fact]
+        public void WriteDocument_Annotations_AreWritten()
+        {
+            var doc = new DocumentModel();
+            var annotation = new AnnotationModel { Id = "1", Author = "Joe" };
+            annotation.Runs.Add(new RunModel { Text = "note" });
+            doc.Annotations.Add(annotation);
+
+            byte[] package;
+            using (var ms = new MemoryStream())
+            {
+                var zw = new ZipWriter(ms);
+                zw.WriteDocument(doc);
+                zw.Dispose();
+                package = ms.ToArray();
+            }
+
+            using var zip = new System.IO.Compression.ZipArchive(new MemoryStream(package), System.IO.Compression.ZipArchiveMode.Read);
+            var commentsEntry = zip.GetEntry("word/comments.xml");
+            Assert.NotNull(commentsEntry);
+            var xml = new StreamReader(commentsEntry.Open()).ReadToEnd();
+            Assert.Contains("note", xml);
+            Assert.Contains("Joe", xml);
+        }
+
+        [Fact]
         public void EncryptionHelper_XorRoundTrips()
         {
             byte[] original = { 0, 1, 2, 3, 4, 5, 255 };
