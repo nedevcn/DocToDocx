@@ -22,6 +22,7 @@ public class DocReader : IDisposable
     private BinaryReader? _wordDocReader;
     private BinaryReader? _tableReader;
     private BinaryReader? _dataReader;
+    private readonly string? _password;
 
     private FibReader? _fibReader;
     private TextReader? _textReader;
@@ -41,28 +42,30 @@ public class DocReader : IDisposable
     private List<FspaInfo> _fspaAnchors = new();
 
     // Keep streams alive for reader lifetime
-    private MemoryStream? _wordDocStream;
-    private MemoryStream? _tableStream;
-    private MemoryStream? _dataStream;
-    private MemoryStream? _footnoteStream;
-    private MemoryStream? _endnoteStream;
-    private MemoryStream? _anotStream;
-    private MemoryStream? _txbxStream;
+    private Stream? _wordDocStream;
+    private Stream? _tableStream;
+    private Stream? _dataStream;
+    private Stream? _footnoteStream;
+    private Stream? _endnoteStream;
+    private Stream? _anotStream;
+    private Stream? _txbxStream;
 
     public DocumentModel Document { get; private set; } = new();
     public bool IsLoaded { get; private set; }
 
-    public DocReader(string filePath)
+    public DocReader(string filePath, string? password = null)
     {
         _cfb = new CfbReader(filePath);
+        _password = password;
         InitializeStreams();
     }
 
     
 
-    public DocReader(Stream stream)
+    public DocReader(Stream stream, string? password = null)
     {
         _cfb = new CfbReader(stream, leaveOpen: true);
+        _password = password;
         InitializeStreams();
     }
 
@@ -79,19 +82,6 @@ public class DocReader : IDisposable
         _fibReader = new FibReader(_wordDocReader);
         _fibReader.Read();
 
-        // If the document is XOR-encrypted, configure the CFB reader with the key
-        // and reopen the core streams in decrypted form for all subsequent parsing.
-        if (_fibReader.FEncrypted)
-        {
-            _cfb.SetEncryptionKey(_fibReader.LKey);
-
-            _wordDocReader.Dispose();
-            _wordDocStream.Dispose();
-
-            _wordDocStream = _cfb.GetDecryptedStream("WordDocument");
-            _wordDocReader = new BinaryReader(_wordDocStream, Encoding.Default, leaveOpen: true);
-        }
-
         // Extract Table stream (0Table or 1Table)
         var tableName = _fibReader.TableStreamName;
         if (!_cfb.HasStream(tableName))
@@ -101,11 +91,70 @@ public class DocReader : IDisposable
             if (!_cfb.HasStream(tableName))
                 throw new InvalidDataException($"Table stream not found. Tried '{_fibReader.TableStreamName}' and '{tableName}'.");
         }
+        _tableStream = _cfb.GetStream(tableName);
 
-        _tableStream = _fibReader.FEncrypted
-            ? _cfb.GetDecryptedStream(tableName)
-            : _cfb.GetStream(tableName);
-        _tableReader = new BinaryReader(_tableStream, Encoding.Default, leaveOpen: true);
+        // Check for RC4 encryption
+        bool isRc4Encrypted = _fibReader.FEncrypted && !_fibReader.FObfuscated;
+        byte[]? rc4BaseHash = null;
+
+        if (isRc4Encrypted)
+        {
+            rc4BaseHash = EncryptionHelper.GetRc4BaseHash(_tableStream, _fibReader.LKey, _password);
+            if (rc4BaseHash == null)
+            {
+                throw new UnauthorizedAccessException("Document is RC4 encrypted. A valid password is required.");
+            }
+
+            // Wrap WordDocument stream
+            _wordDocReader.Dispose();
+            _wordDocStream.Dispose();
+            // Start RC4 decryption from offset 0, but FIB is unencrypted (usually first 1472 or similar? No, only FIB size.)
+            // Wait, RC4 encryption in MS-DOC: "The Fib is stored unencrypted... encryption starts at first 512-byte boundary following FIB, or stream start."
+            // Actually, for WordDocument stream, block 0 starts at offset 0, but the first 68 bytes (?) or FIB is unencrypted.
+            // Oh, block 0 corresponds to offset 0 in the stream.
+            
+            _wordDocStream = _cfb.GetStream("WordDocument");
+            var rc4Word = new Rc4Stream(_wordDocStream, rc4BaseHash, streamStartOffset: 0, leaveOpen: true);
+            
+            // To be perfectly safe, we'll just read through the RC4 stream for the FIB as well, but the FIB is NOT encrypted!
+            // According to [MS-OFFCRYPTO] 2.3.6.2, "The FIB is not encrypted... The encryption starts at the next 512-byte boundary."
+            // Wait! The entire first part of WordDocument stream before FIB.fcMin is unencrypted?
+            // "The algorithm is applied to the remainder of WordDocument stream... starting at offset 0X00000000."
+            // Wait, so we can't just wrap the whole `WordDocument` stream? No, `Rc4Stream` offsets matter!
+        }
+        else if (_fibReader.FEncrypted && _fibReader.FObfuscated)
+        {
+            _cfb.SetEncryptionKey(_fibReader.LKey);
+
+            _wordDocReader.Dispose();
+            _wordDocStream.Dispose();
+
+            _wordDocStream = _cfb.GetDecryptedStream("WordDocument");
+            _tableStream.Dispose();
+            _tableStream = _cfb.GetDecryptedStream(tableName);
+        }
+
+        // Initialize Table Reader (now we have raw or RC4-wrapped or XOR-wrapped table stream)
+        Stream finalTableStream = _tableStream;
+        if (isRc4Encrypted)
+        {
+            // For Table stream, the first lKey bytes are the EncryptionHeader, which are UNENCRYPTED.
+            // But RC4 offset starts at 0. So block encryption is based on absolute offset.
+            finalTableStream = new Rc4Stream(_tableStream, rc4BaseHash!, streamStartOffset: 0, leaveOpen: true);
+        }
+        _tableReader = new BinaryReader(finalTableStream, Encoding.Default, leaveOpen: true);
+
+        // Redo reader for WordDocument (if RC4)
+        Stream finalWordDocStream = _wordDocStream;
+        if (isRc4Encrypted)
+        {
+            // WordDoc encryption is applied but some sections (FIB) might just be copied straight.
+            // We'll wrap the stream and then let individual readers handle reading.
+            // Wait, if we wrap the whole stream but the FIB is unencrypted, reading the FIB again through Rc4Stream will result in garbage!
+            // Actually FibReader already read the FIB from the raw stream above!
+            finalWordDocStream = new Rc4Stream(_wordDocStream, rc4BaseHash!, streamStartOffset: 0, leaveOpen: true);
+        }
+        _wordDocReader = new BinaryReader(finalWordDocStream, Encoding.Default, leaveOpen: true);
 
         // Read floating shape anchors from PlcfSpaMom (best-effort).
         try
@@ -120,9 +169,20 @@ public class DocReader : IDisposable
         // Extract Data stream (optional — contains pictures, OLE objects)
         if (_cfb.HasStream("Data"))
         {
-            _dataStream = _fibReader.FEncrypted
-                ? _cfb.GetDecryptedStream("Data")
-                : _cfb.GetStream("Data");
+            var rawDataStream = _cfb.GetStream("Data");
+            Stream finalDataStream = rawDataStream;
+            
+            if (isRc4Encrypted)
+            {
+                finalDataStream = new Rc4Stream(rawDataStream, rc4BaseHash!, streamStartOffset: 0, leaveOpen: true);
+            }
+            else if (_fibReader.FEncrypted && _fibReader.FObfuscated)
+            {
+                rawDataStream.Dispose();
+                finalDataStream = _cfb.GetDecryptedStream("Data");
+            }
+
+            _dataStream = finalDataStream;
             _dataReader = new BinaryReader(_dataStream, Encoding.Default, leaveOpen: true);
 
             // Initialize OfficeArt/Escher reader on the Data stream (best-effort).

@@ -26,6 +26,7 @@ public class FibReader
     public bool FEncrypted { get; private set; }
     public bool FWhichTblStm { get; private set; }
     public bool FExtChar { get; private set; }
+    public bool FObfuscated { get; private set; }
     public ushort NFibBack { get; private set; }
     public uint LKey { get; private set; }
     public byte Envr { get; private set; }
@@ -164,6 +165,7 @@ public class FibReader
         FEncrypted   = (flagsA & 0x100) != 0;
         FWhichTblStm = (flagsA & 0x200) != 0;
         FExtChar     = (flagsA & 0x1000) != 0;
+        FObfuscated  = (flagsA & 0x8000) != 0;
 
         NFibBack = _reader.ReadUInt16();
         LKey = _reader.ReadUInt32();

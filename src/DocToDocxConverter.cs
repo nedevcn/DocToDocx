@@ -15,9 +15,9 @@ public static class DocToDocxConverter
     /// </summary>
     /// <param name="inputPath">Path to the input .doc file</param>
     /// <param name="outputPath">Path to the output .docx file</param>
-    public static void Convert(string inputPath, string outputPath)
+    public static void Convert(string inputPath, string outputPath, string? password = null)
     {
-        using var reader = new DocReader(inputPath);
+        using var reader = new DocReader(inputPath, password);
         
         Console.WriteLine($"Reading document: {inputPath}");
         reader.Load();
@@ -44,19 +44,19 @@ public static class DocToDocxConverter
     /// <summary>
     /// Converts a DOC file to DOCX format asynchronously
     /// </summary>
-    public static async Task ConvertAsync(string inputPath, string outputPath, CancellationToken cancellationToken = default)
+    public static async Task ConvertAsync(string inputPath, string outputPath, string? password = null, CancellationToken cancellationToken = default)
     {
-        await Task.Run(() => Convert(inputPath, outputPath), cancellationToken);
+        await Task.Run(() => Convert(inputPath, outputPath, password), cancellationToken);
     }
     
     /// <summary>
     /// Converts a DOC file to DOCX format with progress reporting
     /// </summary>
-    public static void Convert(string inputPath, string outputPath, IProgress<ConversionProgress>? progress)
+    public static void Convert(string inputPath, string outputPath, IProgress<ConversionProgress>? progress, string? password = null)
     {
         progress?.Report(new ConversionProgress { Stage = ConversionStage.Reading, PercentComplete = 0 });
         
-        using var reader = new DocReader(inputPath);
+        using var reader = new DocReader(inputPath, password);
         
         progress?.Report(new ConversionProgress { Stage = ConversionStage.Reading, PercentComplete = 20 });
         reader.Load();
@@ -83,9 +83,9 @@ public static class DocToDocxConverter
     /// <summary>
     /// Loads a DOC file and returns the document model
     /// </summary>
-    public static DocumentModel LoadDocument(string inputPath)
+    public static DocumentModel LoadDocument(string inputPath, string? password = null)
     {
-        using var reader = new DocReader(inputPath);
+        using var reader = new DocReader(inputPath, password);
         reader.Load();
         return reader.Document;
     }
@@ -138,25 +138,25 @@ public static class ConverterExtensions
     /// <summary>
     /// Creates a DOCX file from a DOC file (extension method)
     /// </summary>
-    public static void ToDocx(this string inputPath, string outputPath)
+    public static void ToDocx(this string inputPath, string outputPath, string? password = null)
     {
-        DocToDocxConverter.Convert(inputPath, outputPath);
+        DocToDocxConverter.Convert(inputPath, outputPath, password);
     }
     
     /// <summary>
     /// Creates a DOCX file from a DOC file asynchronously
     /// </summary>
-    public static async Task ToDocxAsync(this string inputPath, string outputPath, CancellationToken cancellationToken = default)
+    public static async Task ToDocxAsync(this string inputPath, string outputPath, string? password = null, CancellationToken cancellationToken = default)
     {
-        await DocToDocxConverter.ConvertAsync(inputPath, outputPath, cancellationToken);
+        await DocToDocxConverter.ConvertAsync(inputPath, outputPath, password, cancellationToken);
     }
     
     /// <summary>
     /// Creates a DOCX file from a DOC file with progress reporting
     /// </summary>
-    public static void ToDocx(this string inputPath, string outputPath, IProgress<ConversionProgress>? progress)
+    public static void ToDocx(this string inputPath, string outputPath, IProgress<ConversionProgress>? progress, string? password = null)
     {
-        DocToDocxConverter.Convert(inputPath, outputPath, progress);
+        DocToDocxConverter.Convert(inputPath, outputPath, progress, password);
     }
 }
 
