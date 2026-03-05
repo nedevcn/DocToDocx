@@ -15,7 +15,11 @@ public class DocumentWriter
     private DocumentRelationshipIds? _relationshipIds;
     private readonly Dictionary<string, int> _bookmarkIds = new(StringComparer.Ordinal);
     private int _bookmarkCounter = 0;
-    
+    /// <summary>When true, do not emit pageBreakBefore so leading content (e.g. 绿色等级评价报告) stays on page 1.</summary>
+    private bool _suppressLeadingPageBreak;
+    /// <summary>When true, the next picture written in the body should use full-page dimensions (first-page background).</summary>
+    private bool _firstBodyPictureNotYetWritten;
+
     public DocumentWriter(XmlWriter writer)
     {
         _writer = writer;
@@ -449,6 +453,9 @@ public class DocumentWriter
     private void WriteBody(DocumentModel document)
     {
         _writer.WriteStartElement("w", "body", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+
+        // First picture in body is often the first-page background; use full-page size for it
+        _firstBodyPictureNotYetWritten = true;
         
         // Precompute section boundaries: which paragraph index ends each section
         var sectionEndMap = BuildSectionEndMap(document);
@@ -470,6 +477,9 @@ public class DocumentWriter
         // hints; charts without hints will be emitted near the end.
         var chartsByParagraph = BuildChartsByParagraphMap(document);
 
+        // Suppress leading pageBreakBefore so first visible content (e.g. 绿色等级评价报告) appears on page 1
+        _suppressLeadingPageBreak = true;
+
         // Write content: paragraphs and tables
         int paraIndex = 0;
         while (paraIndex < document.Paragraphs.Count)
@@ -479,6 +489,7 @@ public class DocumentWriter
             if (table != null)
             {
                 WriteTable(table);
+                _suppressLeadingPageBreak = false; // table is visible content
 
                 // If a section ends at the last paragraph index of this table, emit sectPr here
                 var lastParaOfTable = table.EndParagraphIndex;
@@ -495,7 +506,9 @@ public class DocumentWriter
             else
             {
                 var paragraph = document.Paragraphs[paraIndex];
-                WriteParagraph(paragraph);
+                WriteParagraph(paragraph, _suppressLeadingPageBreak);
+                if (_suppressLeadingPageBreak && ParagraphHasVisibleContent(paragraph))
+                    _suppressLeadingPageBreak = false;
 
                 // If a section ends at this paragraph, emit sectPr immediately after it
                 if (sectionEndMap.TryGetValue(paragraph.Index, out var sectionForParagraph))
@@ -698,6 +711,9 @@ public class DocumentWriter
             return;
 
         var image = document.Images[imageIndex];
+        if (image.Data == null || image.Data.Length == 0)
+            return;
+
         var anchor = shape.Anchor!;
 
         // Relationship ID and doc-level image id
@@ -731,19 +747,33 @@ public class DocumentWriter
             heightEmu = (int)(heightEmu * (image.ScaleY / 100000.0));
         }
 
-        // Clamp width to page width (inside margins) while preserving aspect ratio
+        // Full-page background: first body picture or anchor/size close to page → full page dimensions
         if (_document.Properties != null)
         {
             var page = _document.Properties;
-            var maxWidthTwips = page.PageWidth - page.MarginLeft - page.MarginRight;
-            if (maxWidthTwips > 0)
+            int pageWidthEmu = page.PageWidth * emuPerTwip;
+            int pageHeightEmu = page.PageHeight * emuPerTwip;
+            bool forceFirstFullPage = _firstBodyPictureNotYetWritten && pageWidthEmu > 0 && pageHeightEmu > 0;
+            bool looksFullPage = !forceFirstFullPage && (pageWidthEmu > 0 && pageHeightEmu > 0) &&
+                (widthEmu >= pageWidthEmu * 0.85 || heightEmu >= pageHeightEmu * 0.85);
+            if (forceFirstFullPage || looksFullPage)
             {
-                var maxWidthEmu = maxWidthTwips * emuPerTwip;
-                if (widthEmu > maxWidthEmu && widthEmu > 0 && heightEmu > 0)
+                widthEmu = pageWidthEmu;
+                heightEmu = pageHeightEmu;
+                if (forceFirstFullPage) _firstBodyPictureNotYetWritten = false;
+            }
+            else
+            {
+                var maxWidthTwips = page.PageWidth - page.MarginLeft - page.MarginRight;
+                if (maxWidthTwips > 0)
                 {
-                    var scale = (double)maxWidthEmu / widthEmu;
-                    widthEmu = maxWidthEmu;
-                    heightEmu = (int)(heightEmu * scale);
+                    var maxWidthEmu = maxWidthTwips * emuPerTwip;
+                    if (widthEmu > maxWidthEmu && widthEmu > 0 && heightEmu > 0)
+                    {
+                        var scale = (double)maxWidthEmu / widthEmu;
+                        widthEmu = maxWidthEmu;
+                        heightEmu = (int)(heightEmu * scale);
+                    }
                 }
             }
         }
@@ -1532,7 +1562,13 @@ public class DocumentWriter
         _writer.WriteEndElement();
     }
     
-    private void WriteParagraph(ParagraphModel paragraph)
+    private static bool ParagraphHasVisibleContent(ParagraphModel paragraph)
+    {
+        return paragraph.Runs != null && paragraph.Runs.Any(r =>
+            (!string.IsNullOrEmpty(r.Text) && !string.IsNullOrWhiteSpace(r.Text)) || r.IsPicture || r.IsField);
+    }
+
+    private void WriteParagraph(ParagraphModel paragraph, bool suppressPageBreakBefore = false)
     {
         // Filter runs to only those with actual content
         var runsWithContent = paragraph.Runs.Where(r => !string.IsNullOrEmpty(r.Text) || r.IsPicture || r.IsField).ToList();
@@ -1543,7 +1579,7 @@ public class DocumentWriter
         
         if (paragraph.Properties != null)
         {
-            WriteParagraphProperties(paragraph.Properties);
+            WriteParagraphProperties(paragraph.Properties, suppressPageBreakBefore);
         }
         
         foreach (var run in runsWithContent)
@@ -1554,7 +1590,7 @@ public class DocumentWriter
         _writer.WriteEndElement(); // w:p
     }
     
-    private void WriteParagraphProperties(ParagraphProperties props)
+    private void WriteParagraphProperties(ParagraphProperties props, bool suppressPageBreakBefore = false)
     {
         if (props == null) return;
         
@@ -1590,8 +1626,8 @@ public class DocumentWriter
             _writer.WriteEndElement();
         }
         
-        // 4. pageBreakBefore
-        if (props.PageBreakBefore)
+        // 4. pageBreakBefore (suppressed at doc start so first content e.g. 绿色等级评价报告 stays on page 1)
+        if (props.PageBreakBefore && !suppressPageBreakBefore)
         {
             _writer.WriteStartElement("w", "pageBreakBefore", wNs);
             _writer.WriteEndElement();
@@ -1726,13 +1762,50 @@ public class DocumentWriter
     {
         const string wNs = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
         _writer.WriteStartElement("w", "shd", wNs);
-        _writer.WriteAttributeString("w", "val", wNs, "clear");
+        // Use PatternVal (from SHD ipat) when set; otherwise map Pattern enum to OOXML val so pattern/tiled background is preserved
+        var val = !string.IsNullOrEmpty(shading.PatternVal)
+            ? shading.PatternVal
+            : ShadingPatternToShdVal(shading.Pattern);
+        _writer.WriteAttributeString("w", "val", wNs, val);
         if (shading.ForegroundColor != 0)
-        {
             _writer.WriteAttributeString("w", "color", wNs, ColorHelper.ColorToHex(shading.ForegroundColor));
-        }
         _writer.WriteAttributeString("w", "fill", wNs, ColorHelper.ColorToHex(shading.BackgroundColor));
         _writer.WriteEndElement();
+    }
+
+    private static string ShadingPatternToShdVal(ShadingPattern pattern)
+    {
+        return pattern switch
+        {
+            ShadingPattern.Clear => "clear",
+            ShadingPattern.Solid => "solid",
+            ShadingPattern.Percent5 => "pct5",
+            ShadingPattern.Percent10 => "pct10",
+            ShadingPattern.Percent20 => "pct20",
+            ShadingPattern.Percent25 => "pct25",
+            ShadingPattern.Percent30 => "pct30",
+            ShadingPattern.Percent40 => "pct40",
+            ShadingPattern.Percent50 => "pct50",
+            ShadingPattern.Percent60 => "pct60",
+            ShadingPattern.Percent70 => "pct70",
+            ShadingPattern.Percent75 => "pct75",
+            ShadingPattern.Percent80 => "pct80",
+            ShadingPattern.Percent90 => "pct90",
+            ShadingPattern.LightHorizontal => "thinHorzStripe",
+            ShadingPattern.DarkHorizontal => "horzStripe",
+            ShadingPattern.LightVertical => "thinVertStripe",
+            ShadingPattern.DarkVertical => "vertStripe",
+            ShadingPattern.LightDiagonalDown => "thinDiagStripe",
+            ShadingPattern.LightDiagonalUp => "thinReverseDiagStripe",
+            ShadingPattern.DarkDiagonalDown => "diagStripe",
+            ShadingPattern.DarkDiagonalUp => "reverseDiagStripe",
+            ShadingPattern.DarkGrid => "horzCross",
+            ShadingPattern.DarkTrellis => "diagCross",
+            ShadingPattern.LightGray => "pct25",
+            ShadingPattern.MediumGray => "pct50",
+            ShadingPattern.DarkGray => "pct75",
+            _ => "clear"
+        };
     }
     
     private string GetBorderStyle(BorderStyle style)
@@ -1920,12 +1993,18 @@ public class DocumentWriter
 
     /// <summary>
     /// Writes a picture element (w:drawing) for inline images.
+    /// When the image has no data, writes a space to avoid a broken blue placeholder.
     /// </summary>
     private void WritePicture(RunModel run)
     {
         if (run.ImageIndex < 0 || _document == null || run.ImageIndex >= _document.Images.Count) return;
-        
+
         var image = _document.Images[run.ImageIndex];
+        if (image.Data == null || image.Data.Length == 0)
+        {
+            _writer.WriteString(" ");
+            return;
+        }
         var imageId = run.ImageIndex + 1;
         
         // Calculate relationship ID using shared logic
@@ -1946,24 +2025,38 @@ public class DocumentWriter
             heightEmu = (int)(heightEmu * (image.ScaleY / 100000.0));
         }
 
-        // Clamp image width to page width (inside margins) while preserving aspect ratio
-        if (_document != null && _document.Properties != null)
+        // Full-page background: first picture in body always gets full page; else if size ≈ page use full page; else clamp to content
+        const int emuPerTwip = 635; // 1 twip = 1/1440 inch; 1 inch = 914400 EMUs
+        if (_document?.Properties != null)
         {
-            const int emuPerTwip = 635; // 1 twip = 1/1440 inch; 1 inch = 914400 EMUs
             var page = _document.Properties;
-            var maxWidthTwips = page.PageWidth - page.MarginLeft - page.MarginRight;
-            if (maxWidthTwips > 0)
+            int pageWidthEmu = page.PageWidth * emuPerTwip;
+            int pageHeightEmu = page.PageHeight * emuPerTwip;
+            bool forceFirstFullPage = _firstBodyPictureNotYetWritten && pageWidthEmu > 0 && pageHeightEmu > 0;
+            bool looksFullPage = !forceFirstFullPage && (pageWidthEmu > 0 && pageHeightEmu > 0) &&
+                (widthEmu >= pageWidthEmu * 0.85 || heightEmu >= pageHeightEmu * 0.85);
+            if (forceFirstFullPage || looksFullPage)
             {
-                var maxWidthEmu = maxWidthTwips * emuPerTwip;
-                if (widthEmu > maxWidthEmu && widthEmu > 0 && heightEmu > 0)
+                widthEmu = pageWidthEmu;
+                heightEmu = pageHeightEmu;
+                if (forceFirstFullPage) _firstBodyPictureNotYetWritten = false;
+            }
+            else
+            {
+                var maxWidthTwips = page.PageWidth - page.MarginLeft - page.MarginRight;
+                if (maxWidthTwips > 0)
                 {
-                    var scale = (double)maxWidthEmu / widthEmu;
-                    widthEmu = maxWidthEmu;
-                    heightEmu = (int)(heightEmu * scale);
+                    var maxWidthEmu = maxWidthTwips * emuPerTwip;
+                    if (widthEmu > maxWidthEmu && widthEmu > 0 && heightEmu > 0)
+                    {
+                        var scale = (double)maxWidthEmu / widthEmu;
+                        widthEmu = maxWidthEmu;
+                        heightEmu = (int)(heightEmu * scale);
+                    }
                 }
             }
         }
-        
+
         _writer.WriteStartElement("w", "drawing", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
         
         // WP inline element
@@ -2545,7 +2638,8 @@ public class DocumentWriter
     }
     
     /// <summary>
-    /// Removes characters that are invalid in XML 1.0 documents.
+    /// Removes characters that are invalid in XML 1.0 documents and replaces
+    /// U+FFFD (replacement character) with space to avoid black squares in Word.
     /// Valid: #x9 | #xA | #xD | [#x20-#xD7FF] | [#xE000-#xFFFD] | [#x10000-#x10FFFF]
     /// </summary>
     private static string SanitizeXmlString(string text)
@@ -2555,6 +2649,11 @@ public class DocumentWriter
         var sb = new System.Text.StringBuilder(text.Length);
         foreach (char c in text)
         {
+            if (c == '\uFFFD')
+            {
+                sb.Append(' ');
+                continue;
+            }
             if (c == '\t' || c == '\n' || c == '\r' ||
                 (c >= 0x20 && c <= 0xD7FF) ||
                 (c >= 0xE000 && c <= 0xFFFD))

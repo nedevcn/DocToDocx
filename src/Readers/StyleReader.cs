@@ -441,10 +441,18 @@ public class StyleReader
                         style.ParagraphProperties = new FkpParser(null!, null!, _fib, null!).ConvertToParagraphProperties(pap, Styles);
                     }
                 }
-                else if (i == 1) // CHP UPX
+                else if (i == 1) // CHP UPX — per MS-DOC may start with 2-byte istd (char style ref); skip so grpprl is correct
                 {
                     var chp = new ChpBase();
-                    new SprmParser(_tableReader, 0).ApplyToChp(grpprl, chp);
+                    byte[] chpGrpprl;
+                    if (cbUpx > 2)
+                    {
+                        chpGrpprl = new byte[cbUpx - 2];
+                        Array.Copy(grpprl, 2, chpGrpprl, 0, chpGrpprl.Length);
+                    }
+                    else
+                        chpGrpprl = grpprl;
+                    new SprmParser(_tableReader, 0).ApplyToChp(chpGrpprl, chp);
                     style.RunProperties = new FkpParser(null!, null!, _fib, null!).ConvertToRunProperties(chp, Styles);
                 }
             }

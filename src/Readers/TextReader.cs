@@ -1,3 +1,4 @@
+using System.Linq;
 using System.Text;
 using Nedev.DocToDocx.Models;
 using Nedev.DocToDocx.Utils;
@@ -53,21 +54,15 @@ public class TextReader
 
         if (_fib.FComplex)
         {
-            // Complex document: parse CLX from Table stream to get piece table
-            ReadClx();
-            _text = ReconstructTextFromPieces(_fib.CcpText + _fib.CcpFtn + _fib.CcpHdd + _fib.CcpAtn + _fib.CcpEdn + _fib.CcpTxbx + _fib.CcpHdrTxbx);
+            ReadClxInternal();
+            _text = ReconstructTextFromPieces(_fib.CcpText + _fib.CcpFtn + _fib.CcpHdd + _fib.CcpAtn + _fib.CcpEdn + _fib.CcpTxbx + _fib.CcpHdrTxbx, null);
         }
         else
         {
-            // Simple (non-complex) document: text starts at offset 0 in WordDocument stream
-            // after the FIB header. For Word 97+, text is at fcMin.
-            // In practice, for non-complex docs, the text for CPs [0..ccpText) is at
-            // a fixed offset. We use piece table logic uniformly when possible.
-            // Fallback: read directly from WordDocument stream.
-            ReadClx(); // Even non-complex docs may have a CLX
+            ReadClxInternal();
             if (_pieces.Count > 0)
             {
-                _text = ReconstructTextFromPieces(_fib.CcpText + _fib.CcpFtn + _fib.CcpHdd + _fib.CcpAtn + _fib.CcpEdn + _fib.CcpTxbx + _fib.CcpHdrTxbx);
+                _text = ReconstructTextFromPieces(_fib.CcpText + _fib.CcpFtn + _fib.CcpHdd + _fib.CcpAtn + _fib.CcpEdn + _fib.CcpTxbx + _fib.CcpHdrTxbx, null);
             }
             else
             {
@@ -76,6 +71,20 @@ public class TextReader
         }
 
         return _text;
+    }
+
+    /// <summary>
+    /// Rebuilds document text from the piece table using optional per-CP CHP (for Lid-based encoding).
+    /// Call ReadClx() and then FkpParser.ReadChpProperties() before this; pass the CHP map to use run-level Lid.
+    /// </summary>
+    public void SetTextFromPieces(int totalCpCount, IReadOnlyDictionary<int, ChpBase>? chpMap)
+    {
+        if (_pieces.Count == 0)
+        {
+            _text = ReadSimpleText();
+            return;
+        }
+        _text = ReconstructTextFromPieces(totalCpCount, chpMap);
     }
 
     /// <summary>
@@ -93,10 +102,15 @@ public class TextReader
     // ─── CLX Parsing ────────────────────────────────────────────────
 
     /// <summary>
-    /// Reads the CLX structure from the Table stream.
-    /// CLX = array of Prc (optional grpprl prefixed by clxt=1) + Pcdt (piece table, clxt=2)
+    /// Reads the CLX structure from the Table stream (piece table).
+    /// Call this before ReadChpProperties if using per-run Lid for decoding.
     /// </summary>
-    private void ReadClx()
+    public void ReadClx()
+    {
+        ReadClxInternal();
+    }
+
+    private void ReadClxInternal()
     {
         if (_fib.FcClx == 0 || _fib.LcbClx == 0)
             return;
@@ -166,6 +180,7 @@ public class TextReader
                 CpStart = cps[i],
                 CpEnd = cps[i + 1],
                 FileOffset = pcd.fc,
+                RawFcMasked = pcd.rawFcMasked,
                 IsUnicode = !pcd.fCompressed,
                 Prm = pcd.prm
             };
@@ -179,54 +194,104 @@ public class TextReader
     ///   fc         (4 bytes) - file offset in WordDocument stream
     ///   prm        (2 bytes) - property modifier
     ///
-    /// fc encoding:
-    ///   If bit 30 is set (0x40000000), the text is ANSI (compressed).
-    ///   The actual byte offset = (fc &amp; ~0x40000000) / 2  (for compressed)
-    ///   or = fc  (for Unicode).
+    /// fc encoding (MS-DOC FcCompressed): low 30 bits = fc, bit 30 = fCompressed, bit 31 = reserved.
+    ///   If fCompressed (bit 30) is set: text is ANSI, byte offset = fc/2.
+    ///   If fCompressed is 0: text is UTF-16LE, byte offset = fc (30-bit value).
     /// </summary>
-    private (uint fc, bool fCompressed, ushort prm) ReadPcd()
+    private (uint fc, bool fCompressed, uint rawFcMasked, ushort prm) ReadPcd()
     {
-        // Bytes 0-1: first word (ignored)
         TableReader.ReadUInt16();
-
-        // Bytes 2-5: fc with encoding flag
         var rawFc = TableReader.ReadUInt32();
-
         bool fCompressed = (rawFc & 0x40000000) != 0;
-        uint fc;
-        if (fCompressed)
-        {
-            // ANSI text: real byte offset = (rawFc & ~0x40000000) / 2
-            fc = (rawFc & 0x3FFFFFFF) / 2;
-        }
-        else
-        {
-            // Unicode text: fc is byte offset as-is
-            fc = rawFc;
-        }
-
-        // Bytes 6-7: prm (property modifier)
+        var rawFcMasked = rawFc & 0x3FFFFFFFu; // 30-bit fc only
+        uint fc = fCompressed ? rawFcMasked / 2 : rawFcMasked; // Unicode: byte offset = fc; Compressed: byte offset = fc/2
         var prm = TableReader.ReadUInt16();
-
-        return (fc, fCompressed, prm);
+        return (fc, fCompressed, rawFcMasked, prm);
     }
 
     // ─── Text Reconstruction ────────────────────────────────────────
 
     /// <summary>
-    /// Reconstructs the main document text from piece table entries.
-    /// Includes all characters in the total CP range.
+    /// Scores how "valid" a decoded string looks. Penalizes replacement chars and mojibake-like
+    /// symbols; rewards normal letters, digits, CJK. Used to pick the best decode for compressed pieces.
     /// </summary>
-    private string ReconstructTextFromPieces(int totalCpCount)
+    private static int DecodeQuality(string s)
+    {
+        if (string.IsNullOrEmpty(s)) return 0;
+        int score = 0;
+        int cjkCount = 0;
+        foreach (var c in s)
+        {
+            if (c == '\uFFFD') score -= 50;  // replacement char = strong mojibake signal
+            else if (c >= '\u4E00' && c <= '\u9FFF') { score += 5; cjkCount++; }  // CJK unified
+            else if (c >= '\u3400' && c <= '\u4DBF') { score += 5; cjkCount++; }  // CJK extension A
+            else if (c >= '\u3000' && c <= '\u303F') score += 4;  // CJK symbols/punctuation
+            else if (c >= '\u3040' && c <= '\u309F') { score += 4; cjkCount++; }  // Hiragana
+            else if (c >= '\u30A0' && c <= '\u30FF') { score += 4; cjkCount++; }  // Katakana
+            else if (c >= '\uAC00' && c <= '\uD7AF') { score += 4; cjkCount++; }  // Hangul syllables
+            else if (char.IsLetterOrDigit(c) || c == ' ' || c == '\t' || c == '\r' || c == '\n') score += 2;
+            else if (c >= 0x0B80 && c <= 0x0BFF) score -= 8;   // Malayalam (common in mojibake)
+            else if (c >= 0x24B6 && c <= 0x24FF) score -= 5;   // enclosed alphanumerics
+            else if (c >= 0x27F0 && c <= 0x27FF) score -= 5;   // supplementary arrows
+            else if (c >= 0x00C0 && c <= 0x00FF && cjkCount > 0) score -= 3;  // Latin-1 accented when doc has CJK (likely wrong)
+            else if (!char.IsControl(c)) score += 1;
+        }
+        // Bonus if string has CJK: prefer this decode when we're deciding between encodings
+        if (cjkCount > 0) score += cjkCount;
+        return score;
+    }
+
+    /// <summary>
+    /// Gets the encoding for compressed (ANSI) text from the document's language ID (FIB lid).
+    /// Note: Some Word versions store Lid=0x0409 (English) even for East Asian documents.
+    /// </summary>
+    private static Encoding GetEncodingForCompressedText(ushort lid)
+    {
+        try
+        {
+            if (lid == 0x0804 || lid == 0x0404) return Encoding.GetEncoding(936);   // Chinese Simplified/Traditional → GBK
+            if (lid == 0x0411) return Encoding.GetEncoding(932);                    // Japanese → Shift-JIS
+            if (lid == 0x0412) return Encoding.GetEncoding(949);                   // Korean → EUC-KR
+        }
+        catch (ArgumentException) { }
+        return Encoding.GetEncoding(1252); // Western default
+    }
+
+    /// <summary>
+    /// Tries to get additional encodings to try for compressed pieces (e.g. when Lid is wrong or mixed content).
+    /// </summary>
+    private static List<Encoding> GetExtraEncodingsForCompressed(ushort lid)
+    {
+        var list = new List<Encoding>();
+        foreach (var cp in new[] { 936, 950, 54936, 65001, 932, 949 })  // GBK, Big5, GB18030, UTF-8, Shift-JIS, EUC-KR
+        {
+            try
+            {
+                var enc = Encoding.GetEncoding(cp);
+                if (!list.Any(e => e.CodePage == enc.CodePage))
+                    list.Add(enc);
+            }
+            catch (ArgumentException) { }
+        }
+        if (lid != 0x0804 && lid != 0x0404 && lid != 0x0411 && lid != 0x0412)
+        {
+            try { list.Add(Encoding.GetEncoding(1252)); } catch { }
+        }
+        return list;
+    }
+
+    /// <summary>
+    /// Reconstructs the main document text from piece table entries.
+    /// When chpMap is provided, uses per-run Lid for compressed pieces (fixes mixed-language partial mojibake).
+    /// </summary>
+    private string ReconstructTextFromPieces(int totalCpCount, IReadOnlyDictionary<int, ChpBase>? chpMap)
     {
         if (_pieces.Count == 0) return string.Empty;
 
-        // Use a safe total count for the builder
         var sb = new StringBuilder(Math.Max(0, totalCpCount));
 
         foreach (var piece in _pieces)
         {
-            // Read all characters within the piece that fall within the requested total CP range
             var cpStart = piece.CpStart;
             var cpEnd = Math.Min(piece.CpEnd, totalCpCount);
             if (cpStart >= cpEnd) continue;
@@ -236,25 +301,181 @@ public class TextReader
 
             if (piece.IsUnicode)
             {
-                // Unicode (UTF-16LE): each character is 2 bytes
-                var byteOffset = piece.FileOffset;
-                _wordDocReader.BaseStream.Seek(byteOffset, SeekOrigin.Begin);
-                var bytes = _wordDocReader.ReadBytes(charCount * 2);
-                sb.Append(Encoding.Unicode.GetString(bytes, 0, Math.Min(bytes.Length, charCount * 2)));
+                var byteCount = charCount * 2;
+                if (piece.FileOffset + byteCount > _wordDocReader.BaseStream.Length)
+                    byteCount = (int)Math.Max(0, _wordDocReader.BaseStream.Length - piece.FileOffset);
+                if (byteCount <= 0) continue;
+                byteCount &= ~1;
+                _wordDocReader.BaseStream.Seek(piece.FileOffset, SeekOrigin.Begin);
+                var bytes = _wordDocReader.ReadBytes(byteCount);
+                if (bytes.Length >= 2)
+                    sb.Append(Encoding.Unicode.GetString(bytes, 0, bytes.Length - (bytes.Length % 2)));
             }
             else
             {
-                // ANSI (compressed): each character is 1 byte
-                var byteOffset = piece.FileOffset;
-                _wordDocReader.BaseStream.Seek(byteOffset, SeekOrigin.Begin);
-                var bytes = _wordDocReader.ReadBytes(charCount);
-                // 8-bit text in Word is usually ISO-8859-1 (Latin-1) or mapped directly to Unicode 0-255
-                var encoding = Encoding.GetEncoding("iso-8859-1");
-                sb.Append(encoding.GetString(bytes, 0, Math.Min(bytes.Length, charCount)));
+                string pieceText = DecodeCompressedPiece(piece, cpStart, cpEnd, charCount, chpMap);
+                sb.Append(pieceText);
             }
         }
 
         return sb.ToString();
+    }
+
+    /// <summary>
+    /// Decodes a single compressed piece, optionally per-run by chpMap Lid to fix partial mojibake.
+    /// </summary>
+    private string DecodeCompressedPiece(Piece piece, int cpStart, int cpEnd, int charCount, IReadOnlyDictionary<int, ChpBase>? chpMap)
+    {
+        // Run-level decoding: when chpMap has boundaries inside this piece, decode each run with its own Lid
+        if (chpMap != null && chpMap.Count > 0)
+        {
+            var boundaries = chpMap.Keys.Where(cp => cp > cpStart && cp < cpEnd).OrderBy(cp => cp).ToList();
+            if (boundaries.Count > 0)
+            {
+                var sb = new StringBuilder(charCount);
+                int runStart = cpStart;
+                foreach (var runEndCp in boundaries)
+                {
+                    var runLen = runEndCp - runStart;
+                    if (runLen <= 0) continue;
+                    ushort lid = _fib.Lid;
+                    if (chpMap.TryGetValue(runStart, out var chp) && chp.Language != 0)
+                        lid = (ushort)(chp.Language & 0xFFFF);
+                    var runBytes = ReadCompressedPieceSlice(piece, runStart - cpStart, runLen);
+                    sb.Append(DecodeCompressedBytes(runBytes, lid));
+                    runStart = runEndCp;
+                }
+                if (runStart < cpEnd)
+                {
+                    ushort lid = _fib.Lid;
+                    if (chpMap.TryGetValue(runStart, out var chp) && chp.Language != 0)
+                        lid = (ushort)(chp.Language & 0xFFFF);
+                    var runBytes = ReadCompressedPieceSlice(piece, runStart - cpStart, cpEnd - runStart);
+                    sb.Append(DecodeCompressedBytes(runBytes, lid));
+                }
+                return sb.ToString();
+            }
+        }
+
+        // Piece-level: single Lid at piece start
+        ushort pieceLid = _fib.Lid;
+        if (chpMap != null && chpMap.TryGetValue(cpStart, out var pieceChp) && pieceChp.Language != 0)
+            pieceLid = (ushort)(pieceChp.Language & 0xFFFF);
+        return DecodeCompressedPieceWithLid(piece, charCount, pieceLid);
+    }
+
+    private byte[] ReadCompressedPieceSlice(Piece piece, int byteOffset, int byteCount)
+    {
+        if (byteCount <= 0) return Array.Empty<byte>();
+        var streamOffset = piece.FileOffset + (uint)byteOffset;
+        if (streamOffset + byteCount > _wordDocReader.BaseStream.Length)
+            byteCount = (int)Math.Max(0, _wordDocReader.BaseStream.Length - streamOffset);
+        if (byteCount <= 0) return Array.Empty<byte>();
+        _wordDocReader.BaseStream.Seek(streamOffset, SeekOrigin.Begin);
+        return _wordDocReader.ReadBytes(byteCount);
+    }
+
+    /// <summary>
+    /// Tries multiple encodings and offsets for a compressed piece; prefers Unicode when ANSI decode is poor.
+    /// </summary>
+    private string DecodeCompressedPieceWithLid(Piece piece, int charCount, ushort lid)
+    {
+        var bestStr = "";
+        var bestScore = int.MinValue;
+        string? unicodeStrAtFc = null;
+        int unicodeScoreAtFc = int.MinValue;
+        string? unicodeStrAtRaw = null;
+        int unicodeScoreAtRaw = int.MinValue;
+        byte[] ansiBytes = Array.Empty<byte>();
+
+        // 1. Unicode at RawFcMasked
+        _wordDocReader.BaseStream.Seek(piece.RawFcMasked, SeekOrigin.Begin);
+        if (piece.RawFcMasked + (uint)(charCount * 2) <= _wordDocReader.BaseStream.Length)
+        {
+            var s1 = Encoding.Unicode.GetString(_wordDocReader.ReadBytes(charCount * 2), 0, charCount * 2);
+            var q1 = DecodeQuality(s1);
+            unicodeStrAtRaw = s1;
+            unicodeScoreAtRaw = q1;
+            if (q1 > bestScore) { bestScore = q1; bestStr = s1; }
+        }
+
+        // 2. Unicode at FileOffset (standard for "compressed" flag with UTF-16 data)
+        _wordDocReader.BaseStream.Seek(piece.FileOffset, SeekOrigin.Begin);
+        if (piece.FileOffset + (uint)(charCount * 2) <= _wordDocReader.BaseStream.Length)
+        {
+            var s2 = Encoding.Unicode.GetString(_wordDocReader.ReadBytes(charCount * 2), 0, charCount * 2);
+            var q2 = DecodeQuality(s2);
+            unicodeStrAtFc = s2;
+            unicodeScoreAtFc = q2;
+            if (q2 > bestScore) { bestScore = q2; bestStr = s2; }
+        }
+
+        // 3. ANSI at FileOffset
+        _wordDocReader.BaseStream.Seek(piece.FileOffset, SeekOrigin.Begin);
+        ansiBytes = _wordDocReader.ReadBytes(charCount);
+        var encLid = GetEncodingForCompressedText(lid);
+        var s3 = encLid.GetString(ansiBytes);
+        var q3 = DecodeQuality(s3);
+        if (q3 > bestScore) { bestScore = q3; bestStr = s3; }
+
+        // 4. ANSI at RawFcMasked
+        if (piece.RawFcMasked + (uint)charCount <= _wordDocReader.BaseStream.Length)
+        {
+            _wordDocReader.BaseStream.Seek(piece.RawFcMasked, SeekOrigin.Begin);
+            var ansiBytesAlt = _wordDocReader.ReadBytes(charCount);
+            var s4 = encLid.GetString(ansiBytesAlt);
+            var q4 = DecodeQuality(s4);
+            if (q4 > bestScore) { bestScore = q4; bestStr = s4; ansiBytes = ansiBytesAlt; }
+        }
+
+        // 5. Extra code pages on the best ansi bytes we have
+        foreach (var enc in GetExtraEncodingsForCompressed(lid))
+        {
+            if (enc.CodePage == encLid.CodePage) continue;
+            try
+            {
+                var s = enc.GetString(ansiBytes);
+                var q = DecodeQuality(s);
+                if (q > bestScore) { bestScore = q; bestStr = s; }
+            }
+            catch { /* ignore */ }
+        }
+
+        // Prefer Unicode when ANSI result is clearly bad (replacement chars or very low score)
+        bool ansiHasReplacement = bestStr.Contains('\uFFFD');
+        bool ansiLowQuality = bestScore < 0 || (bestStr.Length > 0 && bestScore < bestStr.Length);
+        var bestUnicodeScore = Math.Max(unicodeScoreAtFc, unicodeScoreAtRaw);
+        var bestUnicodeStr = unicodeScoreAtFc >= unicodeScoreAtRaw ? unicodeStrAtFc : unicodeStrAtRaw;
+        if (bestUnicodeStr != null && !bestUnicodeStr.Contains('\uFFFD') && bestUnicodeScore > 0 &&
+            (ansiHasReplacement || (ansiLowQuality && bestUnicodeScore >= bestScore)))
+            bestStr = bestUnicodeStr;
+
+        if (string.IsNullOrEmpty(bestStr) && ansiBytes.Length > 0)
+            bestStr = encLid.GetString(ansiBytes);
+        return bestStr;
+    }
+
+    /// <summary>
+    /// Decodes a byte slice as compressed (ANSI) text with given Lid; tries multiple encodings.
+    /// </summary>
+    private string DecodeCompressedBytes(byte[] bytes, ushort lid)
+    {
+        if (bytes.Length == 0) return string.Empty;
+        var encLid = GetEncodingForCompressedText(lid);
+        var bestStr = encLid.GetString(bytes);
+        var bestScore = DecodeQuality(bestStr);
+        foreach (var enc in GetExtraEncodingsForCompressed(lid))
+        {
+            if (enc.CodePage == encLid.CodePage) continue;
+            try
+            {
+                var s = enc.GetString(bytes);
+                var q = DecodeQuality(s);
+                if (q > bestScore) { bestScore = q; bestStr = s; }
+            }
+            catch { /* ignore */ }
+        }
+        return bestStr;
     }
 
     /// <summary>
@@ -263,19 +484,12 @@ public class TextReader
     /// </summary>
     private string ReadSimpleText()
     {
-        // For non-complex Word 97+ docs, text starts at CP 0 in the WordDocument stream
-        // The byte offset depends on whether the text is Unicode or ANSI.
-        // According to MS-DOC, for non-complex documents, text starts at fcMin
-        // which is typically at offset 0x200 (512 bytes) after the FIB.
-        // However, we should calculate this properly based on FIB size.
-
+        // For non-complex Word 97+ docs, text starts at CP 0 in the WordDocument stream.
+        // MS-DOC: FcMin in FIB is the byte offset of the first character of main document.
         var ccpText = _fib.CcpText;
         if (ccpText <= 0) return string.Empty;
 
-        // Calculate the text offset based on FIB version
-        // Word 97+ FIB is typically 512 bytes (0x200) for the base structure
-        // But we should be more flexible and try different offsets
-        var textOffset = 0x200; // Default offset for Word 97+
+        var textOffset = _fib.FcMin > 0 ? (int)_fib.FcMin : 0x200; // Use FIB FcMin, fallback 0x200
 
         // Try reading as Unicode from calculated offset
         try
@@ -287,15 +501,23 @@ public class TextReader
             var text = Encoding.Unicode.GetString(bytes);
             
             // If text contains too many null characters or control characters,
-            // it might be ANSI or the offset is wrong
+            // it might be ANSI or the offset is wrong — try ANSI and multiple code pages
             var nullCount = text.Count(c => c == '\0');
-            if (nullCount > ccpText * 0.5) // More than 50% nulls
+            if (nullCount > ccpText * 0.5)
             {
-                // Try reading as ANSI
                 _wordDocReader.BaseStream.Seek(textOffset, SeekOrigin.Begin);
                 var ansiBytes = _wordDocReader.ReadBytes(ccpText);
-                var ansiEncoding = Encoding.GetEncoding(1252);
-                text = ansiEncoding.GetString(ansiBytes);
+                var encLid = GetEncodingForCompressedText(_fib.Lid);
+                text = encLid.GetString(ansiBytes);
+                var bestScore = DecodeQuality(text);
+                foreach (var enc in GetExtraEncodingsForCompressed(_fib.Lid))
+                {
+                    if (enc.CodePage == encLid.CodePage) continue;
+                    string s;
+                    try { s = enc.GetString(ansiBytes); } catch { continue; }
+                    var q = DecodeQuality(s);
+                    if (q > bestScore) { bestScore = q; text = s; }
+                }
             }
             
             return text;
@@ -322,6 +544,9 @@ public class Piece
 
     /// <summary>Byte offset in the WordDocument stream</summary>
     public uint FileOffset { get; set; }
+
+    /// <summary>Raw PCD fc with bit 30 masked (for alternate offset when re-decoding compressed as Unicode)</summary>
+    public uint RawFcMasked { get; set; }
 
     /// <summary>True if text at this offset is Unicode (UTF-16LE), false if ANSI</summary>
     public bool IsUnicode { get; set; }

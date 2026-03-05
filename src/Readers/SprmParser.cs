@@ -87,6 +87,13 @@ public class SprmParser
         var sprmCode = sprm.Code & 0x01FF;
         var sgc = (sprm.Code >> 13) & 0x07;
         
+        // sprmCPicLocation (0x6A03) - picture position in Data stream; sgc can be 2 or 3 in practice
+        if (sprm.Code == 0x6A03 && sprm.OperandSize == 4)
+        {
+            chp.FcPic = (uint)sprm.Operand;
+            return;
+        }
+
         // sgc=2 is CHP (Character Properties). Some PAP/TAP might override CHP, so relax strictness
         if (sgc != 2 && sgc != 1) return;
 
@@ -173,7 +180,24 @@ public class SprmParser
             case 0x14: pap.SpaceAfter = (int)(short)sprm.Operand; break; // sprmPDyaAfter
             case 0x40: pap.OutlineLevel = (byte)sprm.Operand; break; // sprmPOutlineLvl
             case 0x61: pap.Justification = (byte)sprm.Operand; break; // sprmPJc
-            
+            // sprmPShd — paragraph shading (SHDOperand or Shd)
+            case 0x0C:
+                if (sprm.VariableOperand != null && sprm.VariableOperand.Length >= 4)
+                {
+                    try
+                    {
+                        ParseShdOperand(sprm.VariableOperand, out var fore, out var back, out var patternVal);
+                        pap.Shading = new ShadingInfo
+                        {
+                            ForegroundColor = fore,
+                            BackgroundColor = back,
+                            PatternVal = patternVal
+                        };
+                    }
+                    catch { /* ignore */ }
+                }
+                break;
+
             // --- Word 6 (8-bit) SPRM Opcodes (Fallbacks) ---
             case 0x02: pap.StyleId = (ushort)sprm.Operand; break;
             case 0x15: pap.LineSpacing = (int)sprm.Operand; break;
@@ -315,21 +339,18 @@ public class SprmParser
             case 0x0A: break;
             case 0x0B: break;
             case 0x0C: break;
-            // sprmTShd — table shading for the whole table (fallback when no per-cell SHD).
-            // The operand is a SHD structure; for now we only map foreground/background colors.
+            // sprmTShd — table shading. Operand can be SHDOperand (cb=10 + Shd 10 bytes) or short form.
             case 0x0D:
-                if (sprm.VariableOperand != null && sprm.VariableOperand.Length >= 2 * 2)
+                if (sprm.VariableOperand != null && sprm.VariableOperand.Length >= 4)
                 {
                     try
                     {
-                        using var shdMs = new MemoryStream(sprm.VariableOperand);
-                        using var shdReader = new BinaryReader(shdMs);
-                        // Per MS-DOC, SHD starts with two WORDs: icoFore, icoBack (or similar).
-                        var icoFore = shdReader.ReadUInt16();
-                        var icoBack = shdReader.ReadUInt16();
+                        ParseShdOperand(sprm.VariableOperand, out var fore, out var back, out var patternVal);
                         tap.Shading ??= new ShadingInfo();
-                        tap.Shading.ForegroundColor = icoFore;
-                        tap.Shading.BackgroundColor = icoBack;
+                        tap.Shading.ForegroundColor = fore;
+                        tap.Shading.BackgroundColor = back;
+                        if (patternVal != null)
+                            tap.Shading.PatternVal = patternVal;
                     }
                     catch
                     {
@@ -356,6 +377,83 @@ public class SprmParser
             case 0x1E: break;
             case 0x1F: break;
         }
+    }
+
+    /// <summary>
+    /// Parses SHD/SHDOperand: full Shd (cvFore 4, cvBack 4, ipat 2) or legacy icoFore/icoBack (2+2).
+    /// COLORREF is 0x00BBGGRR; we output RGB as int for ColorHelper.
+    /// </summary>
+    private static void ParseShdOperand(byte[] data, out int foreColor, out int backColor, out string? patternVal)
+    {
+        foreColor = 0;
+        backColor = 0;
+        patternVal = null;
+        int offset = 0;
+        if (data.Length == 11 && data[0] == 10)
+            offset = 1; // SHDOperand: cb=10, then Shd
+        if (data.Length >= offset + 10)
+        {
+            var cvFore = BitConverter.ToUInt32(data, offset);
+            var cvBack = BitConverter.ToUInt32(data, offset + 4);
+            var ipat = BitConverter.ToUInt16(data, offset + 8);
+            // Store as int; ColorHelper.ColorToHex expects COLORREF (0x00BBGGRR) for values > 16
+            foreColor = (int)cvFore;
+            backColor = (int)cvBack;
+            patternVal = IpatToShdVal(ipat);
+            return;
+        }
+        if (data.Length >= offset + 4)
+        {
+            foreColor = BitConverter.ToUInt16(data, offset);
+            backColor = BitConverter.ToUInt16(data, offset + 2);
+            patternVal = "clear";
+        }
+    }
+
+    /// <summary>Maps MS-DOC Ipat to OOXML w:shd val per [MS-DOC] 2.9.121.</summary>
+    private static string? IpatToShdVal(ushort ipat)
+    {
+        if (ipat == 0xFFFF) return "nil";
+        return ipat switch
+        {
+            0 => "clear",
+            1 => "solid",
+            2 => "pct5",
+            3 => "pct10",
+            4 => "pct20",
+            5 => "pct25",
+            6 => "pct30",
+            7 => "pct40",
+            8 => "pct50",
+            9 => "pct60",
+            0x0A => "pct70",
+            0x0B => "pct75",
+            0x0C => "pct80",
+            0x0D => "pct90",
+            0x0E => "horzStripe",
+            0x0F => "vertStripe",
+            0x10 => "reverseDiagStripe",
+            0x11 => "diagStripe",
+            0x12 => "horzCross",
+            0x13 => "diagCross",
+            0x14 => "thinHorzStripe",
+            0x15 => "thinVertStripe",
+            0x16 => "thinReverseDiagStripe",
+            0x17 => "thinDiagStripe",
+            0x18 => "thinHorzCross",
+            0x19 => "thinDiagCross",
+            0x25 => "pct12",
+            0x26 => "pct15",
+            0x2B => "pct35",
+            0x2C => "pct37",
+            0x2E => "pct45",
+            0x31 => "pct55",
+            0x33 => "pct62",
+            0x34 => "pct65",
+            0x39 => "pct85",
+            0x3C => "pct95",
+            _ => "clear"
+        };
     }
 
     /// <summary>
@@ -446,6 +544,8 @@ public class ChpBase
     public bool IsOutline { get; set; }
     public int Kerning { get; set; }
     public int Position { get; set; }
+    /// <summary>File character offset in Data stream for picture (sprmCPicLocation).</summary>
+    public uint FcPic { get; set; }
     public int Scale { get; set; } = 100;
     public byte HighlightColor { get; set; }
     public bool IsShadow { get; set; }
@@ -476,6 +576,8 @@ public class PapBase
     public int ListFormatId { get; set; }
     public byte ListLevel { get; set; }
     public int ListFormatOverrideId { get; set; }
+    /// <summary>Paragraph-level shading (background/pattern) when sprmPShd is present.</summary>
+    public ShadingInfo? Shading { get; set; }
     // Associated table properties (TAP) decoded from the same GRPPRL, when present.
     public TapBase? Tap { get; set; }
 }

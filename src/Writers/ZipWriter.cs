@@ -151,13 +151,18 @@ public class ZipWriter : IDisposable
             writer.WriteSettings();
         });
         
-        // Write images
+        // Write images (use minimal 1x1 PNG when image has no data to avoid broken/corrupt part)
         for (int i = 0; i < document.Images.Count; i++)
         {
             var image = document.Images[i];
             var extension = GetImageExtension(image.Type);
-            
-            AddBinaryEntry($"word/media/image{i + 1}{extension}", image.Data);
+            var data = image.Data;
+            if (data == null || data.Length == 0)
+            {
+                data = MinimalTransparentPng;
+                extension = ".png";
+            }
+            AddBinaryEntry($"word/media/image{i + 1}{extension}", data);
         }
         
         // Write headers and footers - simplified approach: create only one header and one footer file
@@ -194,6 +199,9 @@ public class ZipWriter : IDisposable
         _archive?.Dispose();
     }
     
+    /// <summary>Minimal 1x1 transparent PNG (67 bytes) for placeholder when image has no data.</summary>
+    private static readonly byte[] MinimalTransparentPng = Convert.FromBase64String("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVQYV2NgYAAAAAMAAWgmWQ0AAAAASUVORK5CYII=");
+
     private static string GetImageExtension(ImageType type)
     {
         return type switch
@@ -287,27 +295,85 @@ public class ZipWriter : IDisposable
     }
     
     /// <summary>
-    /// Writes footnotes to the archive
+    /// Writes footnotes to the archive (and footnote part relationships if images are used).
     /// </summary>
     private void WriteFootnotes(DocumentModel document)
     {
+        var (noteRels, imageMap) = BuildNotePartImageRels(document, document.Footnotes.Cast<NoteModelBase>().ToList());
+        if (noteRels.Count > 0)
+        {
+            AddXmlEntry("word/_rels/footnotes.xml.rels", w => WritePartRels(w, noteRels));
+        }
         AddXmlEntry("word/footnotes.xml", w =>
         {
             var writer = new FootnotesWriter(w);
-            writer.WriteFootnotes(document.Footnotes);
+            writer.WriteFootnotes(document.Footnotes, document, imageMap);
         });
     }
-    
+
     /// <summary>
-    /// Writes endnotes to the archive
+    /// Writes endnotes to the archive (and endnote part relationships if images are used).
     /// </summary>
     private void WriteEndnotes(DocumentModel document)
     {
+        var (noteRels, imageMap) = BuildNotePartImageRels(document, document.Endnotes.Cast<NoteModelBase>().ToList());
+        if (noteRels.Count > 0)
+        {
+            AddXmlEntry("word/_rels/endnotes.xml.rels", w => WritePartRels(w, noteRels));
+        }
         AddXmlEntry("word/endnotes.xml", w =>
         {
             var writer = new FootnotesWriter(w);
-            writer.WriteEndnotes(document.Endnotes);
+            writer.WriteEndnotes(document.Endnotes, document, imageMap);
         });
+    }
+
+    /// <summary>
+    /// Collects image indices used in notes and builds (rels entries, imageIndex -> rId map).
+    /// </summary>
+    private static (List<(string rId, string Target)> rels, Dictionary<int, string> imageIndexToRelId) BuildNotePartImageRels(DocumentModel document, List<NoteModelBase> notes)
+    {
+        var order = new List<int>();
+        var seen = new HashSet<int>();
+        foreach (var note in notes)
+        {
+            foreach (var para in note.Paragraphs)
+            {
+                foreach (var run in para.Runs)
+                {
+                    if (!run.IsPicture || run.ImageIndex < 0 || run.ImageIndex >= document.Images.Count) continue;
+                    if (seen.Add(run.ImageIndex))
+                        order.Add(run.ImageIndex);
+                }
+            }
+        }
+        var rels = new List<(string rId, string Target)>();
+        var imageIndexToRelId = new Dictionary<int, string>();
+        for (int i = 0; i < order.Count; i++)
+        {
+            var imageIndex = order[i];
+            var ext = GetImageExtension(document.Images[imageIndex].Type);
+            var rId = $"rId{i + 1}";
+            rels.Add((rId, $"../media/image{imageIndex + 1}{ext}"));
+            imageIndexToRelId[imageIndex] = rId;
+        }
+        return (rels, imageIndexToRelId);
+    }
+
+    private static void WritePartRels(XmlWriter w, List<(string rId, string Target)> rels)
+    {
+        w.WriteStartDocument();
+        w.WriteStartElement("Relationships", "http://schemas.openxmlformats.org/package/2006/relationships");
+        foreach (var (rId, target) in rels)
+        {
+            w.WriteStartElement("Relationship", "http://schemas.openxmlformats.org/package/2006/relationships");
+            w.WriteAttributeString("Id", rId);
+            w.WriteAttributeString("Type", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/image");
+            w.WriteAttributeString("Target", target);
+            w.WriteEndElement();
+        }
+        w.WriteEndElement();
+        w.WriteEndDocument();
     }
 
     /// <summary>

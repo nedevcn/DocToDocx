@@ -415,9 +415,10 @@ public class FkpParser
 
     public ParagraphProperties ConvertToParagraphProperties(PapBase pap, StyleSheet styles)
     {
+        var styleIndex = pap.StyleId != 0 ? pap.StyleId : pap.Istd;
         return new ParagraphProperties
         {
-            StyleIndex = pap.StyleId,
+            StyleIndex = styleIndex,
             Alignment = (ParagraphAlignment)pap.Justification,
             IndentLeft = pap.IndentLeft,
             IndentRight = pap.IndentRight,
@@ -431,7 +432,8 @@ public class FkpParser
             PageBreakBefore = pap.PageBreakBefore,
             ListFormatId = pap.ListFormatId,
             ListLevel = pap.ListLevel,
-            OutlineLevel = pap.OutlineLevel
+            OutlineLevel = pap.OutlineLevel,
+            Shading = pap.Shading
         };
     }
 

@@ -206,6 +206,9 @@ public class RunModel
     /// <summary>Image index in document.Images list</summary>
     public int ImageIndex { get; set; } = -1;
 
+    /// <summary>File character offset in Data stream for picture (from sprmCPicLocation).</summary>
+    public uint FcPic { get; set; }
+
     /// <summary>Image relationship ID for DOCX</summary>
     public string? ImageRelationshipId { get; set; }
 
@@ -428,11 +431,13 @@ public enum BorderStyle
 }
 
 /// <summary>
-/// Shading information
+/// Shading information (paragraph/table/cell background and pattern).
 /// </summary>
 public class ShadingInfo
 {
     public ShadingPattern Pattern { get; set; } = ShadingPattern.Clear;
+    /// <summary>OOXML w:shd val (e.g. "pct20", "horzStripe") when parsed from SHD ipat; null to use Pattern.</summary>
+    public string? PatternVal { get; set; }
     public int ForegroundColor { get; set; }
     public int BackgroundColor { get; set; }
 }

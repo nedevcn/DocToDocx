@@ -10,6 +10,8 @@ namespace Nedev.DocToDocx.Writers;
 public class FootnotesWriter
 {
     private readonly XmlWriter _writer;
+    private DocumentModel? _document;
+    private Dictionary<int, string>? _imageIndexToRelId;
 
     public FootnotesWriter(XmlWriter writer)
     {
@@ -17,20 +19,27 @@ public class FootnotesWriter
     }
 
     /// <summary>
-    /// Writes footnotes XML
+    /// Writes footnotes XML (optionally with picture support when document and imageRelMap are provided).
     /// </summary>
-    public void WriteFootnotes(List<FootnoteModel> footnotes)
+    public void WriteFootnotes(List<FootnoteModel> footnotes, DocumentModel? document = null, Dictionary<int, string>? imageIndexToRelId = null)
     {
+        _document = document;
+        _imageIndexToRelId = imageIndexToRelId;
         _writer.WriteStartDocument();
         _writer.WriteStartElement("w", "footnotes", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
         _writer.WriteAttributeString("xmlns", "w", null, "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
         _writer.WriteAttributeString("xmlns", "r", null, "http://schemas.openxmlformats.org/officeDocument/2006/relationships");
+        if (imageIndexToRelId != null && imageIndexToRelId.Count > 0)
+        {
+            _writer.WriteAttributeString("xmlns", "wp", null, "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing");
+            _writer.WriteAttributeString("xmlns", "a", null, "http://schemas.openxmlformats.org/drawingml/2006/main");
+            _writer.WriteAttributeString("xmlns", "pic", null, "http://schemas.openxmlformats.org/drawingml/2006/picture");
+        }
 
         // Required separator and continuation separator for better compatibility
         WriteSeparatorFootnote(-1, "separator");
         WriteSeparatorFootnote(0, "continuationSeparator");
 
-        // Write footnotes
         foreach (var footnote in footnotes)
         {
             WriteFootnote(footnote, "footnote");
@@ -38,6 +47,8 @@ public class FootnotesWriter
 
         _writer.WriteEndElement();
         _writer.WriteEndDocument();
+        _document = null;
+        _imageIndexToRelId = null;
     }
 
     private void WriteSeparatorFootnote(int id, string type)
@@ -59,16 +70,23 @@ public class FootnotesWriter
     }
 
     /// <summary>
-    /// Writes endnotes XML
+    /// Writes endnotes XML (optionally with picture support when document and imageRelMap are provided).
     /// </summary>
-    public void WriteEndnotes(List<EndnoteModel> endnotes)
+    public void WriteEndnotes(List<EndnoteModel> endnotes, DocumentModel? document = null, Dictionary<int, string>? imageIndexToRelId = null)
     {
+        _document = document;
+        _imageIndexToRelId = imageIndexToRelId;
         _writer.WriteStartDocument();
         _writer.WriteStartElement("w", "endnotes", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
         _writer.WriteAttributeString("xmlns", "w", null, "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
         _writer.WriteAttributeString("xmlns", "r", null, "http://schemas.openxmlformats.org/officeDocument/2006/relationships");
+        if (imageIndexToRelId != null && imageIndexToRelId.Count > 0)
+        {
+            _writer.WriteAttributeString("xmlns", "wp", null, "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing");
+            _writer.WriteAttributeString("xmlns", "a", null, "http://schemas.openxmlformats.org/drawingml/2006/main");
+            _writer.WriteAttributeString("xmlns", "pic", null, "http://schemas.openxmlformats.org/drawingml/2006/picture");
+        }
 
-        // Write endnotes
         foreach (var endnote in endnotes)
         {
             WriteFootnote(endnote, "endnote");
@@ -76,6 +94,8 @@ public class FootnotesWriter
 
         _writer.WriteEndElement();
         _writer.WriteEndDocument();
+        _document = null;
+        _imageIndexToRelId = null;
     }
 
     private void WriteFootnote(NoteModelBase note, string type)
@@ -107,13 +127,24 @@ public class FootnotesWriter
 
     private void WriteRun(RunModel run)
     {
+        // Picture run: write w:drawing when document and image rel map are available
+        if (run.IsPicture && run.ImageIndex >= 0 && _document != null && _imageIndexToRelId != null &&
+            _imageIndexToRelId.TryGetValue(run.ImageIndex, out var relId) &&
+            run.ImageIndex < _document.Images.Count)
+        {
+            var image = _document.Images[run.ImageIndex];
+            if (image.Data != null && image.Data.Length > 0)
+            {
+                WritePictureRun(image, relId, run.ImageIndex + 1);
+                return;
+            }
+        }
+
         _writer.WriteStartElement("w", "r");
 
-        // Write run properties if present
         if (run.Properties != null)
         {
             _writer.WriteStartElement("w", "rPr");
-
             if (!string.IsNullOrEmpty(run.Properties.FontName))
             {
                 _writer.WriteStartElement("w", "rFonts");
@@ -121,49 +152,112 @@ public class FootnotesWriter
                 _writer.WriteAttributeString("w", "hAnsi", null, run.Properties.FontName);
                 _writer.WriteEndElement();
             }
-
             if (run.Properties.FontSize > 0)
             {
                 _writer.WriteStartElement("w", "sz");
                 _writer.WriteAttributeString("w", "val", null, run.Properties.FontSize.ToString());
                 _writer.WriteEndElement();
             }
-
-            if (run.Properties.IsBold)
+            if (run.Properties.IsBold) { _writer.WriteStartElement("w", "b"); _writer.WriteEndElement(); }
+            if (run.Properties.IsItalic) { _writer.WriteStartElement("w", "i"); _writer.WriteEndElement(); }
+            var colorHex = ColorHelper.ColorToHex(run.Properties.Color);
+            if (colorHex != "auto")
             {
-                _writer.WriteStartElement("w", "b");
+                _writer.WriteStartElement("w", "color");
+                _writer.WriteAttributeString("w", "val", null, colorHex);
                 _writer.WriteEndElement();
             }
-
-            if (run.Properties.IsItalic)
-            {
-                _writer.WriteStartElement("w", "i");
-                _writer.WriteEndElement();
-            }
-
-                var colorHex = ColorHelper.ColorToHex(run.Properties.Color);
-                if (colorHex != "auto")
-                {
-                    _writer.WriteStartElement("w", "color");
-                    _writer.WriteAttributeString("w", "val", null, colorHex);
-                    _writer.WriteEndElement();
-                }
-
             _writer.WriteEndElement();
         }
 
-        // Write text
         _writer.WriteStartElement("w", "t");
         if (!string.IsNullOrEmpty(run.Text))
         {
             if (run.Text.StartsWith(' ') || run.Text.EndsWith(' ') || run.Text.Contains("  "))
-            {
                 _writer.WriteAttributeString("xml", "space", "http://www.w3.org/XML/1998/namespace", "preserve");
-            }
             _writer.WriteString(run.Text);
         }
         _writer.WriteEndElement();
+        _writer.WriteEndElement();
+    }
 
+    private void WritePictureRun(ImageModel image, string relId, int imageId)
+    {
+        const string wNs = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+        const string wpNs = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing";
+        const string aNs = "http://schemas.openxmlformats.org/drawingml/2006/main";
+        const string picNs = "http://schemas.openxmlformats.org/drawingml/2006/picture";
+        const string rNs = "http://schemas.openxmlformats.org/officeDocument/2006/relationships";
+
+        var widthEmu = image.WidthEMU > 0 ? image.WidthEMU : 5715000;
+        var heightEmu = image.HeightEMU > 0 ? image.HeightEMU : 3810000;
+        if (image.ScaleX > 0 && image.ScaleX != 100000) widthEmu = (int)(widthEmu * (image.ScaleX / 100000.0));
+        if (image.ScaleY > 0 && image.ScaleY != 100000) heightEmu = (int)(heightEmu * (image.ScaleY / 100000.0));
+
+        _writer.WriteStartElement("w", "r", wNs);
+        _writer.WriteStartElement("w", "drawing", wNs);
+        _writer.WriteStartElement("wp", "inline", wpNs);
+        _writer.WriteAttributeString("distT", "0");
+        _writer.WriteAttributeString("distB", "0");
+        _writer.WriteAttributeString("distL", "0");
+        _writer.WriteAttributeString("distR", "0");
+        _writer.WriteStartElement("wp", "extent", wpNs);
+        _writer.WriteAttributeString("cx", widthEmu.ToString());
+        _writer.WriteAttributeString("cy", heightEmu.ToString());
+        _writer.WriteEndElement();
+        _writer.WriteStartElement("wp", "effectExtent", wpNs);
+        _writer.WriteAttributeString("l", "0"); _writer.WriteAttributeString("t", "0"); _writer.WriteAttributeString("r", "0"); _writer.WriteAttributeString("b", "0");
+        _writer.WriteEndElement();
+        _writer.WriteStartElement("wp", "docPr", wpNs);
+        _writer.WriteAttributeString("id", imageId.ToString());
+        _writer.WriteAttributeString("name", image.FileName);
+        _writer.WriteEndElement();
+        _writer.WriteStartElement("wp", "cNvGraphicFramePr", wpNs);
+        _writer.WriteStartElement("a", "graphicFrameLocks", aNs);
+        _writer.WriteAttributeString("noChangeAspect", "1");
+        _writer.WriteEndElement();
+        _writer.WriteEndElement();
+        _writer.WriteStartElement("a", "graphic", aNs);
+        _writer.WriteStartElement("a", "graphicData", aNs);
+        _writer.WriteAttributeString("uri", "http://schemas.openxmlformats.org/drawingml/2006/picture");
+        _writer.WriteStartElement("pic", "pic", picNs);
+        _writer.WriteStartElement("pic", "nvPicPr", picNs);
+        _writer.WriteStartElement("pic", "cNvPr", picNs);
+        _writer.WriteAttributeString("id", "0");
+        _writer.WriteAttributeString("name", image.FileName);
+        _writer.WriteEndElement();
+        _writer.WriteStartElement("pic", "cNvPicPr", picNs);
+        _writer.WriteEndElement();
+        _writer.WriteEndElement();
+        _writer.WriteStartElement("pic", "blipFill", picNs);
+        _writer.WriteStartElement("a", "blip", aNs);
+        _writer.WriteAttributeString("r", "embed", rNs, relId);
+        _writer.WriteEndElement();
+        _writer.WriteStartElement("a", "stretch", aNs);
+        _writer.WriteStartElement("a", "fillRect", aNs);
+        _writer.WriteEndElement();
+        _writer.WriteEndElement();
+        _writer.WriteEndElement();
+        _writer.WriteStartElement("pic", "spPr", picNs);
+        _writer.WriteStartElement("a", "xfrm", aNs);
+        _writer.WriteStartElement("a", "off", aNs);
+        _writer.WriteAttributeString("x", "0"); _writer.WriteAttributeString("y", "0");
+        _writer.WriteEndElement();
+        _writer.WriteStartElement("a", "ext", aNs);
+        _writer.WriteAttributeString("cx", widthEmu.ToString());
+        _writer.WriteAttributeString("cy", heightEmu.ToString());
+        _writer.WriteEndElement();
+        _writer.WriteEndElement();
+        _writer.WriteStartElement("a", "prstGeom", aNs);
+        _writer.WriteAttributeString("prst", "rect");
+        _writer.WriteStartElement("a", "avLst", aNs);
+        _writer.WriteEndElement();
+        _writer.WriteEndElement();
+        _writer.WriteEndElement();
+        _writer.WriteEndElement();
+        _writer.WriteEndElement();
+        _writer.WriteEndElement();
+        _writer.WriteEndElement();
         _writer.WriteEndElement();
     }
 }

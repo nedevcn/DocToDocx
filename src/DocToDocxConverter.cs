@@ -21,8 +21,9 @@ public static class DocToDocxConverter
         
         Console.WriteLine($"Reading document: {inputPath}");
         reader.Load();
-        
-        Console.WriteLine($"Parsed {reader.Document.Paragraphs.Count} paragraphs");
+        var doc = reader.Document;
+        var imageBytes = doc.Images.Sum(i => i.Data?.Length ?? 0);
+        Console.WriteLine($"Parsed {doc.Paragraphs.Count} paragraphs, {doc.Tables.Count} tables, {doc.Images.Count} images ({imageBytes / 1024} KB)");
         
         // Ensure output directory exists
         var outputDir = Path.GetDirectoryName(outputPath);

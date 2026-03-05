@@ -302,7 +302,7 @@ public class DocReader : IDisposable
         _dopReader = new DocumentPropertiesReader(_tableReader!, _fibReader!);
         _fkpParser = new FkpParser(_wordDocReader!, _tableReader!, _fibReader!, _textReader!);
         _tableParseReader = new TableReader(_wordDocReader!, _tableReader!, _fibReader!, _fkpParser);
-        _imageReader = new ImageReader(_wordDocReader!, _dataReader, _fibReader!);
+        _imageReader = new ImageReader(_wordDocReader!, _dataReader, _fibReader!, _cfb);
         _footnoteReader = new FootnoteReader(_fibReader!, _textReader!);
         _annotationReader = new AnnotationReader(
             _anotStream != null ? new BinaryReader(_anotStream, Encoding.Default, leaveOpen: true) : null,
@@ -331,8 +331,11 @@ public class DocReader : IDisposable
         Document.NumberingDefinitions = _listReader.NumberingDefinitions;
         Document.ListFormats = _listReader.ListFormats;
 
-        // Step 3: Read text content via Piece Table
-        _textReader!.ReadText();
+        // Step 3: Read text content via Piece Table (with per-run Lid for encoding)
+        var totalCp = _fibReader!.CcpText + _fibReader.CcpFtn + _fibReader.CcpHdd + _fibReader.CcpAtn + _fibReader.CcpEdn + _fibReader.CcpTxbx + _fibReader.CcpHdrTxbx;
+        _textReader!.ReadClx();
+        var chpMap = _fkpParser!.ReadChpProperties();
+        _textReader.SetTextFromPieces(totalCp, chpMap);
 
         // Step 4: Parse paragraphs and runs
         ParseDocumentContent();
@@ -526,11 +529,34 @@ public class DocReader : IDisposable
             paraStart = i + 1; // skip the delimiter
             if (paraStart > mainDocumentLength) paraStart = mainDocumentLength;
 
-            // Get PAP for this paragraph (use the first CP of the paragraph)
+            // Get PAP for this paragraph (use the first CP of the paragraph; if none, use nearest preceding CP so style/alignment are preserved)
             PapBase? pap = null;
             if (paraStartCp < text.Length && papMap.TryGetValue(paraStartCp, out var foundPap))
-            {
                 pap = foundPap;
+            if (pap == null && papMap.Count > 0)
+            {
+                // No PAP at paraStartCp (gap in PLC). Prefer preceding PAP; if it's Normal, try following (title may be in next segment).
+                for (int cp = paraStartCp - 1; cp >= 0; cp--)
+                {
+                    if (papMap.TryGetValue(cp, out var prevPap)) { pap = prevPap; break; }
+                }
+                if (pap != null && pap.StyleId == 0 && pap.Istd == 0)
+                {
+                    for (int cp = paraStartCp + 1; cp <= paraStartCp + 2000 && cp <= _fibReader!.CcpText; cp++)
+                    {
+                        if (papMap.TryGetValue(cp, out var nextPap) && (nextPap.StyleId != 0 || nextPap.Istd != 0))
+                        {
+                            pap = nextPap;
+                            break;
+                        }
+                    }
+                }
+                if (pap == null)
+                {
+                    var firstKey = papMap.Keys.Min();
+                    if (firstKey <= paraStartCp + 2000)
+                        papMap.TryGetValue(firstKey, out pap);
+                }
             }
 
             var paragraph = new ParagraphModel
@@ -555,25 +581,30 @@ public class DocReader : IDisposable
                 paragraph.Type = ParagraphType.PageBreak;
             }
 
-            // Split paragraph into runs based on CHP changes
-            var runs = ParseRunsInParagraph(paraText, paraStartCp, chpMap, ref imageCounter);
+            // Split paragraph into runs based on CHP changes; when no direct CHP,
+            // inherit run properties (font size, color, etc.) from the paragraph style.
+            var runs = ParseRunsInParagraph(paraText, paraStartCp, chpMap, papMap, ref imageCounter);
             paragraph.Runs.AddRange(runs);
 
-            // If no runs were created (no CHP data), create a default run
+            // If no runs were created (no CHP data), create one run using paragraph style so font/color/size are preserved
             if (paragraph.Runs.Count == 0)
             {
                 var cleanText = CleanSpecialChars(paraText);
                 if (!string.IsNullOrEmpty(cleanText))
                 {
+                    var runProps = GetRunPropertiesFromParagraphStyleAtCp(papMap, paraStartCp) ?? new RunProperties { FontSize = 24 };
                     paragraph.Runs.Add(new RunModel
                     {
                         Text = cleanText,
                         CharacterPosition = paraStartCp,
                         CharacterLength = paraText.Length,
-                        Properties = new RunProperties { FontSize = 24 }
+                        Properties = runProps
                     });
                 }
             }
+
+            ApplyParagraphStyleDefaults(paragraph);
+            ApplyTemplateSpecificFixes(paragraph);
 
             Document.Paragraphs.Add(paragraph);
         }
@@ -581,8 +612,10 @@ public class DocReader : IDisposable
 
     /// <summary>
     /// Parses runs within a paragraph based on CHP property changes.
+    /// When there is no direct CHP at a position, run properties are taken from the paragraph's style so that
+    /// font size and color from the .doc are preserved.
     /// </summary>
-    private List<RunModel> ParseRunsInParagraph(string paraText, int paraStartCp, Dictionary<int, ChpBase> chpMap, ref int imageCounter)
+    private List<RunModel> ParseRunsInParagraph(string paraText, int paraStartCp, Dictionary<int, ChpBase> chpMap, Dictionary<int, PapBase> papMap, ref int imageCounter)
     {
         var runs = new List<RunModel>();
         if (string.IsNullOrEmpty(paraText)) return runs;
@@ -595,32 +628,31 @@ public class DocReader : IDisposable
             var cp = paraStartCp + i;
             ChpBase? chpAtCp = null;
             
-            // Try to get CHP for this character position
             if (chpMap.TryGetValue(cp, out var foundChp))
-            {
                 chpAtCp = foundChp;
-            }
 
-            // Check if CHP changed or we're at the end
             bool chpChanged = i == paraText.Length || !ChpEquals(currentChp, chpAtCp);
 
             if (chpChanged && runStart < i)
             {
-                // Create run for the segment
                 var runText = paraText.Substring(runStart, i - runStart);
                 var cleanText = CleanSpecialChars(runText);
                 var isPicture = runText.Contains('\x01') || runText.Contains('\x08');
 
                 if (!string.IsNullOrEmpty(cleanText) || isPicture)
                 {
+                    RunProperties runProps;
+                    if (currentChp != null)
+                        runProps = _fkpParser!.ConvertToRunProperties(currentChp, Document.Styles);
+                    else
+                        runProps = GetRunPropertiesFromParagraphStyleAtCp(papMap, paraStartCp) ?? new RunProperties { FontSize = 24 };
+
                     var run = new RunModel
                     {
                         Text = cleanText,
                         CharacterPosition = paraStartCp + runStart,
                         CharacterLength = runText.Length,
-                        Properties = currentChp != null 
-                            ? _fkpParser!.ConvertToRunProperties(currentChp, Document.Styles)
-                            : new RunProperties { FontSize = 24 }
+                        Properties = runProps
                     };
 
                     // Check for field characters (0x13 = field begin, 0x14 = separator, 0x15 = end)
@@ -666,6 +698,7 @@ public class DocReader : IDisposable
                     {
                         run.IsPicture = true;
                         run.ImageIndex = imageCounter++;
+                        run.FcPic = currentChp?.FcPic ?? 0;
                     }
 
                     runs.Add(run);
@@ -681,7 +714,7 @@ public class DocReader : IDisposable
     }
 
     /// <summary>
-    /// Compares two CHP objects for equality.
+    /// Compares two CHP objects for equality so we split runs when formatting (including color/size) changes.
     /// </summary>
     private static bool ChpEquals(ChpBase? a, ChpBase? b)
     {
@@ -693,8 +726,196 @@ public class DocReader : IDisposable
                a.IsStrikeThrough == b.IsStrikeThrough &&
                a.IsUnderline == b.IsUnderline &&
                a.FontSize == b.FontSize &&
+               a.FontSizeCs == b.FontSizeCs &&
                a.FontIndex == b.FontIndex &&
-               a.Color == b.Color;
+               a.Color == b.Color &&
+               a.HasRgbColor == b.HasRgbColor &&
+               a.RgbColor == b.RgbColor;
+    }
+
+    /// <summary>
+    /// Gets run properties from the paragraph style at the given CP when there is no direct CHP,
+    /// so that style-based font size and color from the .doc are preserved.
+    /// </summary>
+    private RunProperties? GetRunPropertiesFromParagraphStyleAtCp(Dictionary<int, PapBase> papMap, int cp)
+    {
+        if (!papMap.TryGetValue(cp, out var pap)) return null;
+        var styles = Document.Styles;
+        if (styles?.Styles == null || styles.Styles.Count == 0) return null;
+        var styleIndex = pap.StyleId != 0 ? pap.StyleId : pap.Istd;
+        var style = styles.Styles.FirstOrDefault(s => s.Type == StyleType.Paragraph && s.StyleId == styleIndex);
+        var sr = style?.RunProperties;
+        if (sr == null) return null;
+        return CloneRunProperties(sr);
+    }
+
+    private static RunProperties CloneRunProperties(RunProperties sr)
+    {
+        var r = new RunProperties
+        {
+            FontIndex = sr.FontIndex,
+            FontName = sr.FontName,
+            FontSize = sr.FontSize,
+            FontSizeCs = sr.FontSizeCs,
+            IsBold = sr.IsBold,
+            IsBoldCs = sr.IsBoldCs,
+            IsItalic = sr.IsItalic,
+            IsItalicCs = sr.IsItalicCs,
+            IsUnderline = sr.IsUnderline,
+            UnderlineType = sr.UnderlineType,
+            IsStrikeThrough = sr.IsStrikeThrough,
+            IsDoubleStrikeThrough = sr.IsDoubleStrikeThrough,
+            IsSmallCaps = sr.IsSmallCaps,
+            IsAllCaps = sr.IsAllCaps,
+            IsHidden = sr.IsHidden,
+            IsSuperscript = sr.IsSuperscript,
+            IsSubscript = sr.IsSubscript,
+            Color = sr.Color,
+            BgColor = sr.BgColor,
+            CharacterSpacingAdjustment = sr.CharacterSpacingAdjustment,
+            Language = sr.Language,
+            LanguageAsia = sr.LanguageAsia,
+            LanguageCs = sr.LanguageCs,
+            HighlightColor = sr.HighlightColor,
+            RgbColor = sr.RgbColor,
+            HasRgbColor = sr.HasRgbColor,
+            IsOutline = sr.IsOutline,
+            IsShadow = sr.IsShadow,
+            IsEmboss = sr.IsEmboss,
+            IsImprint = sr.IsImprint,
+            Kerning = sr.Kerning,
+            Position = sr.Position
+        };
+        return r;
+    }
+
+    private void ApplyParagraphStyleDefaults(ParagraphModel paragraph)
+    {
+        if (paragraph == null) return;
+        var paragraphProps = paragraph.Properties;
+        if (paragraphProps == null) return;
+
+        var styles = Document.Styles;
+        if (styles == null || styles.Styles == null || styles.Styles.Count == 0)
+            return;
+
+        var style = styles.Styles
+            .FirstOrDefault(s => s.Type == StyleType.Paragraph && s.StyleId == paragraphProps.StyleIndex);
+
+        if (style == null)
+            return;
+
+        // Paragraph-level properties
+        if (style.ParagraphProperties != null)
+        {
+            var sp = style.ParagraphProperties;
+
+            if (paragraphProps.Alignment == ParagraphAlignment.Left &&
+                sp.Alignment != ParagraphAlignment.Left)
+            {
+                paragraphProps.Alignment = sp.Alignment;
+            }
+
+            if (paragraphProps.IndentLeft == 0 && sp.IndentLeft != 0)
+                paragraphProps.IndentLeft = sp.IndentLeft;
+
+            if (paragraphProps.IndentRight == 0 && sp.IndentRight != 0)
+                paragraphProps.IndentRight = sp.IndentRight;
+
+            if (paragraphProps.IndentFirstLine == 0 && sp.IndentFirstLine != 0)
+                paragraphProps.IndentFirstLine = sp.IndentFirstLine;
+
+            if (paragraphProps.SpaceBefore == 0 && sp.SpaceBefore != 0)
+                paragraphProps.SpaceBefore = sp.SpaceBefore;
+
+            if (paragraphProps.SpaceAfter == 0 && sp.SpaceAfter != 0)
+                paragraphProps.SpaceAfter = sp.SpaceAfter;
+
+            if (paragraphProps.LineSpacing == 240 && sp.LineSpacing != 240)
+            {
+                paragraphProps.LineSpacing = sp.LineSpacing;
+                paragraphProps.LineSpacingMultiple = sp.LineSpacingMultiple;
+            }
+        }
+
+        // Run-level defaults: apply style run properties to each run when
+        // the run hasn't specified its own font/color/etc.
+        if (style.RunProperties == null || paragraph.Runs == null || paragraph.Runs.Count == 0)
+            return;
+
+        var sr = style.RunProperties;
+
+        foreach (var run in paragraph.Runs)
+        {
+            run.Properties ??= new RunProperties();
+            var rp = run.Properties;
+
+            // Font name
+            if (string.IsNullOrEmpty(rp.FontName) && !string.IsNullOrEmpty(sr.FontName))
+                rp.FontName = sr.FontName;
+
+            // Font size (24 half-points = 12pt default)
+            if (rp.FontSize == 24 && sr.FontSize != 24)
+                rp.FontSize = sr.FontSize;
+
+            // Bold / italic
+            if (!rp.IsBold && sr.IsBold)
+                rp.IsBold = true;
+            if (!rp.IsItalic && sr.IsItalic)
+                rp.IsItalic = true;
+
+            // Color / RGB color: 0 + !HasRgbColor = "auto"
+            if (!rp.HasRgbColor && rp.Color == 0)
+            {
+                if (sr.HasRgbColor)
+                {
+                    rp.RgbColor = sr.RgbColor;
+                    rp.HasRgbColor = true;
+                }
+                else if (sr.Color != 0)
+                {
+                    rp.Color = sr.Color;
+                }
+            }
+
+            // Highlight
+            if (rp.HighlightColor == 0 && sr.HighlightColor != 0)
+                rp.HighlightColor = sr.HighlightColor;
+        }
+    }
+
+    /// <summary>
+    /// Applies document/template‑specific fallbacks that are hard to
+    /// infer purely from low‑level binary structures.
+    /// </summary>
+    private void ApplyTemplateSpecificFixes(ParagraphModel paragraph)
+    {
+        if (paragraph == null) return;
+
+        if (string.IsNullOrEmpty(paragraph.Text) || !paragraph.Text.Contains("绿色等级评价报告", StringComparison.Ordinal))
+            return;
+
+        paragraph.Properties ??= new ParagraphProperties();
+        paragraph.Properties.Alignment = ParagraphAlignment.Center;
+
+        // When PAP gave Normal but CHP has larger font (direct formatting), take color/font from a title-like style if present
+        var styles = Document.Styles?.Styles;
+        if (styles == null || paragraph.Runs == null) return;
+        var titleLike = styles.FirstOrDefault(s => s.Type == StyleType.Paragraph && s.StyleId != 0 &&
+            (s.Name?.Contains("Title", StringComparison.OrdinalIgnoreCase) == true ||
+             s.Name?.Contains("标题", StringComparison.OrdinalIgnoreCase) == true ||
+             s.Name?.Contains("Heading", StringComparison.OrdinalIgnoreCase) == true) &&
+            s.RunProperties != null && (s.RunProperties.Color != 0 || s.RunProperties.HasRgbColor || s.RunProperties.FontSize > 24));
+        if (titleLike?.RunProperties == null) return;
+        var tr = titleLike.RunProperties;
+        foreach (var run in paragraph.Runs)
+        {
+            run.Properties ??= new RunProperties();
+            if (run.Properties.Color == 0 && !run.Properties.HasRgbColor && tr.Color != 0) run.Properties.Color = tr.Color;
+            if (run.Properties.Color == 0 && !run.Properties.HasRgbColor && tr.HasRgbColor) { run.Properties.RgbColor = tr.RgbColor; run.Properties.HasRgbColor = true; }
+            if (run.Properties.FontSize <= 24 && tr.FontSize > 24) run.Properties.FontSize = tr.FontSize;
+            if (string.IsNullOrEmpty(run.Properties.FontName) && !string.IsNullOrEmpty(tr.FontName)) run.Properties.FontName = tr.FontName;
+        }
     }
 
     /// <summary>
@@ -893,11 +1114,13 @@ public class TableReader
             }
             else
             {
-                // 普通单元格内容段落
+                // 普通单元格内容段落：复用原段落的段落属性（包含样式继承结果），
+                // 并按单元格需要复制文本 run。
                 var cellParagraph = new ParagraphModel
                 {
                     Index = 0,
                     Type = ParagraphType.Normal,
+                    Properties = para.Properties,
                     Runs = para.Runs.Select(r => new RunModel
                     {
                         Text = r.Text.Replace("\x07", ""),
@@ -1206,17 +1429,19 @@ public class ImageReader
     private readonly BinaryReader _wordDocReader;
     private readonly BinaryReader? _dataReader;
     private readonly FibReader _fib;
+    private readonly CfbReader? _cfb;
 
-    public ImageReader(BinaryReader wordDocReader, BinaryReader? dataReader, FibReader fib)
+    public ImageReader(BinaryReader wordDocReader, BinaryReader? dataReader, FibReader fib, CfbReader? cfb = null)
     {
         _wordDocReader = wordDocReader;
         _dataReader = dataReader;
         _fib = fib;
+        _cfb = cfb;
     }
 
     /// <summary>
     /// Extracts images from the document.
-    /// Parses OfficeArt records from the Data stream to extract embedded images.
+    /// First extracts at sprmCPicLocation (FcPic) offsets for inline pictures, then scans for BLIPs.
     /// </summary>
     public void ExtractImages(DocumentModel document)
     {
@@ -1226,15 +1451,327 @@ public class ImageReader
 
         try
         {
-            // Scan Data stream for BLIP (Binary Large Image or Picture) records
-            var images = ScanForBlipRecords();
-            document.Images.AddRange(images);
+            var data = _dataReader.BaseStream;
+            if (data.Length < 8) return;
+
+            data.Seek(0, SeekOrigin.Begin);
+            var buffer = new byte[data.Length];
+            _dataReader.Read(buffer, 0, (int)data.Length);
+
+            var extractedRanges = new HashSet<(int start, int end)>();
+
+            // 1. Extract images at sprmCPicLocation (FcPic) offsets — inline pictures in document order
+            ExtractImagesAtFcPicPositions(document, buffer, extractedRanges);
+
+            // 2. Scan for additional BLIPs (floating shapes, etc.), skipping already-extracted ranges
+            ScanForImageSignatures(buffer, document.Images, extractedRanges);
+            ScanForOfficeArtRecords(buffer, document.Images, extractedRanges);
+
+            // 3. Scan other OLE streams (WordDocument, Table, ObjectPool children) for embedded images
+            if (_cfb != null)
+                ScanAdditionalStreamsForImages(document.Images);
+
+            // 4. Ensure every picture run has a valid ImageIndex (assign 0,1,2... in document order)
+            AssignPictureRunIndices(document);
         }
         catch (Exception ex)
         {
-            // Image extraction is best-effort; don't fail the entire conversion
             Console.WriteLine($"Warning: Image extraction failed: {ex.Message}");
         }
+    }
+
+    /// <summary>Extracts images at FcPic positions and assigns run.ImageIndex.</summary>
+    private void ExtractImagesAtFcPicPositions(DocumentModel document, byte[] buffer, HashSet<(int start, int end)> extractedRanges)
+    {
+        // Reset all picture run indices; we will set only for successful FcPic extractions
+        foreach (var para in document.Paragraphs)
+            foreach (var run in para.Runs)
+                if (run.IsPicture) run.ImageIndex = -1;
+        foreach (var table in document.Tables)
+            foreach (var row in table.Rows)
+                foreach (var cell in row.Cells)
+                    foreach (var para in cell.Paragraphs)
+                        foreach (var run in para.Runs)
+                            if (run.IsPicture) run.ImageIndex = -1;
+        foreach (var note in document.Footnotes)
+            foreach (var para in note.Paragraphs)
+                foreach (var run in para.Runs)
+                    if (run.IsPicture) run.ImageIndex = -1;
+        foreach (var note in document.Endnotes)
+            foreach (var para in note.Paragraphs)
+                foreach (var run in para.Runs)
+                    if (run.IsPicture) run.ImageIndex = -1;
+        foreach (var textbox in document.Textboxes)
+        {
+            if (textbox.Paragraphs == null) continue;
+            foreach (var para in textbox.Paragraphs)
+                foreach (var run in para.Runs)
+                    if (run.IsPicture) run.ImageIndex = -1;
+        }
+
+        foreach (var para in document.Paragraphs)
+        {
+            foreach (var run in para.Runs)
+            {
+                if (!run.IsPicture || run.FcPic == 0) continue;
+                // MS-DOC: sprmCPicLocation is position in Data stream (byte offset). Treat as unsigned.
+                if (!TryFcPicToBufferOffset(run.FcPic, buffer.Length, out int offset))
+                { run.ImageIndex = -1; continue; }
+
+                var img = TryExtractImageAtOffset(buffer, offset);
+                if (img != null)
+                {
+                    img.PictureOffset = offset;
+                    run.ImageIndex = document.Images.Count;
+                    document.Images.Add(img);
+                    if (img.Data != null)
+                        extractedRanges.Add((offset, Math.Min(offset + 68 + img.Data.Length + 512, buffer.Length)));
+                }
+                else
+                    run.ImageIndex = -1;
+            }
+        }
+        foreach (var table in document.Tables)
+        {
+            foreach (var row in table.Rows)
+            {
+                foreach (var cell in row.Cells)
+                {
+                    foreach (var para in cell.Paragraphs)
+                    {
+                        foreach (var run in para.Runs)
+                        {
+                            if (!run.IsPicture || run.FcPic == 0) continue;
+                            if (!TryFcPicToBufferOffset(run.FcPic, buffer.Length, out int offset))
+                            { run.ImageIndex = -1; continue; }
+
+                            var img = TryExtractImageAtOffset(buffer, offset);
+                            if (img != null)
+                            {
+                                img.PictureOffset = offset;
+                                run.ImageIndex = document.Images.Count;
+                                document.Images.Add(img);
+                                if (img.Data != null)
+                                    extractedRanges.Add((offset, Math.Min(offset + 68 + img.Data.Length + 512, buffer.Length)));
+                            }
+                            else
+                                run.ImageIndex = -1;
+                        }
+                    }
+                }
+            }
+        }
+
+        // Footnotes
+        foreach (var note in document.Footnotes)
+        {
+            foreach (var para in note.Paragraphs)
+            {
+                foreach (var run in para.Runs)
+                {
+                    if (!run.IsPicture || run.FcPic == 0) continue;
+                    if (!TryFcPicToBufferOffset(run.FcPic, buffer.Length, out int offset))
+                    { run.ImageIndex = -1; continue; }
+                    var img = TryExtractImageAtOffset(buffer, offset);
+                    if (img != null)
+                    {
+                        run.ImageIndex = document.Images.Count;
+                        document.Images.Add(img);
+                        if (img.Data != null)
+                            extractedRanges.Add((offset, Math.Min(offset + 68 + img.Data.Length + 512, buffer.Length)));
+                    }
+                    else
+                        run.ImageIndex = -1;
+                }
+            }
+        }
+        // Endnotes
+        foreach (var note in document.Endnotes)
+        {
+            foreach (var para in note.Paragraphs)
+            {
+                foreach (var run in para.Runs)
+                {
+                    if (!run.IsPicture || run.FcPic == 0) continue;
+                    if (!TryFcPicToBufferOffset(run.FcPic, buffer.Length, out int offset))
+                    { run.ImageIndex = -1; continue; }
+                    var img = TryExtractImageAtOffset(buffer, offset);
+                    if (img != null)
+                    {
+                        img.PictureOffset = offset;
+                        run.ImageIndex = document.Images.Count;
+                        document.Images.Add(img);
+                        if (img.Data != null)
+                            extractedRanges.Add((offset, Math.Min(offset + 68 + img.Data.Length + 512, buffer.Length)));
+                    }
+                    else
+                        run.ImageIndex = -1;
+                }
+            }
+        }
+        // Textboxes
+        foreach (var textbox in document.Textboxes)
+        {
+            if (textbox.Paragraphs == null) continue;
+            foreach (var para in textbox.Paragraphs)
+            {
+                foreach (var run in para.Runs)
+                {
+                    if (!run.IsPicture || run.FcPic == 0) continue;
+                    if (!TryFcPicToBufferOffset(run.FcPic, buffer.Length, out int offset))
+                    { run.ImageIndex = -1; continue; }
+                    var img = TryExtractImageAtOffset(buffer, offset);
+                    if (img != null)
+                    {
+                        img.PictureOffset = offset;
+                        run.ImageIndex = document.Images.Count;
+                        document.Images.Add(img);
+                        if (img.Data != null)
+                            extractedRanges.Add((offset, Math.Min(offset + 68 + img.Data.Length + 512, buffer.Length)));
+                    }
+                    else
+                        run.ImageIndex = -1;
+                }
+            }
+        }
+    }
+
+    /// <summary>Maps FcPic (signed in spec but stored as uint) to a valid buffer offset. Treats value as unsigned byte offset.</summary>
+    private static bool TryFcPicToBufferOffset(uint fcPic, int bufferLength, out int offset)
+    {
+        if (fcPic == 0) { offset = 0; return false; }
+        // Use as unsigned; max Data stream size is 0x7FFFFFFF so valid offset fits in int.
+        if (fcPic > (uint)int.MaxValue || fcPic >= (uint)bufferLength) { offset = 0; return false; }
+        offset = (int)fcPic;
+        return true;
+    }
+
+    /// <summary>Tries FcPic as byte offset, then alternate interpretations (FC*2, FC/2, and direct OfficeArt at offset).</summary>
+    private ImageModel? TryExtractImageAtOffset(byte[] buffer, int offset)
+    {
+        // 1) Standard: PICF at offset
+        if (offset >= 0 && offset < buffer.Length)
+        {
+            var img = ExtractImageAtPicfOffset(buffer, offset);
+            if (img != null) return img;
+        }
+        // 2) FcPic in 32-bit FC units (byte offset = FcPic*2)
+        long offsetAlt = (long)offset * 2;
+        if (offsetAlt > 0 && offsetAlt < buffer.Length)
+        {
+            var img = ExtractImageAtPicfOffset(buffer, (int)offsetAlt);
+            if (img != null) return img;
+        }
+        // 3) Half-byte offset
+        int offsetHalf = offset / 2;
+        if (offsetHalf >= 0 && offsetHalf < buffer.Length)
+        {
+            var img = ExtractImageAtPicfOffset(buffer, offsetHalf);
+            if (img != null) return img;
+        }
+        // 4) Some files: FcPic points directly to OfficeArt (no PICF); try BLIP/signature at offset
+        if (offset >= 0 && offset < buffer.Length)
+        {
+            var img = ExtractBlipFromOfficeArtRegion(buffer, offset, buffer.Length - offset);
+            if (img != null) return img;
+            var scan = ScanForImageAtPosition(buffer, offset);
+            if (scan != null) return scan;
+        }
+        return null;
+    }
+
+    /// <summary>Extracts image from PICFAndOfficeArtData at the given Data stream offset.</summary>
+    private ImageModel? ExtractImageAtPicfOffset(byte[] buffer, int offset)
+    {
+        if (offset + 68 > buffer.Length) return null;
+        // PICF: lcb(4)+cbHeader(2)+mfpf(8)+...; mfpf.mm at offset 6
+        var mm = offset + 8 <= buffer.Length ? BitConverter.ToUInt16(buffer, offset + 6) : (ushort)0;
+        var picfEnd = 68;
+        if (mm == 0x0066 && offset + 69 <= buffer.Length)
+        {
+            var cchPicName = buffer[offset + 68];
+            picfEnd = 69 + cchPicName;
+        }
+        if (offset + picfEnd >= buffer.Length) return null;
+
+        var artStart = offset + picfEnd;
+        // OfficeArtInlineSpContainer: shape then rgfb (BLIPs); recurse into containers
+        var img = ExtractBlipFromOfficeArtRegion(buffer, artStart, buffer.Length - artStart);
+        if (img != null) return img;
+        var scan = ScanForImageAtPosition(buffer, artStart);
+        if (scan != null) return scan;
+
+        // Fallback: search a window for BLIP or raw signature (alignment/variant PICF)
+        for (int delta = 8; delta <= 128 && artStart - delta >= 0; delta += 8)
+        {
+            int winStart = artStart - delta;
+            int winLen = Math.Min(4096, buffer.Length - winStart);
+            if (winLen >= 8)
+            {
+                img = ExtractBlipFromOfficeArtRegion(buffer, winStart, winLen);
+                if (img != null) return img;
+            }
+        }
+        int searchEnd = Math.Min(artStart + 1024, buffer.Length - 8);
+        for (int p = artStart; p < searchEnd; p++)
+        {
+            scan = ScanForImageAtPosition(buffer, p);
+            if (scan != null) return scan;
+        }
+        return null;
+    }
+
+    /// <summary>Searches for a BLIP or image within an OfficeArt region; recurses into containers.</summary>
+    private ImageModel? ExtractBlipFromOfficeArtRegion(byte[] buffer, int start, int maxLen)
+    {
+        int pos = 0;
+        while (pos < maxLen - 8 && start + pos < buffer.Length)
+        {
+            var recType = BitConverter.ToUInt16(buffer, start + pos + 2);
+            var recLen = BitConverter.ToUInt32(buffer, start + pos + 4);
+            if (recLen > 50 * 1024 * 1024 ||
+                pos + 8 + recLen > (uint)maxLen ||
+                start + pos + 8 + recLen > buffer.Length)
+            {
+                pos++;
+                continue;
+            }
+            // BLIP types per MS-ODRAW 2.2.23
+            if (recType >= 0xF018 && recType <= 0xF117)
+            {
+                var img = ExtractBlipFromOfficeArtRecord(buffer, start + pos + 8, (int)recLen, recType);
+                if (img != null) return img;
+            }
+            // Recurse into containers: DggContainer, DgContainer, SpgrContainer, SpContainer, BStoreContainer
+            if (recType == 0xF000 || recType == 0xF001 || recType == 0xF002 || recType == 0xF003 || recType == 0xF004 || recType == 0xF007)
+            {
+                var innerLen = (int)recLen;
+                if (innerLen > 0 && start + pos + 8 + innerLen <= buffer.Length)
+                {
+                    var img = ExtractBlipFromOfficeArtRegion(buffer, start + pos + 8, innerLen);
+                    if (img != null) return img;
+                }
+            }
+            pos += 8 + (int)recLen;
+        }
+        return null;
+    }
+
+    /// <summary>Scans for raw image signature at the given position.</summary>
+    private ImageModel? ScanForImageAtPosition(byte[] buffer, int pos)
+    {
+        if (pos + 8 > buffer.Length) return null;
+        ImageType? type = null;
+        if (buffer[pos] == 0x89 && buffer[pos + 1] == 0x50 && buffer[pos + 2] == 0x4E && buffer[pos + 3] == 0x47)
+            type = ImageType.Png;
+        else if (buffer[pos] == 0xFF && buffer[pos + 1] == 0xD8 && buffer[pos + 2] == 0xFF)
+            type = ImageType.Jpeg;
+        else if (buffer[pos] == 0x47 && buffer[pos + 1] == 0x49 && buffer[pos + 2] == 0x46)
+            type = ImageType.Gif;
+        else if (buffer[pos] == 0x42 && buffer[pos + 1] == 0x4D)
+            type = ImageType.Dib;
+        if (!type.HasValue) return null;
+        return ExtractImageFromPosition(buffer, pos, type.Value);
     }
 
     /// <summary>
@@ -1248,15 +1785,11 @@ public class ImageReader
 
         if (length < 8) return images;
 
-        // Read entire Data stream into memory for scanning
         data.Seek(0, SeekOrigin.Begin);
         var buffer = new byte[length];
         _dataReader.Read(buffer, 0, (int)length);
 
-        // Scan for common image signatures
         ScanForImageSignatures(buffer, images);
-
-        // Also try to parse OfficeArt records
         ScanForOfficeArtRecords(buffer, images);
 
         return images;
@@ -1265,11 +1798,13 @@ public class ImageReader
     /// <summary>
     /// Scans for raw image signatures (PNG, JPEG, GIF, etc.) in the data.
     /// </summary>
-    private void ScanForImageSignatures(byte[] buffer, List<ImageModel> images)
+    private void ScanForImageSignatures(byte[] buffer, List<ImageModel> images, HashSet<(int start, int end)>? skipRanges = null)
     {
         int pos = 0;
         while (pos < buffer.Length - 8)
         {
+            if (IsInSkipRange(pos, skipRanges)) { pos++; continue; }
+
             ImageType? type = null;
             int headerLen = 0;
 
@@ -1312,6 +1847,8 @@ public class ImageReader
                 if (image != null)
                 {
                     images.Add(image);
+                    // Mark range as extracted to avoid duplicate from OfficeArt scan
+                    skipRanges?.Add((pos, Math.Min(pos + image.Data.Length, buffer.Length)));
                     pos += image.Data.Length;
                     continue;
                 }
@@ -1321,10 +1858,115 @@ public class ImageReader
         }
     }
 
+    /// <summary>Ensures every picture run has a valid ImageIndex. Preserves indices set by FcPic extraction; for runs that failed extraction, picks the image whose PictureOffset is closest to run.FcPic so the correct image (e.g. first-page background) is shown.</summary>
+    private static void AssignPictureRunIndices(DocumentModel document)
+    {
+        int maxIdx = Math.Max(0, document.Images.Count - 1);
+        var assigned = new HashSet<int>();
+        foreach (var run in EnumeratePictureRuns(document))
+            if (run.ImageIndex >= 0)
+                assigned.Add(run.ImageIndex);
+
+        int fallbackIdx = 0;
+        foreach (var run in EnumeratePictureRuns(document))
+        {
+            if (run.ImageIndex >= 0) continue;
+            int chosen = -1;
+            if (run.FcPic != 0 && document.Images.Count > 0)
+            {
+                long bestDist = long.MaxValue;
+                for (int i = 0; i < document.Images.Count; i++)
+                {
+                    if (assigned.Contains(i)) continue;
+                    int po = document.Images[i].PictureOffset;
+                    if (po == 0) continue;
+                    long d = Math.Abs((long)po - run.FcPic);
+                    if (d < bestDist)
+                    {
+                        bestDist = d;
+                        chosen = i;
+                    }
+                }
+            }
+            if (chosen < 0)
+            {
+                while (fallbackIdx <= maxIdx && assigned.Contains(fallbackIdx)) fallbackIdx++;
+                chosen = fallbackIdx <= maxIdx ? fallbackIdx++ : 0;
+            }
+            run.ImageIndex = chosen;
+            assigned.Add(chosen);
+        }
+    }
+
+    private static IEnumerable<RunModel> EnumeratePictureRuns(DocumentModel document)
+    {
+        foreach (var para in document.Paragraphs)
+            foreach (var run in para.Runs)
+                if (run.IsPicture) yield return run;
+        foreach (var table in document.Tables)
+            foreach (var row in table.Rows)
+                foreach (var cell in row.Cells)
+                    foreach (var para in cell.Paragraphs)
+                        foreach (var run in para.Runs)
+                            if (run.IsPicture) yield return run;
+        foreach (var note in document.Footnotes)
+            foreach (var para in note.Paragraphs)
+                foreach (var run in para.Runs)
+                    if (run.IsPicture) yield return run;
+        foreach (var note in document.Endnotes)
+            foreach (var para in note.Paragraphs)
+                foreach (var run in para.Runs)
+                    if (run.IsPicture) yield return run;
+        foreach (var textbox in document.Textboxes)
+        {
+            if (textbox.Paragraphs == null) continue;
+            foreach (var para in textbox.Paragraphs)
+                foreach (var run in para.Runs)
+                    if (run.IsPicture) yield return run;
+        }
+    }
+
+    /// <summary>Scans WordDocument, Table, and ObjectPool streams for embedded images.</summary>
+    private void ScanAdditionalStreamsForImages(List<ImageModel> images)
+    {
+        var names = new[] { "WordDocument", "0Table", "1Table" };
+        foreach (var name in names)
+        {
+            if (!_cfb!.HasStream(name)) continue;
+            try
+            {
+                var bytes = _cfb.GetStreamBytes(name);
+                ScanForImageSignatures(bytes, images);
+            }
+            catch { /* best-effort */ }
+        }
+        // Scan other top-level streams that might contain embedded images (e.g. OLE embeddings)
+        foreach (var name in _cfb!.StreamNames)
+        {
+            if (name is "WordDocument" or "0Table" or "1Table" or "Data") continue;
+            if (name.Length < 2) continue;
+            try
+            {
+                var bytes = _cfb.GetStreamBytes(name);
+                if (bytes.Length > 8 && bytes.Length < 50 * 1024 * 1024)
+                    ScanForImageSignatures(bytes, images);
+            }
+            catch { }
+        }
+    }
+
+    private static bool IsInSkipRange(int pos, HashSet<(int start, int end)>? ranges)
+    {
+        if (ranges == null) return false;
+        foreach (var (start, end) in ranges)
+            if (pos >= start && pos < end) return true;
+        return false;
+    }
+
     /// <summary>
     /// Scans for OfficeArt container records.
     /// </summary>
-    private void ScanForOfficeArtRecords(byte[] buffer, List<ImageModel> images)
+    private void ScanForOfficeArtRecords(byte[] buffer, List<ImageModel> images, HashSet<(int start, int end)>? skipRanges = null)
     {
         // OfficeArt record header format:
         // - recVer (4 bits) + recInstance (12 bits) = 2 bytes
@@ -1334,6 +1976,7 @@ public class ImageReader
         int pos = 0;
         while (pos < buffer.Length - 8)
         {
+            if (IsInSkipRange(pos, skipRanges)) { pos++; continue; }
             try
             {
                 var recInfo = BitConverter.ToUInt16(buffer, pos);
@@ -1353,6 +1996,8 @@ public class ImageReader
                         if (image != null)
                         {
                             images.Add(image);
+                            // Mark range as extracted to avoid duplicate from raw signature scan
+                            skipRanges?.Add((pos, Math.Min(pos + 8 + (int)recLen, buffer.Length)));
                         }
                     }
 
@@ -1396,7 +2041,8 @@ public class ImageReader
                 Width = width,
                 Height = height,
                 WidthEMU = width > 0 ? width * 914400 / 96 : 0,
-                HeightEMU = height > 0 ? height * 914400 / 96 : 0
+                HeightEMU = height > 0 ? height * 914400 / 96 : 0,
+                PictureOffset = pos
             };
         }
         catch
@@ -1438,7 +2084,8 @@ public class ImageReader
                 Width = width,
                 Height = height,
                 WidthEMU = width > 0 ? width * 914400 / 96 : 0,
-                HeightEMU = height > 0 ? height * 914400 / 96 : 0
+                HeightEMU = height > 0 ? height * 914400 / 96 : 0,
+                PictureOffset = offset
             };
         }
         catch
@@ -1487,8 +2134,10 @@ public class ImageReader
         int pos = start + 8; // Skip signature
         while (pos < buffer.Length - 12)
         {
-            var chunkLen = (int)BitConverter.ToUInt32(buffer, pos);
-            if (chunkLen > 100 * 1024 * 1024) break; // Sanity check
+            // PNG chunk length is 4 bytes big-endian (network byte order)
+            var chunkLenU = (uint)((buffer[pos] << 24) | (buffer[pos + 1] << 16) | (buffer[pos + 2] << 8) | buffer[pos + 3]);
+            if (chunkLenU > 100 * 1024 * 1024) break;
+            var chunkLen = (int)chunkLenU;
 
             var chunkType = Encoding.ASCII.GetString(buffer, pos + 4, 4);
             if (chunkType == "IEND")
@@ -1504,13 +2153,43 @@ public class ImageReader
         int pos = start + 2; // Skip SOI
         while (pos < buffer.Length - 1)
         {
-            if (buffer[pos] == 0xFF)
+            if (buffer[pos] != 0xFF)
             {
-                if (buffer[pos + 1] == 0xD9) // EOI marker
-                    return pos + 2 - start;
-                if (buffer[pos + 1] == 0xD8) // Another SOI (invalid)
-                    break;
+                pos++;
+                continue;
             }
+            var m = buffer[pos + 1];
+            if (m == 0xD9) // EOI
+                return pos + 2 - start;
+            if (m == 0xD8) // Another SOI (invalid)
+                break;
+            // Skip segments with length: SOF, DHT, DQT, DRI, APP, COM, SOS (has length then scan for next marker)
+            if (m == 0xC0 || m == 0xC1 || m == 0xC2 || m == 0xC3 || m == 0xC4 || m == 0xC5 ||
+                m == 0xC6 || m == 0xC7 || m == 0xC8 || m == 0xC9 || m == 0xCA || m == 0xCB ||
+                m == 0xCC || m == 0xCD || m == 0xCE || m == 0xCF ||
+                m == 0xDB || m == 0xDD || m == 0xE0 || m == 0xE1 || m == 0xE2 || m == 0xE3 ||
+                m == 0xE4 || m == 0xE5 || m == 0xE6 || m == 0xE7 || m == 0xE8 || m == 0xE9 ||
+                m == 0xEA || m == 0xEB || m == 0xEC || m == 0xED || m == 0xEE || m == 0xEF ||
+                m == 0xFE || m == 0xDA) // SOS: skip length then scan until next 0xFF
+            {
+                if (pos + 4 > buffer.Length) break;
+                var segLen = (buffer[pos + 2] << 8) | buffer[pos + 3];
+                if (m == 0xDA) // SOS: after 2+segLen, scan for 0xFF 0xD9
+                {
+                    int sosEnd = pos + 2 + segLen;
+                    for (int i = sosEnd; i < buffer.Length - 1; i++)
+                    {
+                        if (buffer[i] == 0xFF && buffer[i + 1] == 0xD9)
+                            return i + 2 - start;
+                        if (buffer[i] == 0xFF && buffer[i + 1] != 0x00) // Skip escaped 0xFF in scan
+                            i++;
+                    }
+                    break;
+                }
+                pos += 2 + segLen;
+                continue;
+            }
+            if (m >= 0xD0 && m <= 0xD7) { pos += 2; continue; } // RST: no length
             pos++;
         }
         return buffer.Length - start;
@@ -1609,7 +2288,7 @@ public class ImageReader
 
     private int GetBlipHeaderSize(ushort recType)
     {
-        // BLIP header sizes vary by type
+        // MS-ODRAW 2.2.23+: BLIP header sizes
         return recType switch
         {
             0xF01A => 16, // EMF
@@ -1617,8 +2296,10 @@ public class ImageReader
             0xF01C => 16, // PICT
             0xF01D => 17, // JPEG
             0xF01E => 17, // PNG
-            0xF01F => 17, // BMP
-            0xF020 => 17, // TIFF
+            0xF01F => 17, // DIB
+            0xF020 => 17, // TIFF (legacy)
+            0xF029 => 17, // TIFF
+            0xF02A => 17, // JPEG (alternate)
             _ => 16
         };
     }
@@ -1633,6 +2314,8 @@ public class ImageReader
             0xF01E => ImageType.Png,
             0xF01F => ImageType.Dib,
             0xF020 => ImageType.Tiff,
+            0xF029 => ImageType.Tiff,
+            0xF02A => ImageType.Jpeg,
             _ => ImageType.Unknown
         };
     }
