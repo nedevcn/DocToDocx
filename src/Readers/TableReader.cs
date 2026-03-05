@@ -159,22 +159,34 @@ public class TableReader
                     Type = ParagraphType.Normal,
                     Properties = para.Properties,
                     NestingLevel = para.NestingLevel,
-                    Runs = para.Runs.Select(r => new RunModel
+                    Runs = para.Runs.Select(r =>
                     {
-                        Text = r.Text.Replace("\x07", ""),
-                        IsPicture = r.IsPicture,
-                        ImageIndex = r.ImageIndex,
-                        FcPic = r.FcPic,
-                        Properties = r.Properties != null ? new RunProperties
+                        // Clone the run but strip cell-end markers from text.
+                        // Reuse the original Properties object to preserve ALL
+                        // formatting (bold, italic, CS props, RGB, highlight, etc.)
+                        var cloned = new RunModel
                         {
-                            IsBold = r.Properties.IsBold,
-                            IsItalic = r.Properties.IsItalic,
-                            IsUnderline = r.Properties.IsUnderline,
-                            FontSize = r.Properties.FontSize,
-                            FontName = r.Properties.FontName,
-                            Color = r.Properties.Color,
-                            BgColor = r.Properties.BgColor
-                        } : null
+                            Text = r.Text?.Replace("\x07", ""),
+                            IsPicture = r.IsPicture,
+                            ImageIndex = r.ImageIndex,
+                            FcPic = r.FcPic,
+                            CharacterPosition = r.CharacterPosition,
+                            CharacterLength = r.CharacterLength,
+                            IsField = r.IsField,
+                            FieldCode = r.FieldCode,
+                            IsHyperlink = r.IsHyperlink,
+                            HyperlinkUrl = r.HyperlinkUrl,
+                            HyperlinkRelationshipId = r.HyperlinkRelationshipId,
+                            IsBookmark = r.IsBookmark,
+                            IsBookmarkStart = r.IsBookmarkStart,
+                            BookmarkName = r.BookmarkName,
+                            IsOle = r.IsOle,
+                            OleObjectId = r.OleObjectId,
+                            OleProgId = r.OleProgId,
+                            ImageRelationshipId = r.ImageRelationshipId,
+                            Properties = r.Properties
+                        };
+                        return cloned;
                     }).ToList()
                 };
 
@@ -283,8 +295,11 @@ public class TableReader
         table.RowCount = table.Rows.Count;
         table.ColumnCount = table.Rows.Max(r => r.Cells.Count);
 
+        // Only set header row when the TAP data explicitly flags it.
+        // Do NOT force all first rows to be headers — that's wrong for most tables.
         var firstRow = table.Rows.FirstOrDefault();
-        if (firstRow != null)
+        var firstTap = ctx.RowTaps.Count > 0 ? ctx.RowTaps[0] : null;
+        if (firstRow != null && firstTap != null && firstTap.IsHeaderRow)
         {
             firstRow.Properties ??= new TableRowProperties();
             firstRow.Properties.IsHeaderRow = true;

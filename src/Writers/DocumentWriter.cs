@@ -1841,8 +1841,9 @@ public class DocumentWriter
         const string wNs = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
         _writer.WriteStartElement("w", position, wNs);
         _writer.WriteAttributeString("w", "val", wNs, GetBorderStyle(border.Style));
-        _writer.WriteAttributeString("w", "sz", wNs, (border.Width / 8).ToString());
-        _writer.WriteAttributeString("w", "space", wNs, "0");
+        // Width is in 1/8 pt (same as OOXML w:sz units) after BRC80 decode
+        _writer.WriteAttributeString("w", "sz", wNs, border.Width.ToString());
+        _writer.WriteAttributeString("w", "space", wNs, border.Space.ToString());
         _writer.WriteAttributeString("w", "color", wNs, ColorHelper.ColorToHex(border.Color));
         _writer.WriteEndElement();
     }
