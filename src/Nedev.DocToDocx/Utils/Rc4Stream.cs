@@ -7,7 +7,7 @@ namespace Nedev.DocToDocx.Utils;
 /// <summary>
 /// A simple RC4 implementation to avoid depending on obsolete or platform-dependent .NET cryptography APIs.
 /// </summary>
-internal class Rc4Cipher
+public class Rc4Cipher
 {
     private readonly byte[] _s = new byte[256];
     private int _i;

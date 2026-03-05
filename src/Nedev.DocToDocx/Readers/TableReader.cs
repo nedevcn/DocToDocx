@@ -229,7 +229,20 @@ public class TableReader
                 else
                 {
                     popped.Table.ParentTableIndex = null;
-            // Empty cell? 
+                    topLevelTables.Add(popped.Table);
+                }
+            }
+        }
+
+        // end of ParseTables() method's while loop above; the following is the helper
+        // method that was accidentally inlined earlier.
+    }
+
+    private void FlushCurrentCell(TableContext ctx)
+    {
+        if (ctx.CurrentCellParagraphs.Count == 0 && ctx.CellsInCurrentRow.Count > 0)
+        {
+            // Empty cell? placeholder for future logic
         }
 
         var cellModel = new TableCellModel
