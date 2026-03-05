@@ -210,8 +210,9 @@ public class HeaderFooterWriter
             return text;
             
         var sb = new StringBuilder(text.Length);
-        foreach (var ch in text)
+        for (int i = 0; i < text.Length; i++)
         {
+            char ch = text[i];
             // Skip characters outside valid Unicode range or in invalid XML range
             // Valid: 0x09, 0x0A, 0x0D, 0x20-0xD7FF, 0xE000-0xFFFD, 0x10000-0x10FFFF
             if (ch == '\t' || ch == '\n' || ch == '\r')
@@ -226,11 +227,16 @@ public class HeaderFooterWriter
             {
                 sb.Append(ch);
             }
-            else if (ch >= 0x10000 && char.IsSurrogate(ch))
+            else if (char.IsHighSurrogate(ch))
             {
-                sb.Append(ch);
+                if (i + 1 < text.Length && char.IsLowSurrogate(text[i + 1]))
+                {
+                    sb.Append(ch);
+                    sb.Append(text[i + 1]);
+                    i++;
+                }
             }
-            // Skip all other characters (including 0xFFFF)
+            // Skip all other characters (including 0xFFFF and unpaired surrogates)
         }
         return sb.ToString();
     }

@@ -36,12 +36,40 @@ public class ChartModel
     public string? SourceStreamName { get; set; }
 
     /// <summary>
-    /// Raw bytes of the embedded chart container stream. This allows
-    /// future phases or external tools to perform deeper parsing
-    /// (e.g. BIFF/Excel/MSGraph) without having to touch the .doc again.
+    /// Raw bytes of the embedded chart container stream (usually the
+    /// OLE/Excel workbook or MSGraph chart stream). This allows future
+    /// phases or external tools to perform deeper parsing (e.g. BIFF,
+    /// Excel, MSGraph) without having to re‑open the original `.doc`.
     /// May be null when the stream could not be read.
     /// </summary>
     public byte[]? SourceBytes { get; set; }
+
+    /// <summary>
+    /// Convenience alias of <see cref="SourceBytes"/> that emphasises the
+    /// fact that the payload is typically the original workbook bytes.
+    /// Both properties refer to the same underlying array; setting one
+    /// updates the other.
+    /// </summary>
+    public byte[]? WorkbookBytes
+    {
+        get => SourceBytes;
+        set => SourceBytes = value;
+    }
+
+    /// <summary>
+    /// Optional title displayed on the category (X) axis.
+    /// </summary>
+    public string? CategoryAxisTitle { get; set; }
+
+    /// <summary>
+    /// Optional title displayed on the value (Y) axis.
+    /// </summary>
+    public string? ValueAxisTitle { get; set; }
+
+    /// <summary>
+    /// Whether a legend should be shown for the chart. Defaults to true.
+    /// </summary>
+    public bool ShowLegend { get; set; } = true;
 }
 
 public enum ChartType
@@ -49,7 +77,12 @@ public enum ChartType
     Column,
     Line,
     Bar,
-    Pie
+    Pie,
+    Area,
+    Scatter,
+    Doughnut,
+    Radar,
+    Unknown
 }
 
 /// <summary>

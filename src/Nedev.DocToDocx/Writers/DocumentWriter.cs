@@ -1780,8 +1780,9 @@ public partial class DocumentWriter
         if (string.IsNullOrEmpty(text)) return text;
 
         var sb = new System.Text.StringBuilder(text.Length);
-        foreach (char c in text)
+        for (int i = 0; i < text.Length; i++)
         {
+            char c = text[i];
             if (c == '\uFFFD')
             {
                 sb.Append(' ');
@@ -1793,7 +1794,15 @@ public partial class DocumentWriter
             {
                 sb.Append(c);
             }
-            // else: skip invalid XML character
+            else if (char.IsHighSurrogate(c))
+            {
+                if (i + 1 < text.Length && char.IsLowSurrogate(text[i + 1]))
+                {
+                    sb.Append(c);
+                    sb.Append(text[i + 1]);
+                    i++;
+                }
+            }
         }
         return sb.ToString();
     }

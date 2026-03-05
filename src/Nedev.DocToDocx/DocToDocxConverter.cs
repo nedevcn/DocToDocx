@@ -38,6 +38,10 @@ public static class DocToDocxConverter
         using var zipWriter = new ZipWriter(stream);
         zipWriter.WriteDocument(reader.Document);
         
+        // Explicitly dispose the writer to flush the ZIP central directory
+        // before the underlying stream is closed or before we return.
+        zipWriter.Dispose();
+        
         Console.WriteLine("Conversion complete!");
     }
     
@@ -77,6 +81,9 @@ public static class DocToDocxConverter
         progress?.Report(new ConversionProgress { Stage = ConversionStage.Writing, PercentComplete = 80 });
         zipWriter.WriteDocument(reader.Document);
         
+        // Explicitly dispose the writer to flush the ZIP central directory
+        zipWriter.Dispose();
+        
         progress?.Report(new ConversionProgress { Stage = ConversionStage.Complete, PercentComplete = 100 });
     }
     
@@ -104,6 +111,9 @@ public static class DocToDocxConverter
         using var stream = File.Create(outputPath);
         using var zipWriter = new ZipWriter(stream);
         zipWriter.WriteDocument(document);
+        
+        // Explicitly dispose the writer to flush the ZIP central directory
+        zipWriter.Dispose();
     }
 }
 

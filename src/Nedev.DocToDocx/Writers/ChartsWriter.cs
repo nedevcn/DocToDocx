@@ -56,19 +56,27 @@ public class ChartsWriter
             _writer.WriteEndElement(); // c:title
         }
 
-        // Plot area with a single chart type. We currently map all chart types
-        // onto a category + value axis layout which works for column/line/bar.
+        // Plot area with a single chart type. For most chart types we use a
+        // simple category/value axis layout. Pie‑like charts do not require axes
+        // or cat/val elements, but the series data itself is still written.
         _writer.WriteStartElement("c", "plotArea", cNs);
         _writer.WriteStartElement("c", GetChartElementName(chart.Type), cNs);
 
-        // One category axis and one value axis are enough for basic charts.
-        WriteCategoryAxisData(chart);
+        bool isPie = chart.Type == ChartType.Pie || chart.Type == ChartType.Doughnut;
+        if (!isPie)
+        {
+            WriteCategoryAxisData(chart);
+        }
+
         WriteSeriesData(chart);
 
         _writer.WriteEndElement(); // c:chartType
 
-        // Axes (catAx + valAx) with default ids
-        WriteDefaultAxes();
+        // Axes (catAx + valAx) with default ids; omit for pie/doughnut
+        if (!isPie)
+        {
+            WriteDefaultAxes();
+        }
 
         _writer.WriteEndElement(); // c:plotArea
 
@@ -84,12 +92,21 @@ public class ChartsWriter
         _writer.WriteEndDocument();
     }
 
-    private static string GetChartElementName(ChartType type) => type switch
+    // made internal so that unit tests can verify mapping without needing to
+    // drive the entire writer.
+    public static string GetChartElementName(ChartType type) => type switch
     {
         ChartType.Line => "lineChart",
         ChartType.Bar => "barChart",
+        ChartType.Column => "barChart", // column is semantically a clustered bar in CT
         ChartType.Pie => "pieChart",
-        _ => "barChart" // use barChart which is visually close to column for simple data
+        ChartType.Doughnut => "pieChart", // OpenXML has a separate doughnutChart element, but
+                                             // Word will happily treat a pieChart with a
+                                             // doughnut style. We'll fold it for now.
+        ChartType.Area => "areaChart",
+        ChartType.Scatter => "scatterChart",
+        ChartType.Radar => "radarChart",
+        _ => "barChart" // fallback to something reasonable
     };
 
     /// <summary>

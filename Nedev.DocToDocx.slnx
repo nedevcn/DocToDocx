@@ -1,0 +1,6 @@
+<Solution>
+  <Folder Name="/src/">
+    <Project Path="src/Nedev.DocToDocx.Cli/Nedev.DocToDocx.Cli.csproj" />
+    <Project Path="src/Nedev.DocToDocx/Nedev.DocToDocx.csproj" />
+  </Folder>
+</Solution>

@@ -331,7 +331,10 @@ public class DocReader : IDisposable
             {
                 foreach (var hf in _headerFooterReader.Headers.Concat(_headerFooterReader.Footers))
                 {
-                    hf.Paragraphs = ParseParagraphsRange(_textReader.Text, hf.CharacterPosition, hf.CharacterPosition + hf.CharacterLength, _globalChpMap, _globalPapMap, ref _globalImageCounter);
+                    int headerStoryStartCp = _fibReader.CcpText + _fibReader.CcpFtn;
+                    int absoluteStartCp = headerStoryStartCp + hf.CharacterPosition;
+                    int absoluteEndCp = absoluteStartCp + hf.CharacterLength;
+                    hf.Paragraphs = ParseParagraphsRange(_textReader.Text, absoluteStartCp, absoluteEndCp, _globalChpMap, _globalPapMap, ref _globalImageCounter);
                 }
             }
 

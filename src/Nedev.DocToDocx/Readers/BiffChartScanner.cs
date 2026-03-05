@@ -137,50 +137,120 @@ public static class BiffChartScanner
         int maxRow = cells.Keys.Max(k => k.r);
         int maxCol = cells.Keys.Max(k => k.c);
         
-        // Assume Row 0 holds category names, Col 0 holds series names. Data is in (1..maxRow, 1..maxCol).
-        var categories = new List<string>();
-        for (int c = 1; c <= maxCol; c++)
+        // Decide whether categories live in the first row (default) or first column.
+        bool useRowCategories = true;
+        if (maxRow > maxCol)
         {
-            if (strings.TryGetValue((0, c), out var catName))
-                categories.Add(catName);
-            else if (cells.TryGetValue((0, c), out var catVal))
-                categories.Add(catVal.ToString("G"));
-            else
-                categories.Add($"Category {c}");
+            bool hasRowCat = Enumerable.Range(1, maxCol)
+                .Any(c => strings.ContainsKey((0, c)) || cells.ContainsKey((0, c)));
+            bool hasColCat = Enumerable.Range(1, maxRow)
+                .Any(r => strings.ContainsKey((r, 0)) || cells.ContainsKey((r, 0)));
+            if (!hasRowCat && hasColCat)
+                useRowCategories = false;
         }
         
+        List<string> categories = new();
         var seriesList = new List<ChartSeries>();
-        for (int r = 1; r <= maxRow; r++)
+
+        if (useRowCategories)
         {
-            var values = new List<double>();
-            bool hasValue = false;
             for (int c = 1; c <= maxCol; c++)
             {
-                if (cells.TryGetValue((r, c), out var v))
-                {
-                    values.Add(v);
-                    hasValue = true;
-                }
+                if (strings.TryGetValue((0, c), out var catName))
+                    categories.Add(catName);
+                else if (cells.TryGetValue((0, c), out var catVal))
+                    categories.Add(catVal.ToString("G"));
                 else
-                {
-                    values.Add(0);
-                }
+                    categories.Add($"Category {c}");
             }
-            
-            if (hasValue)
+
+            for (int r = 1; r <= maxRow; r++)
             {
-                string seriesName = $"Series {r}";
-                if (strings.TryGetValue((r, 0), out var sName)) seriesName = sName;
-                else if (cells.TryGetValue((r, 0), out var sVal)) seriesName = sVal.ToString("G");
-                
-                seriesList.Add(new ChartSeries { Name = seriesName, Values = values });
+                var values = new List<double>();
+                bool hasValue = false;
+                for (int c = 1; c <= maxCol; c++)
+                {
+                    if (cells.TryGetValue((r, c), out var v))
+                    {
+                        values.Add(v);
+                        hasValue = true;
+                    }
+                    else
+                    {
+                        values.Add(0);
+                    }
+                }
+
+                if (hasValue)
+                {
+                    string seriesName = $"Series {r}";
+                    if (strings.TryGetValue((r, 0), out var sName)) seriesName = sName;
+                    else if (cells.TryGetValue((r, 0), out var sVal)) seriesName = sVal.ToString("G");
+
+                    seriesList.Add(new ChartSeries { Name = seriesName, Values = values });
+                }
             }
         }
-        
+        else
+        {
+            // categories come from first column, series run across columns
+            for (int r = 1; r <= maxRow; r++)
+            {
+                if (strings.TryGetValue((r, 0), out var catName))
+                    categories.Add(catName);
+                else if (cells.TryGetValue((r, 0), out var catVal))
+                    categories.Add(catVal.ToString("G"));
+                else
+                    categories.Add($"Category {r}");
+            }
+
+            for (int c = 1; c <= maxCol; c++)
+            {
+                var values = new List<double>();
+                bool hasValue = false;
+                for (int r = 1; r <= maxRow; r++)
+                {
+                    if (cells.TryGetValue((r, c), out var v))
+                    {
+                        values.Add(v);
+                        hasValue = true;
+                    }
+                    else
+                    {
+                        values.Add(0);
+                    }
+                }
+
+                if (hasValue)
+                {
+                    string seriesName = $"Series {c}";
+                    if (strings.TryGetValue((0, c), out var sName)) seriesName = sName;
+                    else if (cells.TryGetValue((0, c), out var sVal)) seriesName = sVal.ToString("G");
+
+                    seriesList.Add(new ChartSeries { Name = seriesName, Values = values });
+                }
+            }
+        }
+
         if (seriesList.Count > 0)
         {
             model.Categories = categories;
             model.Series = seriesList;
+
+            // heuristic type detection
+            if (seriesList.Count == 1 && categories.Count > 1)
+            {
+                model.Type = ChartType.Pie;
+            }
+            else if (model.SourceStreamName != null)
+            {
+                var name = model.SourceStreamName.ToLowerInvariant();
+                if (name.Contains("pie")) model.Type = ChartType.Pie;
+                else if (name.Contains("line")) model.Type = ChartType.Line;
+                else if (name.Contains("bar")) model.Type = ChartType.Bar;
+                else if (name.Contains("area")) model.Type = ChartType.Area;
+                else if (name.Contains("scatter")) model.Type = ChartType.Scatter;
+            }
         }
     }
 

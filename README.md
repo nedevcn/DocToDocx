@@ -26,7 +26,9 @@ A high‑fidelity `.doc` → `.docx` converter for .NET 10 with no third‑party
   - Deeply nested tables and extremely exotic merge patterns may still be flattened or approximated; the goal is a robust, readable DOCX rather than a byte‑perfect structural clone of the original MS‑DOC.
   - Complex OfficeArt vector shapes, SmartArt, rich chart types (with full Excel-backed data), OLE objects, and other advanced drawing features continue to be out of scope; when encountered they are either ignored or downgraded to simpler picture or placeholder chart representations where possible.
 
-## Library usage
+## Usage
+
+### Library
 
 Add a reference to the `Nedev.DocToDocx` assembly and call the static converter API:
 
@@ -36,5 +38,18 @@ using Nedev.DocToDocx;
 DocToDocxConverter.Convert("input.doc", "output.docx");
 ```
 
-> This repository currently exposes the converter as a **library API only**.  
-> If you need a CLI or additional validation tooling, you can build it on top of `DocToDocxConverter` according to your own application’s needs.
+### Command Line Interface (CLI)
+
+You can also use the included CLI tool to convert documents directly from the command line:
+
+```bash
+Nedev.DocToDocx.Cli <input.doc> <output.docx> [-p <password>]
+```
+
+**Arguments:**
+- `<input.doc>` The path to the input MS-DOC file.
+- `<output.docx>` The path where the output DOCX file will be saved.
+
+**Options:**
+- `-p`, `--password` The password to open an encrypted DOC file.
+- `-h`, `--help` Show this help message and exit.
