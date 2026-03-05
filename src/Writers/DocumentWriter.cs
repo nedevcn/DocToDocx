@@ -16,6 +16,8 @@ public class DocumentWriter
     private DocumentRelationshipIds? _relationshipIds;
     private readonly Dictionary<string, int> _bookmarkIds = new(StringComparer.Ordinal);
     private int _bookmarkCounter = 0;
+    private HashSet<string> _startedComments = new();
+    private HashSet<string> _endedComments = new();
     /// <summary>When true, do not emit pageBreakBefore so leading content (e.g. 绿色等级评价报告) stays on page 1.</summary>
     private bool _suppressLeadingPageBreak;
     /// <summary>When true, the next picture written in the body should use full-page dimensions (first-page background).</summary>

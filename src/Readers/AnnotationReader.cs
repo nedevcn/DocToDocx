@@ -1,3 +1,6 @@
+using System;
+using System.Collections.Generic;
+using System.IO;
 using System.Text;
 using Nedev.DocToDocx.Models;
 using Nedev.DocToDocx.Utils;
@@ -6,20 +9,22 @@ namespace Nedev.DocToDocx.Readers;
 
 public class AnnotationReader
 {
-    private readonly BinaryReader _annotationReader;
+    private readonly BinaryReader _tableReader;
     private readonly FibReader _fib;
+    private readonly TextReader _textReader;
 
-    public AnnotationReader(BinaryReader annotationReader, FibReader fib)
+    public AnnotationReader(BinaryReader tableReader, FibReader fib, TextReader textReader)
     {
-        _annotationReader = annotationReader;
+        _tableReader = tableReader;
         _fib = fib;
+        _textReader = textReader;
     }
 
     public List<AnnotationModel> ReadAnnotations()
     {
         var annotations = new List<AnnotationModel>();
 
-        if (_fib.FcAnot == 0 || _fib.LcbAnot == 0 || _annotationReader == null)
+        if (_fib.LcbPlcfandRef == 0 || _fib.LcbPlcfandTxt == 0 || _tableReader == null)
             return annotations;
 
         try
@@ -38,56 +43,81 @@ public class AnnotationReader
     {
         var annotations = new List<AnnotationModel>();
 
-        if (_fib.LcbAnot < 8)
-            return annotations;
+        // 1. Determine number of comments from PlcfandTxt (array of CPs, no data)
+        // PLCF of size LcbPlcfandTxt contains (n + 1) * 4 bytes.
+        int n = (int)(_fib.LcbPlcfandTxt / 4) - 1;
+        if (n <= 0) return annotations;
 
-        _annotationReader.BaseStream.Seek(_fib.FcAnot, SeekOrigin.Begin);
-
-        var grpprlSize = ReadGrpprl(_annotationReader, _fib.FcAnot, _fib.LcbAnot, out var pcdOffset);
-
-        if (pcdOffset >= _fib.LcbAnot)
-            return annotations;
-
-        var pcdCount = (int)((_fib.LcbAnot - pcdOffset - 4) / 12);
-        if (pcdCount <= 0)
-            return annotations;
-
-        var cps = new int[pcdCount + 1];
-        for (int i = 0; i <= pcdCount; i++)
+        // 2. Read CPs from PlcfandRef (anchors in main document)
+        _tableReader.BaseStream.Seek(_fib.FcPlcfandRef, SeekOrigin.Begin);
+        int[] anchorCps = new int[n + 1];
+        for (int i = 0; i <= n; i++)
         {
-            cps[i] = _annotationReader.ReadInt32();
+            anchorCps[i] = _tableReader.ReadInt32();
         }
 
-        for (int i = 0; i < pcdCount; i++)
-        {
-            var annotStartCp = cps[i];
-            var annotEndCp = cps[i + 1];
+        // Calculate element size of ATRDPre10
+        int atrdSize = (int)((_fib.LcbPlcfandRef - (n + 1) * 4) / n);
 
+        // Read ATRD structs
+        var dttms = new uint[n];
+        var authorIndices = new short[n];
+        for (int i = 0; i < n; i++)
+        {
+            long startPos = _tableReader.BaseStream.Position;
+            _tableReader.ReadInt16(); // lsr
+            _tableReader.ReadInt16(); // irsibcatn
+            _tableReader.ReadInt16(); // cchAnBkmk
+            dttms[i] = _tableReader.ReadUInt32(); // dttm
+            authorIndices[i] = _tableReader.ReadInt16(); // ibst (author index)
+            
+            _tableReader.BaseStream.Seek(startPos + atrdSize, SeekOrigin.Begin);
+        }
+
+        // 3. Read bounds of comment text in ATN space
+        _tableReader.BaseStream.Seek(_fib.FcPlcfandTxt, SeekOrigin.Begin);
+        int[] txtCps = new int[n + 1];
+        for (int i = 0; i <= n; i++)
+        {
+            txtCps[i] = _tableReader.ReadInt32();
+        }
+
+        // Calculate global offset for ATN text (at the end of main text + footnotes + headers)
+        int atnGlobalStart = _fib.CcpText + _fib.CcpFtn + _fib.CcpHdd;
+
+        // 4. Extract author names from SttbfAtnMod
+        var authors = ReadAuthors();
+
+        // 5. Build models
+        for (int i = 0; i < n; i++)
+        {
             var annotation = new AnnotationModel
             {
-                Id = $"anot_{i + 1}",
-                StartCharacterPosition = annotStartCp,
-                EndCharacterPosition = annotEndCp
+                Id = i.ToString(),
+                StartCharacterPosition = anchorCps[i],
+                EndCharacterPosition = anchorCps[i], // For now, single-point anchor
+                Date = ParseDttm(dttms[i]),
+                Author = (authorIndices[i] >= 0 && authorIndices[i] < authors.Count) ? authors[authorIndices[i]] : "Unknown"
             };
 
-            var pcd = ReadPcd(_annotationReader);
-            var annotText = ReadAnnotationText(_annotationReader, pcd, annotEndCp - annotStartCp);
-
-            if (!string.IsNullOrEmpty(annotText))
+            int len = txtCps[i + 1] - txtCps[i];
+            if (len > 0)
             {
+                // The comment text is inside the global text space handled by TextReader
+                string text = _textReader.GetText(atnGlobalStart + txtCps[i], len);
+                
+                // Clean control chars (Word puts \r for paragraph breaks)
+                text = text.Replace("\r", "\n").TrimEnd('\n', '\x05', '\r', '\0');
+                
                 var run = new RunModel
                 {
-                    Text = annotText,
-                    CharacterPosition = annotStartCp,
-                    CharacterLength = annotText.Length
+                    Text = text,
+                    CharacterPosition = atnGlobalStart + txtCps[i],
+                    CharacterLength = len
                 };
                 annotation.Runs.Add(run);
 
-                var paragraph = new ParagraphModel
-                {
-                    Index = 0,
-                    Type = ParagraphType.Normal
-                };
+                var paragraph = new ParagraphModel { Index = 0, Type = ParagraphType.Normal };
                 paragraph.Runs.Add(run);
                 annotation.Paragraphs.Add(paragraph);
             }
@@ -95,175 +125,100 @@ public class AnnotationReader
             annotations.Add(annotation);
         }
 
-        ReadAnnotationAuthors(annotations);
+        // 6. Attempt to refine the text range if PlcfAtnbkf/PlcfAtnbkl exist
+        RefineAnnotationRanges(annotations);
 
         return annotations;
     }
 
-    private void ReadAnnotationAuthors(List<AnnotationModel> annotations)
+    private List<string> ReadAuthors()
     {
-        if (_fib.FcSttbfAtnMod == 0 || _fib.LcbSttbfAtnMod == 0)
-            return;
+        var authors = new List<string>();
+        if (_fib.FcSttbfAtnMod == 0 || _fib.LcbSttbfAtnMod == 0) return authors;
 
-        try
+        _tableReader.BaseStream.Seek(_fib.FcSttbfAtnMod, SeekOrigin.Begin);
+        ushort fExtend = _tableReader.ReadUInt16();
+        bool isExtended = fExtend == 0xFFFF;
+        int cData = isExtended ? _tableReader.ReadUInt16() : fExtend;
+        
+        if (isExtended) _tableReader.ReadUInt16(); // cbExtra
+
+        for (int i = 0; i < cData; i++)
         {
-            _annotationReader.BaseStream.Seek(_fib.FcSttbfAtnMod, SeekOrigin.Begin);
+            if (_tableReader.BaseStream.Position >= _fib.FcSttbfAtnMod + _fib.LcbSttbfAtnMod) break;
 
-            var fExtend = _annotationReader.ReadUInt16();
-            bool isExtended = (fExtend == 0xFFFF);
-
-            int cData;
-            if (isExtended)
+            int len = isExtended ? _tableReader.ReadUInt16() : _tableReader.ReadByte();
+            if (len == 0) 
             {
-                cData = _annotationReader.ReadUInt16();
-                _annotationReader.ReadUInt16();
-            }
-            else
-            {
-                cData = fExtend;
+                authors.Add(string.Empty);
+                continue;
             }
 
-            for (int i = 0; i < cData && i < annotations.Count; i++)
+            byte[] bytes = _tableReader.ReadBytes(isExtended ? len * 2 : len);
+            string name = isExtended ? Encoding.Unicode.GetString(bytes) : Encoding.Default.GetString(bytes);
+            authors.Add(name.TrimEnd('\0'));
+        }
+
+        return authors;
+    }
+
+    private void RefineAnnotationRanges(List<AnnotationModel> annotations)
+    {
+        if (_fib.FcPlcfAtnbkf == 0 || _fib.FcPlcfAtnbkl == 0) return;
+
+        // PlcfAtnbkf: Array of CPs (starts) + Array of short (index)
+        // PLCF element size = 2 bytes.
+        int nStarts = (int)((_fib.LcbPlcfAtnbkf - 4) / 6);
+        if (nStarts > 0)
+        {
+            _tableReader.BaseStream.Seek(_fib.FcPlcfAtnbkf, SeekOrigin.Begin);
+            int[] startCps = new int[nStarts + 1];
+            for (int i = 0; i <= nStarts; i++) startCps[i] = _tableReader.ReadInt32();
+            
+            for (int i = 0; i < nStarts; i++)
             {
-                if (isExtended)
+                short annotIdx = _tableReader.ReadInt16();
+                if (annotIdx >= 0 && annotIdx < annotations.Count)
                 {
-                    var nameLength = _annotationReader.ReadUInt16();
-                    if (nameLength > 0 && nameLength < 256)
-                    {
-                        var nameBytes = _annotationReader.ReadBytes(nameLength);
-                        annotations[i].Author = Encoding.Unicode.GetString(nameBytes).TrimEnd('\0');
-                    }
+                    annotations[annotIdx].StartCharacterPosition = startCps[i];
                 }
-                else
+            }
+        }
+
+        int nEnds = (int)((_fib.LcbPlcfAtnbkl - 4) / 6);
+        if (nEnds > 0)
+        {
+            _tableReader.BaseStream.Seek(_fib.FcPlcfAtnbkl, SeekOrigin.Begin);
+            int[] endCps = new int[nEnds + 1];
+            for (int i = 0; i <= nEnds; i++) endCps[i] = _tableReader.ReadInt32();
+            
+            for (int i = 0; i < nEnds; i++)
+            {
+                short annotIdx = _tableReader.ReadInt16();
+                if (annotIdx >= 0 && annotIdx < annotations.Count)
                 {
-                    var nameLength = _annotationReader.ReadByte();
-                    if (nameLength > 0 && nameLength < 256)
-                    {
-                        var nameBytes = _annotationReader.ReadBytes(nameLength);
-                        annotations[i].Author = Encoding.Default.GetString(nameBytes).TrimEnd('\0');
-                    }
+                    annotations[annotIdx].EndCharacterPosition = endCps[i];
                 }
             }
         }
-        catch
-        {
-        }
     }
 
-    private uint ReadGrpprl(BinaryReader reader, uint fc, uint lcb, out uint pcdOffset)
+    private DateTime ParseDttm(uint dttm)
     {
-        pcdOffset = 0;
-        var grpprlSize = 0u;
-
-        var startPos = reader.BaseStream.Position;
-        var endPos = fc + lcb;
-
-        while (reader.BaseStream.Position < endPos - 4)
+        if (dttm == 0) return DateTime.Now;
+        try 
         {
-            var clxt = reader.ReadByte();
-
-            if (clxt == 0x01)
-            {
-                grpprlSize = reader.ReadUInt16();
-                reader.BaseStream.Seek(grpprlSize, SeekOrigin.Current);
-            }
-            else if (clxt == 0x02)
-            {
-                pcdOffset = (uint)(reader.BaseStream.Position - startPos - 1);
-                reader.BaseStream.Position = startPos + pcdOffset;
-                break;
-            }
-            else
-            {
-                break;
-            }
-        }
-
-        return grpprlSize;
-    }
-
-    private (uint fc, bool fCompressed, ushort prm) ReadPcd(BinaryReader reader)
-    {
-        reader.ReadUInt16();
-        var rawFc = reader.ReadUInt32();
-        var fCompressed = (rawFc & 0x40000000) != 0;
-        uint fc;
-        if (fCompressed)
+            int mint = (int)(dttm & 0x3F);
+            int hr = (int)((dttm >> 6) & 0x1F);
+            int dom = (int)((dttm >> 11) & 0x1F);
+            int mon = (int)((dttm >> 16) & 0x0F);
+            int yr = 1900 + (int)((dttm >> 20) & 0x1FF);
+            return new DateTime(yr, Math.Max(1, mon), Math.Max(1, dom), hr, mint, 0);
+        } 
+        catch 
         {
-            fc = (rawFc & 0x3FFFFFFF) / 2;
+            return DateTime.Now;
         }
-        else
-        {
-            fc = rawFc & 0x3FFFFFFF;
-        }
-        var prm = reader.ReadUInt16();
-        return (fc, fCompressed, prm);
-    }
-
-    private string ReadAnnotationText(BinaryReader reader, (uint fc, bool fCompressed, ushort prm) pcd, int length)
-    {
-        if (length <= 0)
-            return string.Empty;
-
-        var sb = new StringBuilder();
-
-        try
-        {
-            var currentPos = reader.BaseStream.Position;
-            reader.BaseStream.Seek(pcd.fc, SeekOrigin.Begin);
-
-            if (pcd.fCompressed)
-            {
-                var ansiBytes = reader.ReadBytes(length);
-                sb.Append(Encoding.Default.GetString(ansiBytes));
-            }
-            else
-            {
-                var unicodeBytes = reader.ReadBytes(length * 2);
-                sb.Append(Encoding.Unicode.GetString(unicodeBytes));
-            }
-
-            reader.BaseStream.Position = currentPos;
-        }
-        catch
-        {
-        }
-
-        return CleanAnnotationText(sb.ToString());
-    }
-
-    private string CleanAnnotationText(string text)
-    {
-        if (string.IsNullOrEmpty(text))
-            return text;
-
-        var sb = new StringBuilder(text.Length);
-        foreach (var ch in text)
-        {
-            switch (ch)
-            {
-                case '\x01':
-                case '\x13':
-                case '\x14':
-                case '\x15':
-                    break;
-                case '\x0B':
-                    sb.Append('\n');
-                    break;
-                case '\x07':
-                    sb.Append('\t');
-                    break;
-                case '\x1E':
-                    sb.Append('-');
-                    break;
-                case '\x1F':
-                    break;
-                default:
-                    sb.Append(ch);
-                    break;
-            }
-        }
-
-        return sb.ToString().Trim();
     }
 }
+

@@ -175,9 +175,7 @@ public class DocReader : IDisposable
         _tableParseReader = new TableReader(_wordDocReader!, _tableReader!, _fibReader!, _fkpParser);
         _imageReader = new ImageReader(_wordDocReader!, _dataReader, _fibReader!, _cfb);
         _footnoteReader = new FootnoteReader(_fibReader!, _textReader!);
-        _annotationReader = new AnnotationReader(
-            _anotStream != null ? new BinaryReader(_anotStream, Encoding.Default, leaveOpen: true) : null,
-            _fibReader!);
+        _annotationReader = new AnnotationReader(_tableReader!, _fibReader!, _textReader!);
         _textboxReader = new TextboxReader(_tableReader!, _fibReader!, _textReader!);
         _headerFooterReader = new HeaderFooterReader(_tableReader!, _wordDocReader!, _fibReader!, _textReader!);
         _listReader = new ListReader(_tableReader!, _fibReader!);
