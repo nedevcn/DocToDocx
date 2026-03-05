@@ -30,6 +30,7 @@ public class DocumentModel
     public StyleSheet Styles { get; set; } = new();
     public DocumentProperties Properties { get; set; } = new();
     public HeaderFooterInfo HeadersFooters { get; set; } = new();
+    public ThemeModel Theme { get; set; } = new();
     public List<NumberingDefinition> NumberingDefinitions { get; set; } = new();
     public List<ListFormat> ListFormats { get; set; } = new();
     public List<string> RevisionAuthors { get; set; } = new();
@@ -338,6 +339,11 @@ public class ShapeModel
     public int LineWidth { get; set; }   // In EMUs or twips
     public bool IsLineVisible { get; set; } = true;
 
+    /// <summary>
+    /// Optional custom geometry information for non-preset shapes.
+    /// </summary>
+    public CustomGeometry? CustomGeometry { get; set; }
+    
     // Enhanced properties for cropping (16.16 fixed-point, 0 = 0%, 65536 = 100%)
     public int CropTop { get; set; }
     public int CropBottom { get; set; }
@@ -351,7 +357,8 @@ public enum ShapeType
     Picture,
     Rectangle,
     Ellipse,
-    Textbox
+    Textbox,
+    Custom
 }
 
 /// <summary>
@@ -632,4 +639,39 @@ public enum TextboxHorizontalAlignment
     Right,
     Inside,
     Outside
+}
+public class ThemeModel
+{
+    /// <summary>Raw theme1.xml content if extracted from "Theme" storage</summary>
+    public string? XmlContent { get; set; }
+    
+    /// <summary>Map of theme color names to hex values (if available)</summary>
+    public Dictionary<string, string> ColorMap { get; set; } = new();
+}
+public class CustomGeometry
+{
+    public List<System.Drawing.Point> Vertices { get; set; } = new();
+    public List<ShapePathSegment> Segments { get; set; } = new();
+    
+    // Coordination system for vertices (pGeoLeft, pGeoTop, etc.)
+    public int ViewLeft { get; set; }
+    public int ViewTop { get; set; }
+    public int ViewRight { get; set; } = 21600; // Default Word coordinate range
+    public int ViewBottom { get; set; } = 21600;
+}
+
+public class ShapePathSegment
+{
+    public SegmentType Type { get; set; }
+    public int VertexIndex { get; set; }
+    public int VertexCount { get; set; } = 1;
+}
+
+public enum SegmentType
+{
+    MoveTo,
+    LineTo,
+    CurveTo,      // Beziers
+    Close,
+    End
 }

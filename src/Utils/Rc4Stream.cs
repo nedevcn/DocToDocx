@@ -62,13 +62,15 @@ public class Rc4Stream : Stream
     private readonly long _streamLength;
     private readonly long _streamStartOffset;
     
+    private readonly bool _useSha1;
     private Rc4Cipher? _decryptor;
     private uint _currentBlock = uint.MaxValue; // Invalid block to force init
 
-    public Rc4Stream(Stream baseStream, byte[] baseHash, long streamStartOffset = 0, bool leaveOpen = false)
+    public Rc4Stream(Stream baseStream, byte[] baseHash, long streamStartOffset = 0, bool useSha1 = false, bool leaveOpen = false)
     {
         _baseStream = baseStream ?? throw new ArgumentNullException(nameof(baseStream));
         _baseHash = baseHash ?? throw new ArgumentNullException(nameof(baseHash));
+        _useSha1 = useSha1;
         _leaveOpen = leaveOpen;
         _streamLength = _baseStream.Length;
         _streamStartOffset = streamStartOffset; // Offset within the overarching logical stream
@@ -131,14 +133,24 @@ public class Rc4Stream : Stream
     {
         _currentBlock = blockNumber;
 
-        // Block hashing: MD5(baseHash + blockNumber (LittleEndian))
-        using var md5 = MD5.Create();
+        // Block hashing: Hash(baseHash + blockNumber (LittleEndian))
         byte[] blockBytes = BitConverter.GetBytes(blockNumber);
-        
-        md5.TransformBlock(_baseHash, 0, _baseHash.Length, _baseHash, 0);
-        md5.TransformFinalBlock(blockBytes, 0, blockBytes.Length);
-        
-        byte[] blockKey = md5.Hash!;
+        byte[] blockKey;
+
+        if (_useSha1)
+        {
+            using var sha1 = SHA1.Create();
+            sha1.TransformBlock(_baseHash, 0, _baseHash.Length, null, 0);
+            sha1.TransformFinalBlock(blockBytes, 0, blockBytes.Length);
+            blockKey = sha1.Hash!;
+        }
+        else
+        {
+            using var md5 = MD5.Create();
+            md5.TransformBlock(_baseHash, 0, _baseHash.Length, null, 0);
+            md5.TransformFinalBlock(blockBytes, 0, blockBytes.Length);
+            blockKey = md5.Hash!;
+        }
 
         _decryptor = new Rc4Cipher();
         _decryptor.Initialize(blockKey);

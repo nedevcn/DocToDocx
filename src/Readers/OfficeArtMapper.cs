@@ -143,13 +143,13 @@ public static class OfficeArtMapper
         var opt = spContainer.Children.FirstOrDefault(c => c.Type == 0xF00B);
         if (opt != null)
         {
-            ParseOptProperties(opt.Data, shape);
+            ParseOptProperties(opt.Data, shape, spContainer);
         }
 
         return shape;
     }
 
-    private static void ParseOptProperties(byte[] data, ShapeModel shape)
+    private static void ParseOptProperties(byte[] data, ShapeModel shape, EscherRecord? container = null)
     {
         // MS-ODRAW 2.1.1: OfficeArtOPT record
         // Each property is 6 bytes: 2 bytes ID (with flags) + 4 bytes value
@@ -158,6 +158,7 @@ public static class OfficeArtMapper
 
         for (int i = 0; i < count; i++)
         {
+            if (pos + 6 > data.Length) break;
             ushort propIdWithFlags = BitConverter.ToUInt16(data, pos);
             uint propValue = BitConverter.ToUInt32(data, pos + 2);
             pos += 6;
@@ -180,6 +181,152 @@ public static class OfficeArtMapper
 
                 // Fill properties
                 case 384: shape.FillColor = (int)propValue; break;
+
+                // Custom Geometry properties [Phase 4.3]
+                case 321: // pVertices (complex)
+                    if (fComplex)
+                    {
+                        var vertexData = ParseComplexProperty(container, i, propId);
+                        if (vertexData != null) ParseVertices(vertexData, shape);
+                    }
+                    break;
+                case 322: // pSegmentInfo (complex)
+                    if (fComplex)
+                    {
+                        var segmentData = ParseComplexProperty(container, i, propId);
+                        if (segmentData != null) ParseSegments(segmentData, shape);
+                    }
+                    break;
+                case 324: // pGeoTop
+                    EnsureCustomGeometry(shape).ViewTop = (int)propValue;
+                    break;
+                case 323: // pGeoLeft
+                    EnsureCustomGeometry(shape).ViewLeft = (int)propValue;
+                    break;
+                case 325: // pGeoRight
+                    EnsureCustomGeometry(shape).ViewRight = (int)propValue;
+                    break;
+                case 326: // pGeoBottom
+                    EnsureCustomGeometry(shape).ViewBottom = (int)propValue;
+                    break;
+            }
+        }
+    }
+
+    private static CustomGeometry EnsureCustomGeometry(ShapeModel shape)
+    {
+        if (shape.CustomGeometry == null)
+        {
+            shape.CustomGeometry = new CustomGeometry();
+            shape.Type = ShapeType.Custom;
+        }
+        return shape.CustomGeometry;
+    }
+
+    private static byte[]? ParseComplexProperty(EscherRecord? container, int propertyIndex, ushort propId)
+    {
+        if (container == null) return null;
+        // Complex property data is stored in the 0xF011 (RecordTypeTertiaryOpt) or 
+        // 0xF00B (RecordTypeOpt) record's tail or in a subsequent record.
+        // Actually, Escher standard: if fComplex is set, the propValue IS the size (count), 
+        // and the data follows the array of property headers.
+        
+        // This is a simplification: in simple Opt records, the complex data starts after the 
+        // fixed-size (6-byte) property headers.
+        // We'll look at the container's Opt record data.
+        var opt = container.Children.FirstOrDefault(c => c.Type == 0xF00B || c.Type == 0xF011);
+        if (opt == null) return null;
+
+        // Find how many properties are defined to skip the headers
+        int propCount = BitConverter.ToUInt16(opt.Data, 0); // Oops, Opt doesn't have a 2-byte count at the start!
+        // Wait, MS-ODRAW 2.1.1: The OfficeArtOPT record payload is an array of OfficeArtOPTEntry.
+        // The first OfficeArtOPTEntry.opid with bit 24 set to 1 indicates the start of complex data? No.
+        
+        // Actually, the simplest way is to look at the 'instance' of the Opt record - it's the count.
+        int totalProps = opt.Instance;
+        int headersSize = totalProps * 6;
+        
+        // Complex data starts after all headers. But which complex data?
+        // They are stored in order of their appearance in the headers with fComplex set.
+        int complexOffset = headersSize;
+        int complexDataIndex = 0;
+        
+        for (int i = 0; i < totalProps; i++)
+        {
+            ushort entryIdFlags = BitConverter.ToUInt16(opt.Data, i * 6);
+            uint entryValue = BitConverter.ToUInt32(opt.Data, i * 6 + 2);
+            ushort entryId = (ushort)(entryIdFlags & 0x3FFF);
+            bool entryComplex = (entryIdFlags & 0x8000) != 0;
+
+            if (entryComplex)
+            {
+                if (entryId == propId) // This is the one we want
+                {
+                    if (complexOffset + entryValue > opt.Data.Length) return null;
+                    byte[] complexData = new byte[entryValue];
+                    Array.Copy(opt.Data, complexOffset, complexData, 0, (int)entryValue);
+                    return complexData;
+                }
+                complexOffset += (int)entryValue;
+            }
+        }
+
+        return null;
+    }
+
+    private static void ParseVertices(byte[] data, ShapeModel shape)
+    {
+        if (data.Length < 6) return; // Header (sizeof(struct array))
+        
+        int nElems = BitConverter.ToUInt16(data, 0);
+        int nElemsAlloc = BitConverter.ToUInt16(data, 2);
+        int cbElem = BitConverter.ToUInt16(data, 4); // should be 8 for Point
+
+        var geom = EnsureCustomGeometry(shape);
+        int pos = 6;
+        for (int i = 0; i < nElems && pos + 8 <= data.Length; i++)
+        {
+            int x = BitConverter.ToInt32(data, pos);
+            int y = BitConverter.ToInt32(data, pos + 4);
+            geom.Vertices.Add(new System.Drawing.Point(x, y));
+            pos += 8;
+        }
+    }
+
+    private static void ParseSegments(byte[] data, ShapeModel shape)
+    {
+        if (data.Length < 6) return;
+        
+        int nElems = BitConverter.ToUInt16(data, 0);
+        int cbElem = BitConverter.ToUInt16(data, 4); // usually 2 for segments
+
+        var geom = EnsureCustomGeometry(shape);
+        int pos = 6;
+        int vertexIdx = 0;
+        for (int i = 0; i < nElems && pos + 2 <= data.Length; i++)
+        {
+            ushort code = BitConverter.ToUInt16(data, pos);
+            pos += 2;
+
+            // MS-ODRAW 2.1.18: Table 33 - Shape Path Segment Codes
+            // Simplified mapping:
+            if (code >= 0x0000 && code <= 0x00A7) 
+            {
+                // This is a lineTo or moveTo depending on context
+                // But specifically for Word, segment info codes usually:
+                // 0x0001: lineto, 0x0003: moveto, 0x00BE: curveTo, 0x8000: close
+                
+                // Let's use a more robust logic if we find better documentation or samples.
+                // For now:
+                var segment = new ShapePathSegment { VertexIndex = vertexIdx };
+                if (code == 0x0001) { segment.Type = SegmentType.LineTo; vertexIdx += 1; }
+                else if (code == 0x0002) { segment.Type = SegmentType.CurveTo; vertexIdx += 3; }
+                else if (code == 0x0003) { segment.Type = SegmentType.MoveTo; vertexIdx += 1; }
+                else if (code == 0x2001) { segment.Type = SegmentType.Close; }
+                else if (code == 0x00AA) { segment.Type = SegmentType.End; }
+                else { segment.Type = SegmentType.LineTo; vertexIdx += 1; } // Fallback
+                
+                geom.Segments.Add(segment);
             }
         }
     }

@@ -117,6 +117,12 @@ public class ZipWriter : IDisposable
             var writer = new DocumentWriter(w);
             writer.WriteDocument(document);
         });
+
+        // Write word/theme/theme1.xml if present
+        if (!string.IsNullOrEmpty(document.Theme.XmlContent))
+        {
+            AddBinaryEntry("word/theme/theme1.xml", Encoding.UTF8.GetBytes(document.Theme.XmlContent));
+        }
         
         // Write word/_rels/document.xml.rels
         AddXmlEntry("word/_rels/document.xml.rels", w =>

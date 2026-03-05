@@ -241,44 +241,28 @@ public class DocumentWriter
         _writer.WriteEndElement(); // a:ext
         _writer.WriteEndElement(); // a:xfrm
 
-        // Geometry: rectangle or ellipse; default rectangle.
-        string prst = shape.Type switch
+        if (shape.CustomGeometry != null)
         {
-            ShapeType.Ellipse => "ellipse",
-            _ => "rect"
-        };
-        _writer.WriteStartElement("a", "prstGeom", aNs);
-        _writer.WriteAttributeString("prst", prst);
-        _writer.WriteStartElement("a", "avLst", aNs);
-        _writer.WriteEndElement(); // a:avLst
-        _writer.WriteEndElement(); // a:prstGeom
-
-        // Fill color (if any)
-        if (shape.FillColor != 0)
+            WriteCustomGeometry(shape.CustomGeometry);
+        }
+        else
         {
-            _writer.WriteStartElement("a", "solidFill", aNs);
-            _writer.WriteStartElement("a", "srgbClr", aNs);
-            var fillHex = ColorHelper.ColorToHex(shape.FillColor);
-            if (fillHex == "auto") fillHex = "FFFFFF";
-            _writer.WriteAttributeString("val", fillHex);
-            _writer.WriteEndElement(); // a:srgbClr
-            _writer.WriteEndElement(); // a:solidFill
+            // Preset geometry (rectangle by default)
+            var prst = shape.Type switch
+            {
+                ShapeType.Ellipse => "ellipse",
+                ShapeType.Textbox => "rect",
+                _ => "rect"
+            };
+            _writer.WriteStartElement("a", "prstGeom", aNs);
+            _writer.WriteAttributeString("prst", prst);
+            _writer.WriteStartElement("a", "avLst", aNs);
+            _writer.WriteEndElement();
+            _writer.WriteEndElement();
         }
 
-        // Line (stroke)
-        _writer.WriteStartElement("a", "ln", aNs);
-        if (shape.LineWidth > 0)
-        {
-            _writer.WriteAttributeString("w", shape.LineWidth.ToString());
-        }
-        _writer.WriteStartElement("a", "solidFill", aNs);
-        _writer.WriteStartElement("a", "srgbClr", aNs);
-        var lineHex = shape.LineColor != 0 ? ColorHelper.ColorToHex(shape.LineColor) : "000000";
-        if (lineHex == "auto") lineHex = "000000";
-        _writer.WriteAttributeString("val", lineHex);
-        _writer.WriteEndElement(); // a:srgbClr
-        _writer.WriteEndElement(); // a:solidFill
-        _writer.WriteEndElement(); // a:ln
+        // Fill and line styling
+        WriteShapeStyling(shape);
 
         _writer.WriteEndElement(); // wps:spPr
 
@@ -300,6 +284,108 @@ public class DocumentWriter
         }
 
         _writer.WriteEndElement(); // wps:wsp
+    }
+
+    private void WriteCustomGeometry(CustomGeometry geom)
+    {
+        const string aNs = "http://schemas.openxmlformats.org/drawingml/2006/main";
+        _writer.WriteStartElement("a", "custGeom", aNs);
+        _writer.WriteStartElement("a", "avLst", aNs); _writer.WriteEndElement();
+        _writer.WriteStartElement("a", "gdLst", aNs); _writer.WriteEndElement();
+        _writer.WriteStartElement("a", "ahLst", aNs); _writer.WriteEndElement();
+        _writer.WriteStartElement("a", "cxnLst", aNs); _writer.WriteEndElement();
+        _writer.WriteStartElement("a", "rect", aNs);
+        _writer.WriteAttributeString("l", "0"); _writer.WriteAttributeString("t", "0");
+        _writer.WriteAttributeString("r", "0"); _writer.WriteAttributeString("b", "0");
+        _writer.WriteEndElement();
+
+        _writer.WriteStartElement("a", "pathLst", aNs);
+        _writer.WriteStartElement("a", "path", aNs);
+        _writer.WriteAttributeString("w", Math.Max(1, geom.ViewRight - geom.ViewLeft).ToString());
+        _writer.WriteAttributeString("h", Math.Max(1, geom.ViewBottom - geom.ViewTop).ToString());
+
+        foreach (var segment in geom.Segments)
+        {
+            switch (segment.Type)
+            {
+                case SegmentType.MoveTo:
+                    if (segment.VertexIndex < geom.Vertices.Count)
+                    {
+                        var pt = geom.Vertices[segment.VertexIndex];
+                        _writer.WriteStartElement("a", "moveTo", aNs);
+                        _writer.WriteStartElement("a", "pt", aNs);
+                        _writer.WriteAttributeString("x", (pt.X - geom.ViewLeft).ToString());
+                        _writer.WriteAttributeString("y", (pt.Y - geom.ViewTop).ToString());
+                        _writer.WriteEndElement(); _writer.WriteEndElement();
+                    }
+                    break;
+                case SegmentType.LineTo:
+                    if (segment.VertexIndex < geom.Vertices.Count)
+                    {
+                        var pt = geom.Vertices[segment.VertexIndex];
+                        _writer.WriteStartElement("a", "lnTo", aNs);
+                        _writer.WriteStartElement("a", "pt", aNs);
+                        _writer.WriteAttributeString("x", (pt.X - geom.ViewLeft).ToString());
+                        _writer.WriteAttributeString("y", (pt.Y - geom.ViewTop).ToString());
+                        _writer.WriteEndElement(); _writer.WriteEndElement();
+                    }
+                    break;
+                case SegmentType.CurveTo:
+                    // Escher curves are usually 3 vertices (Bezier)
+                    if (segment.VertexIndex + 2 < geom.Vertices.Count)
+                    {
+                        _writer.WriteStartElement("a", "cubicBezTo", aNs);
+                        for (int i = 0; i < 3; i++)
+                        {
+                            var pt = geom.Vertices[segment.VertexIndex + i];
+                            _writer.WriteStartElement("a", "pt", aNs);
+                            _writer.WriteAttributeString("x", (pt.X - geom.ViewLeft).ToString());
+                            _writer.WriteAttributeString("y", (pt.Y - geom.ViewTop).ToString());
+                            _writer.WriteEndElement();
+                        }
+                        _writer.WriteEndElement();
+                    }
+                    break;
+                case SegmentType.Close:
+                    _writer.WriteStartElement("a", "close", aNs); _writer.WriteEndElement();
+                    break;
+            }
+        }
+        _writer.WriteEndElement(); // a:path
+        _writer.WriteEndElement(); // a:pathLst
+        _writer.WriteEndElement(); // a:custGeom
+    }
+
+    private void WriteShapeStyling(ShapeModel shape)
+    {
+        const string aNs = "http://schemas.openxmlformats.org/drawingml/2006/main";
+        
+        // Background fill
+        if (shape.FillColor != 0)
+        {
+            _writer.WriteStartElement("a", "solidFill", aNs);
+            _writer.WriteStartElement("a", "srgbClr", aNs);
+            _writer.WriteAttributeString("val", ColorHelper.ColorToHex(shape.FillColor));
+            _writer.WriteEndElement(); _writer.WriteEndElement();
+        }
+        else
+        {
+            _writer.WriteStartElement("a", "noFill", aNs); _writer.WriteEndElement();
+        }
+
+        // Outline
+        if (shape.IsLineVisible)
+        {
+            _writer.WriteStartElement("a", "ln", aNs);
+            _writer.WriteAttributeString("w", shape.LineWidth > 0 ? shape.LineWidth.ToString() : "9525"); // Default 1pt
+            
+            _writer.WriteStartElement("a", "solidFill", aNs);
+            _writer.WriteStartElement("a", "srgbClr", aNs);
+            _writer.WriteAttributeString("val", ColorHelper.ColorToHex(shape.LineColor != 0 ? shape.LineColor : 0));
+            _writer.WriteEndElement(); _writer.WriteEndElement();
+            
+            _writer.WriteEndElement(); // a:ln
+        }
     }
 
     /// <summary>
@@ -2143,6 +2229,14 @@ public class DocumentWriter
                 // Run 1: fldChar begin
                 _writer.WriteStartElement("w", "fldChar", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
                 _writer.WriteAttributeString("w", "fldCharType", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", "begin");
+                
+                // Signal Word to update TOC and Page fields on open
+                if (run.FieldCode != null && (run.FieldCode.Contains("TOC", StringComparison.OrdinalIgnoreCase) || 
+                                            run.FieldCode.Contains("PAGE", StringComparison.OrdinalIgnoreCase)))
+                {
+                    _writer.WriteAttributeString("w", "dirty", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", "true");
+                }
+                
                 _writer.WriteEndElement();
                 _writer.WriteEndElement(); // w:r (begin)
 
@@ -2760,19 +2854,22 @@ public class DocumentWriter
         // 7. color
         if (props.Color != 0 || props.HasRgbColor)
         {
-            string colorHex;
-            if (props.HasRgbColor)
-            {
-                colorHex = ColorHelper.RgbToHex(props.RgbColor);
-            }
-            else
-            {
-                colorHex = ColorHelper.ColorToHex(props.Color);
-            }
-            if (colorHex != "auto")
+            string? themeColor = ColorHelper.GetThemeColorName(props.Color);
+            string colorHex = props.HasRgbColor 
+                ? ColorHelper.RgbToHex(props.RgbColor) 
+                : ColorHelper.ColorToHex(props.Color);
+
+            if (themeColor != null || colorHex != "auto")
             {
                 _writer.WriteStartElement("w", "color", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
-                _writer.WriteAttributeString("w", "val", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", colorHex);
+                if (themeColor != null)
+                {
+                    _writer.WriteAttributeString("w", "themeColor", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", themeColor);
+                }
+                else
+                {
+                    _writer.WriteAttributeString("w", "val", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", colorHex);
+                }
                 _writer.WriteEndElement();
             }
         }

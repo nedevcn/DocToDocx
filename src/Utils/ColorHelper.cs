@@ -55,6 +55,15 @@ public static class ColorHelper
     ];
 
     /// <summary>
+    /// OOXML theme color names mapping from MS-DOC theme index
+    /// </summary>
+    private static readonly string[] ThemeColorNames =
+    [
+        "dk1", "lt1", "dk2", "lt2", "accent1", "accent2", 
+        "accent3", "accent4", "accent5", "accent6", "hlink", "folHlink"
+    ];
+
+    /// <summary>
     /// Converts a Word ICO color index to a 6-digit hex RGB string (e.g. "FF0000")
     /// </summary>
     public static string IcoToRgbHex(int ico)
@@ -116,10 +125,32 @@ public static class ColorHelper
         if (IsLikelyIcoIndex(color))
             return IcoToRgbHex(color);
             
+        // Check for theme color (bit 24 set to 1)
+        if ((color & 0x01000000) != 0)
+        {
+            // For now, we return "auto" or handle it via GetThemeColorName if we want the name
+            return "auto"; 
+        }
+
         // Convert COLORREF to RRGGBB
         var r = color & 0xFF;
         var g = (color >> 8) & 0xFF;
         var b = (color >> 16) & 0xFF;
         return $"{r:X2}{g:X2}{b:X2}";
+    }
+
+    /// <summary>
+    /// Gets the theme color name if the color is a theme color.
+    /// Returns null if not a theme color.
+    /// </summary>
+    public static string? GetThemeColorName(int color)
+    {
+        if ((color & 0x01000000) != 0)
+        {
+            int index = color & 0xFF;
+            if (index >= 0 && index < ThemeColorNames.Length)
+                return ThemeColorNames[index];
+        }
+        return null;
     }
 }

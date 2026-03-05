@@ -61,6 +61,12 @@ public class RelationshipsWriter
         // Settings (always present)
         WriteRelationship($"rId{ids.SettingsRId}", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/settings", "settings.xml");
         
+        // Theme relationship
+        if (ids.ThemeRId > 0)
+        {
+            WriteRelationship($"rId{ids.ThemeRId}", "http://schemas.openxmlformats.org/officeDocument/2006/relationships/theme", "theme/theme1.xml");
+        }
+        
         // Image relationships
         for (int i = 0; i < document.Images.Count; i++)
         {
@@ -160,6 +166,9 @@ public class RelationshipsWriter
         var nextId = 2; // rId1 = styles
         
         ids.SettingsRId = nextId++;
+        
+        if (!string.IsNullOrEmpty(document.Theme.XmlContent))
+            ids.ThemeRId = nextId++;
         
         ids.FirstImageRId = nextId;
         nextId += document.Images.Count;
@@ -263,6 +272,7 @@ public class RelationshipsWriter
 public class DocumentRelationshipIds
 {
     public int SettingsRId { get; set; }
+    public int ThemeRId { get; set; }
     public int FirstImageRId { get; set; }
     public int FirstChartRId { get; set; }
     public int FirstOleRId { get; set; }
@@ -306,6 +316,11 @@ public class SettingsWriter
         const string wNs = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
         _writer.WriteStartElement("w", "settings", wNs);
         
+        // Force update fields on open (essential for TOC and page numbers)
+        _writer.WriteStartElement("w", "updateFields", wNs);
+        _writer.WriteAttributeString("w", "val", wNs, "true");
+        _writer.WriteEndElement();
+
         WriteZoom();
         WriteProofState();
         WriteDefaultTabStop();
@@ -543,6 +558,12 @@ public class ContentTypesWriter
         WriteOverride("/word/document.xml", mainType);
         
         WriteOverride("/word/styles.xml", "application/vnd.openxmlformats-officedocument.wordprocessingml.styles+xml");
+        
+        // Theme
+        if (!string.IsNullOrEmpty(document.Theme.XmlContent))
+        {
+            WriteOverride("/word/theme/theme1.xml", "application/vnd.openxmlformats-officedocument.theme+xml");
+        }
         
         // VbaProject
         if (document.VbaProject != null)
