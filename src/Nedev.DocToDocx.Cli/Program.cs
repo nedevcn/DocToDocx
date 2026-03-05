@@ -18,28 +18,75 @@ class Program
             return;
         }
 
-            if (args.Length == 1 && (args[0] == "-v" || args[0] == "--version"))
-            {
-                var ver = typeof(Program).Assembly.GetName().Version;
-                Console.WriteLine($"Version {ver}");
-                return;
-            }
-        string? password = null;
-
-        // Parse optional password argument
-        if (args.Length >= 4 && (args[2] == "-p" || args[2] == "--password"))
+        if (args.Length == 1 && (args[0] == "-v" || args[0] == "--version"))
         {
-            password = args[3];
+            var ver = typeof(Program).Assembly.GetName().Version;
+            Console.WriteLine($"Version {ver}");
+            return;
         }
 
-        if (!File.Exists(inputPath))
+        if (args.Length < 2)
         {
-            Console.WriteLine($"Error: Input file not found: {inputPath}");
+            Console.WriteLine("Error: Missing required arguments.");
+            PrintUsage();
             return;
+        }
+
+        string inputPath = args[0];
+        string outputPath = args[1];
+        string? password = null;
+        bool recursive = false;
+
+        // parse remaining options
+        for (int i = 2; i < args.Length; i++)
+        {
+            switch (args[i])
+            {
+                case "-p":
+                case "--password":
+                    if (i + 1 < args.Length)
+                    {
+                        password = args[++i];
+                    }
+                    break;
+                case "-r":
+                case "--recursive":
+                    recursive = true;
+                    break;
+            }
         }
 
         try
         {
+            if (Directory.Exists(inputPath))
+            {
+                if (!Directory.Exists(outputPath))
+                    Directory.CreateDirectory(outputPath);
+
+                var search = recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
+                var docs = Directory.GetFiles(inputPath, "*.doc", search);
+                foreach (var docFile in docs)
+                {
+                    var rel = Path.GetRelativePath(inputPath, docFile);
+                    var outFile = Path.Combine(outputPath, Path.ChangeExtension(rel, ".docx"));
+                    var outDir = Path.GetDirectoryName(outFile);
+                    if (!string.IsNullOrEmpty(outDir) && !Directory.Exists(outDir))
+                        Directory.CreateDirectory(outDir);
+
+                    Console.WriteLine($"Converting {docFile} -> {outFile}");
+                    DocToDocxConverter.Convert(docFile, outFile, password);
+                }
+
+                Console.WriteLine("Directory conversion complete.");
+                return;
+            }
+
+            if (!File.Exists(inputPath))
+            {
+                Console.WriteLine($"Error: Input file not found: {inputPath}");
+                return;
+            }
+
             Console.WriteLine($"Input:  {inputPath}");
             Console.WriteLine($"Output: {outputPath}");
             Console.WriteLine("Converting...");
@@ -56,7 +103,6 @@ class Program
                 }
             });
 
-            // Using the progress-enabled synchronous Convert method, but we could also use ConvertAsync if needed.
             await Task.Run(() => DocToDocxConverter.Convert(inputPath, outputPath, progress, password));
 
             Console.WriteLine("Successfully converted the document.");
@@ -71,7 +117,7 @@ class Program
 
     static void PrintUsage()
     {
-        Console.WriteLine("Usage: Nedev.DocToDocx.Cli <input.doc> <output.docx> [-p <password>]");
+        Console.WriteLine("Usage: Nedev.DocToDocx.Cli <input.doc|inputDir> <output.docx|outputDir> [-p <password>] [-r]");
         Console.WriteLine();
         Console.WriteLine("Arguments:");
         Console.WriteLine("  <input.doc>      The path to the input MS-DOC file.");
@@ -79,6 +125,7 @@ class Program
         Console.WriteLine();
         Console.WriteLine("Options:");
         Console.WriteLine("  -p, --password   The password to open an encrypted DOC file.");
+        Console.WriteLine("  -r, --recursive  When input is a directory, process .doc files recursively.");
         Console.WriteLine("  -h, --help       Show this help message and exit.");
     }
 }

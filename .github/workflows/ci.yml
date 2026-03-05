@@ -1,0 +1,24 @@
+name: CI
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - uses: actions/checkout@v4
+      - name: Setup .NET
+        uses: actions/setup-dotnet@v3
+        with:
+          dotnet-version: '6.0.x'
+      - name: Restore dependencies
+        run: dotnet restore Nedev.DocToDocx.slnx
+      - name: Build
+        run: dotnet build Nedev.DocToDocx.slnx --no-restore --configuration Release
+      - name: Run tests
+        run: dotnet test tests/Nedev.DocToDocx.Tests/Nedev.DocToDocx.Tests.csproj --no-build --configuration Release

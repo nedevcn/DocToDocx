@@ -52,6 +52,7 @@ Nedev.DocToDocx.Cli <input.doc> <output.docx> [-p <password>]
 
 **Options:**
 - `-p`, `--password` The password to open an encrypted DOC file.
+- `-r`, `--recursive` When a directory is supplied as `<input>`, process `.doc` files recursively and mirror the structure in `<output>`.
 - `-h`, `--help` Show this help message and exit.
 
 
@@ -67,4 +68,5 @@ dotnet test
 ```
 
 The new tests verify document writer output, reader loading of a sample document and
-that the CLI can successfully convert it.
+that the CLI can successfully convert it. A GitHub Actions workflow (`.github/workflows/ci.yml`)
+is included to build the solution and run the tests on each push or pull request.
