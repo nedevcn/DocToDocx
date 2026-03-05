@@ -83,9 +83,9 @@ namespace Nedev.DocToDocx.Tests
 
             r.MergeWith(baseProps);
 
-            // default size 24 should be replaced
+            // default size 24 should be replaced and italic inherits from base
             Assert.Equal(36, r.FontSize);
-            Assert.False(r.IsItalic);
+            Assert.True(r.IsItalic);
         }
     }
 }

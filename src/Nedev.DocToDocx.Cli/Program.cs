@@ -64,58 +64,56 @@ public class Program
                     Directory.CreateDirectory(outputPath);
 
                 var search = recursive ? SearchOption.AllDirectories : SearchOption.TopDirectoryOnly;
-                var docs = Directory.GetFiles(inputPath, "*.doc", search);
-                foreach (var docFile in docs)
-                {
-                    var rel = Path.GetRelativePath(inputPath, docFile);
-                    var outFile = Path.Combine(outputPath, Path.ChangeExtension(rel, ".docx"));
-                    var outDir = Path.GetDirectoryName(outFile);
-                    if (!string.IsNullOrEmpty(outDir) && !Directory.Exists(outDir))
-                        Directory.CreateDirectory(outDir);
+                    var files = Directory.GetFiles(inputPath, "*.*", search)
+                                         .Where(f => f.EndsWith(".doc", StringComparison.OrdinalIgnoreCase)
+                                                  || f.EndsWith(".docx", StringComparison.OrdinalIgnoreCase));
+                    foreach (var docFile in files)
+                    {
+                        var rel = Path.GetRelativePath(inputPath, docFile);
+                        var outFile = Path.Combine(outputPath, Path.ChangeExtension(rel, ".docx"));
+                        var outDir = Path.GetDirectoryName(outFile);
+                        if (!string.IsNullOrEmpty(outDir) && !Directory.Exists(outDir))
+                            Directory.CreateDirectory(outDir);
 
-                    Console.WriteLine($"Converting {docFile} -> {outFile}");
-                    DocToDocxConverter.Convert(docFile, outFile, password);
+                        if (docFile.EndsWith(".docx", StringComparison.OrdinalIgnoreCase))
+                        {
+                            Console.WriteLine($"Copying {docFile} -> {outFile}");
+                            File.Copy(docFile, outFile, overwrite: true);
+                        }
+                        else
+                        {
+                            Console.WriteLine($"Converting {docFile} -> {outFile}");
+                            DocToDocxConverter.Convert(docFile, outFile, password);
+                        }
+                    }
+
+                    Console.WriteLine("Directory conversion complete.");
+                    return;
                 }
 
-                Console.WriteLine("Directory conversion complete.");
-                return;
-            }
-
-            if (!File.Exists(inputPath))
-            {
-                Console.WriteLine($"Error: Input file not found: {inputPath}");
-                return;
-            }
-
-            // if input is already a DOCX, just copy
-            string ext = Path.GetExtension(inputPath);
-            if (ext.Equals(".docx", StringComparison.OrdinalIgnoreCase))
-            {
-                var outDir = Path.GetDirectoryName(outputPath);
-                if (!string.IsNullOrEmpty(outDir) && !Directory.Exists(outDir))
-                    Directory.CreateDirectory(outDir);
-                File.Copy(inputPath, outputPath, overwrite: true);
-                Console.WriteLine("Copied DOCX file (no conversion required).");
-                return;
-            }
-
-            Console.WriteLine($"Input:  {inputPath}");
-            Console.WriteLine($"Output: {outputPath}");
-            Console.WriteLine("Converting...");
-
-            var progress = new Progress<ConversionProgress>(p =>
-            {
-                if (!string.IsNullOrEmpty(p.Message))
+                if (!File.Exists(inputPath))
                 {
-                    Console.WriteLine($"[{p.PercentComplete,3}%] {p.Stage}: {p.Message}");
+                    Console.WriteLine($"Error: Input file not found: {inputPath}");
+                    return;
                 }
-                else
-                {
-                    Console.WriteLine($"[{p.PercentComplete,3}%] {p.Stage}");
-                }
-            });
 
-            await Task.Run(() => DocToDocxConverter.Convert(inputPath, outputPath, progress, password));
+                Console.WriteLine($"Input:  {inputPath}");
+                Console.WriteLine($"Output: {outputPath}");
+                Console.WriteLine("Converting...");
+
+                var progress = new Progress<ConversionProgress>(p =>
+                {
+                    if (!string.IsNullOrEmpty(p.Message))
+                    {
+                        Console.WriteLine($"[{p.PercentComplete,3}%] {p.Stage}: {p.Message}");
+                    }
+                    else
+                    {
+                        Console.WriteLine($"[{p.PercentComplete,3}%] {p.Stage}");
+                    }
+                });
+
+                await Task.Run(() => DocToDocxConverter.Convert(inputPath, outputPath, progress, password));
 
             Console.WriteLine("Successfully converted the document.");
         }

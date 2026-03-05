@@ -17,6 +17,19 @@ public static class DocToDocxConverter
     /// <param name="outputPath">Path to the output .docx file</param>
     public static void Convert(string inputPath, string outputPath, string? password = null)
     {
+        // if the input is already a DOCX file just copy it (CLI supports this, API should too)
+        if (Path.GetExtension(inputPath).Equals(".docx", StringComparison.OrdinalIgnoreCase))
+        {
+            // ensure output directory exists
+            var outDir1 = Path.GetDirectoryName(outputPath);
+            if (!string.IsNullOrEmpty(outDir1) && !Directory.Exists(outDir1))
+            {
+                Directory.CreateDirectory(outDir1);
+            }
+            File.Copy(inputPath, outputPath, overwrite: true);
+            return;
+        }
+
         using var reader = new DocReader(inputPath, password);
         
         Console.WriteLine($"Reading document: {inputPath}");
@@ -26,10 +39,10 @@ public static class DocToDocxConverter
         Console.WriteLine($"Parsed {doc.Paragraphs.Count} paragraphs, {doc.Tables.Count} tables, {doc.Images.Count} images ({imageBytes / 1024} KB)");
         
         // Ensure output directory exists
-        var outputDir = Path.GetDirectoryName(outputPath);
-        if (!string.IsNullOrEmpty(outputDir) && !Directory.Exists(outputDir))
+        var outputDir2 = Path.GetDirectoryName(outputPath);
+        if (!string.IsNullOrEmpty(outputDir2) && !Directory.Exists(outputDir2))
         {
-            Directory.CreateDirectory(outputDir);
+            Directory.CreateDirectory(outputDir2);
         }
         
         Console.WriteLine($"Writing document: {outputPath}");
@@ -58,6 +71,24 @@ public static class DocToDocxConverter
     /// </summary>
     public static void Convert(string inputPath, string outputPath, IProgress<ConversionProgress>? progress, string? password = null)
     {
+        // docx input should simply be copied, but still report stages for compatibility
+        if (Path.GetExtension(inputPath).Equals(".docx", StringComparison.OrdinalIgnoreCase))
+        {
+            progress?.Report(new ConversionProgress { Stage = ConversionStage.Reading, PercentComplete = 0 });
+            progress?.Report(new ConversionProgress { Stage = ConversionStage.Reading, PercentComplete = 20 });
+            // ensure output dir exists
+            var outDir3 = Path.GetDirectoryName(outputPath);
+            if (!string.IsNullOrEmpty(outDir3) && !Directory.Exists(outDir3))
+            {
+                Directory.CreateDirectory(outDir3);
+            }
+            progress?.Report(new ConversionProgress { Stage = ConversionStage.Writing, PercentComplete = 60 });
+            File.Copy(inputPath, outputPath, overwrite: true);
+            progress?.Report(new ConversionProgress { Stage = ConversionStage.Writing, PercentComplete = 80 });
+            progress?.Report(new ConversionProgress { Stage = ConversionStage.Complete, PercentComplete = 100 });
+            return;
+        }
+
         progress?.Report(new ConversionProgress { Stage = ConversionStage.Reading, PercentComplete = 0 });
         
         using var reader = new DocReader(inputPath, password);

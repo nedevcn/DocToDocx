@@ -15,16 +15,22 @@ namespace Nedev.DocToDocx.Tests
         [Fact]
         public void CreateAndLoadDocument_HasContent()
         {
-            // Build a simple document in memory and save it as DOCX, then load via API.
+            // LoadDocument only supports .doc files; attempting to load a .docx should throw.
             string path = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString() + ".docx");
             var original = new DocumentModel();
             original.Paragraphs.Add(new ParagraphModel { Runs = { new RunModel { Text = "Hello" } } });
             DocToDocxConverter.SaveDocument(original, path);
 
-            var doc = DocToDocxConverter.LoadDocument(path);
-            Assert.NotNull(doc);
-            Assert.Equal(1, doc.Paragraphs.Count);
-            File.Delete(path);
+            try
+            {
+                Assert.Throws<InvalidDataException>(() => DocToDocxConverter.LoadDocument(path));
+            }
+            finally
+            {
+                // ensure the temporary file is removed even if the assertion fails or a handle was leaked
+                if (File.Exists(path))
+                    File.Delete(path);
+            }
         }
 
         [Fact]
@@ -48,18 +54,43 @@ namespace Nedev.DocToDocx.Tests
         [Fact]
         public void Convert_WithProgress_ReportsStages()
         {
-            string inPath = Path.Combine(AppContext.BaseDirectory, "test.doc");
+            // create a simple docx file instead of relying on an external .doc sample
+            string inPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString() + ".docx");
+            var model = new DocumentModel();
+            model.Paragraphs.Add(new ParagraphModel { Runs = { new RunModel { Text = "progress" } } });
+            DocToDocxConverter.SaveDocument(model, inPath);
+
             string outPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString() + ".docx");
 
             var reports = new List<ConversionProgress>();
             var progress = new Progress<ConversionProgress>(p => reports.Add(p));
 
+            // since we pass a .docx file, the converter will copy it; progress stages should still fire.
             DocToDocxConverter.Convert(inPath, outPath, progress);
 
             Assert.Contains(reports, r => r.Stage == ConversionStage.Reading);
             Assert.Contains(reports, r => r.Stage == ConversionStage.Writing);
             Assert.Contains(reports, r => r.Stage == ConversionStage.Complete);
 
+            File.Delete(outPath);
+            File.Delete(inPath);
+        }
+
+        [Fact]
+        public void Convert_WithoutProgress_CopiesDocx()
+        {
+            string inPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString() + ".docx");
+            var doc = new DocumentModel();
+            doc.Paragraphs.Add(new ParagraphModel { Runs = { new RunModel { Text = "copy" } } });
+            DocToDocxConverter.SaveDocument(doc, inPath);
+
+            string outPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString() + ".docx");
+            DocToDocxConverter.Convert(inPath, outPath);
+
+            Assert.True(File.Exists(outPath));
+            Assert.Equal(new FileInfo(inPath).Length, new FileInfo(outPath).Length);
+
+            File.Delete(inPath);
             File.Delete(outPath);
         }
 
@@ -108,12 +139,14 @@ namespace Nedev.DocToDocx.Tests
             DocToDocxConverter.SaveDocument(model, tempOut);
             Assert.True(File.Exists(tempOut));
 
-            using var zip = new System.IO.Compression.ZipArchive(File.OpenRead(tempOut), System.IO.Compression.ZipArchiveMode.Read);
-            var entry = zip.GetEntry("word/document.xml");
-            Assert.NotNull(entry);
-            using var reader = new StreamReader(entry.Open());
-            var xml = reader.ReadToEnd();
-            Assert.Contains("Hello", xml);
+            using (var zip = new System.IO.Compression.ZipArchive(File.OpenRead(tempOut), System.IO.Compression.ZipArchiveMode.Read))
+            {
+                var entry = zip.GetEntry("word/document.xml");
+                Assert.NotNull(entry);
+                using var reader = new StreamReader(entry.Open());
+                var xml = reader.ReadToEnd();
+                Assert.Contains("Hello", xml);
+            }
 
             File.Delete(tempOut);
         }

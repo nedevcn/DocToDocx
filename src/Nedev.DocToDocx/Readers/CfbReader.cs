@@ -72,7 +72,17 @@ public partial class CfbReader : IDisposable
         _stream = File.OpenRead(filePath);
         _reader = new BinaryReader(_stream, Encoding.Default, leaveOpen: false);
         _leaveOpen = false;
-        Parse();
+        try
+        {
+            Parse();
+        }
+        catch
+        {
+            // if parsing fails (e.g. file is not a CFB container) we must
+            // close the stream so callers can delete the file later.
+            Dispose();
+            throw;
+        }
     }
 
     public CfbReader(Stream stream, bool leaveOpen = false)
