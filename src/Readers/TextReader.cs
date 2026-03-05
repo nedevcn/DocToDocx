@@ -564,8 +564,6 @@ public class Piece
 }
 
 /// <summary>
-/// Sprm (Single Property Modifier) parser.
-/// <summary>
 /// Document Properties (DOP) Reader.
 /// Reads from the Table stream at fcDop offset.
 /// </summary>

@@ -11,6 +11,7 @@ public class DocumentWriter
 {
     private readonly XmlWriter _writer;
     private int _runId = 0;
+    private int _trackChangeId = 1;
     private DocumentModel? _document;
     private DocumentRelationshipIds? _relationshipIds;
     private readonly Dictionary<string, int> _bookmarkIds = new(StringComparer.Ordinal);
@@ -1873,6 +1874,31 @@ public class DocumentWriter
         };
     }
     
+    private void WriteTrackChangeStart(string type, RunProperties props)
+    {
+        _writer.WriteStartElement("w", type, "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+        _writer.WriteAttributeString("w", "id", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", (_trackChangeId++).ToString());
+        
+        string author = "Unknown Author";
+        if (type == "ins" && !string.IsNullOrEmpty(props.AuthorIndexIns.ToString())) author = props.AuthorIndexIns.ToString();
+        else if (type == "del" && !string.IsNullOrEmpty(props.AuthorIndexDel.ToString())) author = props.AuthorIndexDel.ToString();
+        _writer.WriteAttributeString("w", "author", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", author);
+        
+        uint dttm = type == "ins" ? props.DateIns : props.DateDel;
+        if (dttm != 0)
+        {
+            try {
+                int mint = (int)(dttm & 0x3F);
+                int hr = (int)((dttm >> 6) & 0x1F);
+                int dom = (int)((dttm >> 11) & 0x1F);
+                int mon = (int)((dttm >> 16) & 0x0F);
+                int yr = 1900 + (int)((dttm >> 20) & 0x1FF);
+                var dt = new DateTime(yr, Math.Max(1, mon), Math.Max(1, dom), hr, mint, 0);
+                _writer.WriteAttributeString("w", "date", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", dt.ToString("yyyy-MM-ddTHH:mm:ssZ"));
+            } catch { }
+        }
+    }
+
     private void WriteRun(RunModel run)
     {
         // Skip runs with no content at all (no text, no picture, no field)

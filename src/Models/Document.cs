@@ -398,6 +398,14 @@ public class RunProperties
     public bool SnapToGrid { get; set; } = true; // Character level snap to grid (sprmCFIco/sprmCFUsePgsuSettings)
     // Basic Ruby (Furigana) storage
     public string? RubyText { get; set; } // Phonics text if this run is ruby
+    
+    // Track Changes
+    public bool IsDeleted { get; set; }
+    public bool IsInserted { get; set; }
+    public ushort AuthorIndexDel { get; set; }
+    public ushort AuthorIndexIns { get; set; }
+    public uint DateDel { get; set; }
+    public uint DateIns { get; set; }
 }
 
 public enum UnderlineType

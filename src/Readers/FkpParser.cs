@@ -406,7 +406,15 @@ public class FkpParser
             IsEmboss = chp.IsEmboss,
             IsImprint = chp.IsImprint,
             Kerning = chp.Kerning,
-            Position = chp.Position
+            Position = chp.Position,
+            
+            // Track Changes
+            IsDeleted = chp.IsDeleted,
+            IsInserted = chp.IsInserted,
+            AuthorIndexDel = chp.AuthorIndexDel,
+            AuthorIndexIns = chp.AuthorIndexIns,
+            DateDel = chp.DateDel,
+            DateIns = chp.DateIns
         };
         if (chp.FontIndex >= 0 && chp.FontIndex < styles.Fonts.Count)
             props.FontName = styles.Fonts[chp.FontIndex].Name;

@@ -555,6 +555,14 @@ public class ChpBase
     public bool IsImprint { get; set; }
     public uint RgbColor { get; set; }
     public bool HasRgbColor { get; set; }
+    
+    // Track Changes
+    public bool IsDeleted { get; set; }
+    public bool IsInserted { get; set; }
+    public ushort AuthorIndexDel { get; set; }
+    public ushort AuthorIndexIns { get; set; }
+    public uint DateDel { get; set; }
+    public uint DateIns { get; set; }
 }
 
 public class PapBase
