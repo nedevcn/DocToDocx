@@ -706,7 +706,7 @@ public partial class DocumentWriter
             (!string.IsNullOrEmpty(r.Text) && !string.IsNullOrWhiteSpace(r.Text)) || r.IsPicture || r.IsField);
     }
 
-    private void WriteParagraph(ParagraphModel paragraph, bool suppressPageBreakBefore = false, SectionInfo? sectionBreak = null)
+    public void WriteParagraph(ParagraphModel paragraph, bool suppressPageBreakBefore = false, SectionInfo? sectionBreak = null)
     {
         // If this paragraph is actually a wrapper for a nested table, write the table directly
         if (paragraph.Type == ParagraphType.NestedTable && paragraph.NestedTable != null)

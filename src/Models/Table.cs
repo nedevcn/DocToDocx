@@ -335,6 +335,7 @@ public class HeaderFooterModel
     public HeaderFooterType Type { get; set; }
     public int SectionIndex { get; set; }
     public string Text { get; set; } = string.Empty;
+    public List<ParagraphModel> Paragraphs { get; set; } = new();
     public int CharacterPosition { get; set; }
     public int CharacterLength { get; set; }
     public string? RelationshipId { get; set; }

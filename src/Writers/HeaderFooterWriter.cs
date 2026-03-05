@@ -55,14 +55,22 @@ public class HeaderFooterWriter
     /// </summary>
     private void WriteHeaderFooterContent(HeaderFooterModel headerFooter, DocumentModel document, bool isHeader)
     {
-        if (!string.IsNullOrEmpty(headerFooter.Text))
+        if (headerFooter.Paragraphs != null && headerFooter.Paragraphs.Count > 0)
         {
-            // Simple text content
+            var docWriter = new DocumentWriter(_writer);
+            foreach (var paragraph in headerFooter.Paragraphs)
+            {
+                docWriter.WriteParagraph(paragraph);
+            }
+        }
+        else if (!string.IsNullOrEmpty(headerFooter.Text))
+        {
+            // Simple text content fallback
             WriteSimpleParagraph(headerFooter.Text, isHeader);
         }
         else
         {
-            // Complex content with paragraphs
+            // Empty content placeholder
             WriteDefaultHeaderFooterParagraph();
         }
     }

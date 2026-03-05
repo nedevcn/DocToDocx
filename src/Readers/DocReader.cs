@@ -269,11 +269,13 @@ public class DocReader : IDisposable
         // Step 3: Read text content via Piece Table (with per-run Lid for encoding)
         var totalCp = _fibReader!.CcpText + _fibReader.CcpFtn + _fibReader.CcpHdd + _fibReader.CcpAtn + _fibReader.CcpEdn + _fibReader.CcpTxbx + _fibReader.CcpHdrTxbx;
         _textReader!.ReadClx();
-        var chpMap = _fkpParser!.ReadChpProperties();
-        _textReader.SetTextFromPieces(totalCp, chpMap);
+        _globalChpMap = _fkpParser!.ReadChpProperties();
+        _globalPapMap = _fkpParser.ReadPapProperties();
+        _textReader.SetTextFromPieces(totalCp, _globalChpMap);
 
         // Step 4: Parse paragraphs and runs
-        ParseDocumentContent();
+        int mainDocLength = Math.Min(_textReader.Text.Length, _fibReader.CcpText);
+        Document.Paragraphs = ParseParagraphsRange(_textReader.Text, 0, mainDocLength, _globalChpMap, _globalPapMap, ref _globalImageCounter);
 
         // Step 4.5: Parse sections
         ParseSections();
@@ -323,6 +325,16 @@ public class DocReader : IDisposable
         if (_headerFooterReader != null)
         {
             _headerFooterReader.Read(Document);
+            
+            // Extract paragraphs for each header/footer
+            if (_globalChpMap != null && _globalPapMap != null)
+            {
+                foreach (var hf in _headerFooterReader.Headers.Concat(_headerFooterReader.Footers))
+                {
+                    hf.Paragraphs = ParseParagraphsRange(_textReader.Text, hf.CharacterPosition, hf.CharacterPosition + hf.CharacterLength, _globalChpMap, _globalPapMap, ref _globalImageCounter);
+                }
+            }
+
             Document.HeadersFooters.Headers = _headerFooterReader.Headers;
             Document.HeadersFooters.Footers = _headerFooterReader.Footers;
         }
@@ -502,44 +514,33 @@ public class DocReader : IDisposable
         }
     }
 
+    private Dictionary<int, ChpBase>? _globalChpMap;
+    private Dictionary<int, PapBase>? _globalPapMap;
+    private int _globalImageCounter = 0;
+
     /// <summary>
-    /// Parses the document content into paragraphs and runs using FKP-based parsing.
-    /// 
-    /// This implementation:
-    ///   - Reads CHP and PAP properties from FKPs
-    ///   - Splits text by paragraph marks (CR = 0x0D)
-    ///   - Creates multiple runs per paragraph based on CHP changes
-    ///   - Applies paragraph formatting from PAP FKPs
+    /// Parses a range of text into paragraphs and runs based on FKP structures.
     /// </summary>
-    private void ParseDocumentContent()
+    public List<ParagraphModel> ParseParagraphsRange(string text, int startCp, int endCp, Dictionary<int, ChpBase> chpMap, Dictionary<int, PapBase> papMap, ref int imageCounter)
     {
-        var text = _textReader!.Text;
-        if (string.IsNullOrEmpty(text)) return;
+        var paragraphs = new List<ParagraphModel>();
+        if (string.IsNullOrEmpty(text)) return paragraphs;
 
-        // Read CHP and PAP properties from FKPs
-        var chpMap = _fkpParser!.ReadChpProperties();
-        var papMap = _fkpParser.ReadPapProperties();
-
-        // In Word binary format, paragraphs are delimited by CR (0x0D)
-        // Special characters: 0x07 = cell mark, 0x0C = page break,
-        // 0x01 = field begin/end or inline picture
         var paragraphIndex = 0;
-        var paraStart = 0;
-        var imageCounter = 0;
+        var paraStart = startCp;
+        
+        endCp = Math.Min(text.Length, endCp);
 
-        // Only iterate characters in the main document range [0, ccpText)
-        int mainDocumentLength = Math.Min(text.Length, _fibReader!.CcpText);
-
-        for (int i = 0; i <= mainDocumentLength; i++)
+        for (int i = startCp; i <= endCp; i++)
         {
-            bool isParagraphEnd = (i == mainDocumentLength) || (text[i] == '\r') || (text[i] == '\x0D');
+            bool isParagraphEnd = (i == endCp) || (text[i] == '\r') || (text[i] == '\x0D');
 
             if (!isParagraphEnd) continue;
 
             var paraText = text.Substring(paraStart, i - paraStart);
             var paraStartCp = paraStart;
             paraStart = i + 1; // skip the delimiter
-            if (paraStart > mainDocumentLength) paraStart = mainDocumentLength;
+            if (paraStart > endCp) paraStart = endCp;
 
             // Get PAP for this paragraph (use the first CP of the paragraph; if none, use nearest preceding CP so style/alignment are preserved)
             PapBase? pap = null;
@@ -548,13 +549,13 @@ public class DocReader : IDisposable
             if (pap == null && papMap.Count > 0)
             {
                 // No PAP at paraStartCp (gap in PLC). Prefer preceding PAP; if it's Normal, try following (title may be in next segment).
-                for (int cp = paraStartCp - 1; cp >= 0; cp--)
+                for (int cp = paraStartCp - 1; cp >= Math.Max(0, startCp - 2000); cp--)
                 {
                     if (papMap.TryGetValue(cp, out var prevPap)) { pap = prevPap; break; }
                 }
                 if (pap != null && pap.StyleId == 0 && pap.Istd == 0)
                 {
-                    for (int cp = paraStartCp + 1; cp <= paraStartCp + 2000 && cp <= _fibReader!.CcpText; cp++)
+                    for (int cp = paraStartCp + 1; cp <= paraStartCp + 2000 && cp <= endCp; cp++)
                     {
                         if (papMap.TryGetValue(cp, out var nextPap) && (nextPap.StyleId != 0 || nextPap.Istd != 0))
                         {
@@ -576,7 +577,7 @@ public class DocReader : IDisposable
                 Index = paragraphIndex++,
                 Type = ParagraphType.Normal,
                 Properties = pap != null 
-                    ? _fkpParser.ConvertToParagraphProperties(pap, Document.Styles)
+                    ? _fkpParser!.ConvertToParagraphProperties(pap, Document.Styles)
                     : new ParagraphProperties(),
                 ListFormatId = pap?.ListFormatId ?? 0,
                 ListLevel = pap?.ListLevel ?? 0
@@ -618,8 +619,10 @@ public class DocReader : IDisposable
             ApplyParagraphStyleDefaults(paragraph);
             ApplyTemplateSpecificFixes(paragraph);
 
-            Document.Paragraphs.Add(paragraph);
+            paragraphs.Add(paragraph);
         }
+        
+        return paragraphs;
     }
 
     /// <summary>
