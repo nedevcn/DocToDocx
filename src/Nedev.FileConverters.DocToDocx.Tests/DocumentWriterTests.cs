@@ -579,6 +579,7 @@ namespace Nedev.FileConverters.DocToDocx.Tests
             Assert.Contains("w:type=\"even\"", documentXml);
             Assert.Contains("w:footerReference", documentXml);
             Assert.Contains("<w:evenAndOddHeaders", settingsXml);
+            Assert.DoesNotContain("<w:updateFields", settingsXml);
         }
 
         [Fact]

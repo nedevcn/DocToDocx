@@ -447,5 +447,49 @@ namespace Nedev.FileConverters.DocToDocx.Tests
             Assert.Equal(0, sections[0].StartCp);
             Assert.Equal(100, sections[0].EndCp);
         }
+
+        [Fact]
+        public void Diagnose_ChineseSample_TextExtraction()
+        {
+            string repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+            string samplePath = Path.Combine(repoRoot, "tests", "渠道授权协议v5.doc");
+            Assert.True(File.Exists(samplePath), $"Sample not found: {samplePath}");
+
+            using var reader = new DocReader(samplePath);
+            reader.Load();
+
+            var model = reader.Document;
+            Assert.NotNull(model);
+
+            var textReader = typeof(DocReader)
+                .GetField("_textReader", BindingFlags.NonPublic | BindingFlags.Instance)
+                ?.GetValue(reader) as Nedev.FileConverters.DocToDocx.Readers.TextReader;
+            var fib = typeof(DocReader)
+                .GetField("_fibReader", BindingFlags.NonPublic | BindingFlags.Instance)
+                ?.GetValue(reader) as FibReader;
+
+            Assert.NotNull(textReader);
+            Assert.NotNull(fib);
+
+            _output.WriteLine($"Sample path: {samplePath}");
+            _output.WriteLine($"FIB ccpText={fib!.CcpText} ccpHdd={fib.CcpHdd} ccpFtn={fib.CcpFtn} lid=0x{fib.Lid:X4}");
+            _output.WriteLine($"Global text length={textReader!.Text.Length}");
+            _output.WriteLine($"Paragraph count={model!.Paragraphs.Count}");
+
+            foreach (var piece in textReader.Pieces.Take(12))
+            {
+                _output.WriteLine($"Piece cp=[{piece.CpStart},{piece.CpEnd}) unicode={piece.IsUnicode} fc={piece.FileOffset} raw={piece.RawFcMasked}");
+            }
+
+            string visibleText = string.Concat(model.Paragraphs.SelectMany(p => p.Runs).Select(r => r.Text));
+            _output.WriteLine($"Visible text length={visibleText.Length}");
+            _output.WriteLine("Visible text preview: " + visibleText.Substring(0, Math.Min(300, visibleText.Length)));
+
+            foreach (var paragraph in model.Paragraphs.Take(12))
+            {
+                string paraText = string.Concat(paragraph.Runs.Select(r => r.Text));
+                _output.WriteLine($"Paragraph[{paragraph.Index}] len={paraText.Length} text='{paraText}'");
+            }
+        }
     }
 }

@@ -347,11 +347,6 @@ public class SettingsWriter
             _writer.WriteEndElement();
         }
         
-        // Force update fields on open (essential for TOC and page numbers)
-        _writer.WriteStartElement("w", "updateFields", wNs);
-        _writer.WriteAttributeString("w", "val", wNs, "true");
-        _writer.WriteEndElement();
-        
         _writer.WriteEndElement(); // w:settings
         _writer.WriteEndDocument();
     }
