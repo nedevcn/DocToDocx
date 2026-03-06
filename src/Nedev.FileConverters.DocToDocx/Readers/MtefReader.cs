@@ -13,6 +13,7 @@ namespace Nedev.FileConverters.DocToDocx.Readers;
 /// </summary>
 public class MtefReader
 {
+    private const string MathNs = "http://schemas.openxmlformats.org/officeDocument/2006/math";
     private readonly byte[] _data;
     private int _pos;
 
@@ -52,7 +53,7 @@ public class MtefReader
             var sb = new StringBuilder();
             using (var writer = XmlWriter.Create(sb, new XmlWriterSettings { OmitXmlDeclaration = true, ConformanceLevel = ConformanceLevel.Fragment }))
             {
-                writer.WriteStartElement("m", "oMath", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+                writer.WriteStartElement("m", "oMath", MathNs);
                 ParseRecords(writer);
                 writer.WriteEndElement();
             }
@@ -133,8 +134,8 @@ public class MtefReader
 
         char c = (char)chValue;
         
-        writer.WriteStartElement("m", "r", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
-        writer.WriteStartElement("m", "t", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+        writer.WriteStartElement("m", "r", MathNs);
+        writer.WriteStartElement("m", "t", MathNs);
         writer.WriteAttributeString("xml", "space", "http://www.w3.org/XML/1998/namespace", "preserve");
         writer.WriteString(MapChar(c).ToString());
         writer.WriteEndElement(); // m:t
@@ -150,13 +151,13 @@ public class MtefReader
         switch (type)
         {
             case 0: // Fraction
-                writer.WriteStartElement("m", "f", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+                writer.WriteStartElement("m", "f", MathNs);
                 
-                writer.WriteStartElement("m", "num", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+                writer.WriteStartElement("m", "num", MathNs);
                 ParseRecords(writer);
                 writer.WriteEndElement(); // m:num
 
-                writer.WriteStartElement("m", "den", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+                writer.WriteStartElement("m", "den", MathNs);
                 ParseRecords(writer);
                 writer.WriteEndElement(); // m:den
 
@@ -164,16 +165,16 @@ public class MtefReader
                 break;
 
             case 3: // Radical
-                writer.WriteStartElement("m", "rad", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
-                writer.WriteStartElement("m", "radPr", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
-                writer.WriteStartElement("m", "degHide", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+                writer.WriteStartElement("m", "rad", MathNs);
+                writer.WriteStartElement("m", "radPr", MathNs);
+                writer.WriteStartElement("m", "degHide", MathNs);
                 writer.WriteEndElement();
                 writer.WriteEndElement();
                 
-                writer.WriteStartElement("m", "deg", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+                writer.WriteStartElement("m", "deg", MathNs);
                 writer.WriteEndElement();
 
-                writer.WriteStartElement("m", "e", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+                writer.WriteStartElement("m", "e", MathNs);
                 ParseRecords(writer);
                 writer.WriteEndElement(); // m:e
 
@@ -181,13 +182,13 @@ public class MtefReader
                 break;
 
             case 6: // Subscript
-                writer.WriteStartElement("m", "sSub", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+                writer.WriteStartElement("m", "sSub", MathNs);
                 
-                writer.WriteStartElement("m", "e", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+                writer.WriteStartElement("m", "e", MathNs);
                 ParseRecords(writer);
                 writer.WriteEndElement(); // m:e
 
-                writer.WriteStartElement("m", "sub", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+                writer.WriteStartElement("m", "sub", MathNs);
                 ParseRecords(writer);
                 writer.WriteEndElement(); // m:sub
 
@@ -195,13 +196,13 @@ public class MtefReader
                 break;
 
             case 7: // Superscript
-                writer.WriteStartElement("m", "sSup", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+                writer.WriteStartElement("m", "sSup", MathNs);
                 
-                writer.WriteStartElement("m", "e", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+                writer.WriteStartElement("m", "e", MathNs);
                 ParseRecords(writer);
                 writer.WriteEndElement(); // m:e
 
-                writer.WriteStartElement("m", "sup", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+                writer.WriteStartElement("m", "sup", MathNs);
                 ParseRecords(writer);
                 writer.WriteEndElement(); // m:sup
 
@@ -209,17 +210,17 @@ public class MtefReader
                 break;
 
             case 8: // Sub/Superscript
-                writer.WriteStartElement("m", "sSubSup", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+                writer.WriteStartElement("m", "sSubSup", MathNs);
                 
-                writer.WriteStartElement("m", "e", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+                writer.WriteStartElement("m", "e", MathNs);
                 ParseRecords(writer);
                 writer.WriteEndElement(); // m:e
 
-                writer.WriteStartElement("m", "sub", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+                writer.WriteStartElement("m", "sub", MathNs);
                 ParseRecords(writer);
                 writer.WriteEndElement(); // m:sub
 
-                writer.WriteStartElement("m", "sup", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+                writer.WriteStartElement("m", "sup", MathNs);
                 ParseRecords(writer);
                 writer.WriteEndElement(); // m:sup
 

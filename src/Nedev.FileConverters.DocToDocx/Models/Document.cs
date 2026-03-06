@@ -132,8 +132,8 @@ public class SectionInfo
     public short ColumnCount { get; set; } = 1;
     public int ColumnSpacing { get; set; }
     public byte VerticalAlignment { get; set; } // SVjc
-    public HeaderFooterReferenceType HeaderReference { get; set; }
-    public HeaderFooterReferenceType FooterReference { get; set; }
+    public HeaderFooterReferenceType HeaderReference { get; set; } = HeaderFooterReferenceType.Default;
+    public HeaderFooterReferenceType FooterReference { get; set; } = HeaderFooterReferenceType.Default;
 }
 
 public enum HeaderFooterReferenceType

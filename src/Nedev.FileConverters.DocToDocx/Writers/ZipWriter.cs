@@ -202,7 +202,7 @@ public class ZipWriter : IDisposable
         AddXmlEntry("word/settings.xml", w =>
         {
             var writer = new SettingsWriter(w);
-            writer.WriteSettings();
+            writer.WriteSettings(document);
         });
         
         // Write images (use minimal 1x1 PNG when image has no data to avoid broken/corrupt part)

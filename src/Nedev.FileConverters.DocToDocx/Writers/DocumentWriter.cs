@@ -44,6 +44,11 @@ public partial class DocumentWriter
     /// <summary>When true, the next picture written in the body should use full-page dimensions (first-page background).</summary>
     private bool _firstBodyPictureNotYetWritten;
 
+    /// <summary>
+    /// Creates a document writer for the target XML stream.
+    /// </summary>
+    /// <param name="writer">The XML writer that receives the document markup.</param>
+    /// <param name="options">Optional writer behavior flags.</param>
     public DocumentWriter(XmlWriter writer, DocumentWriterOptions? options = null)
     {
         _writer = writer;
@@ -538,97 +543,38 @@ public partial class DocumentWriter
 
         var props = _document.Properties ?? new DocumentProperties();
 
-        // headerReference and footerReference must come first in sectPr
+        // headerReference and footerReference must come first in sectPr.
+        // A sectPr can contain multiple references (default/first/even), and
+        // these must be emitted together to activate first-page and facing-page
+        // semantics in Word.
         var ids = RelationshipsWriter.ComputeRelationshipIds(_document);
+        bool allowsHeaders = section?.HeaderReference != HeaderFooterReferenceType.None;
+        bool allowsFooters = section?.FooterReference != HeaderFooterReferenceType.None;
+        bool usesFirstPage = allowsHeaders || allowsFooters;
+        usesFirstPage &= ids.HeaderFirstRId > 0 || ids.FooterFirstRId > 0;
+        bool usesEvenAndOdd = UsesEvenAndOddHeaders(_document);
 
-        // Decide which logical header type (default/first/even/none) applies to this section.
-        string? headerType = null;
-        HeaderFooterReferenceType headerRef = section?.HeaderReference ?? HeaderFooterReferenceType.Default;
-
-        headerType = headerRef switch
+        if (allowsHeaders)
         {
-            HeaderFooterReferenceType.Default => "default",
-            HeaderFooterReferenceType.First => "first",
-            HeaderFooterReferenceType.Even => "even",
-            HeaderFooterReferenceType.None => null,
-            _ => "default"
-        };
-
-        // Map logical header type to a concrete relationship ID.
-        int headerRId = 0;
-        if (headerType != null)
-        {
-            switch (headerRef)
-            {
-                case HeaderFooterReferenceType.First:
-                    headerRId = ids.HeaderFirstRId != 0
-                        ? ids.HeaderFirstRId
-                        : (ids.HeaderOddRId != 0 ? ids.HeaderOddRId : ids.HeaderEvenRId);
-                    break;
-                case HeaderFooterReferenceType.Even:
-                    headerRId = ids.HeaderEvenRId != 0
-                        ? ids.HeaderEvenRId
-                        : (ids.HeaderOddRId != 0 ? ids.HeaderOddRId : ids.HeaderFirstRId);
-                    break;
-                case HeaderFooterReferenceType.Default:
-                default:
-                    headerRId = ids.HeaderOddRId != 0
-                        ? ids.HeaderOddRId
-                        : (ids.HeaderFirstRId != 0 ? ids.HeaderFirstRId : ids.HeaderEvenRId);
-                    break;
-            }
+            WriteHeaderFooterReference("headerReference", "default", ids.HeaderOddRId);
+            if (usesFirstPage)
+                WriteHeaderFooterReference("headerReference", "first", ids.HeaderFirstRId);
+            if (usesEvenAndOdd)
+                WriteHeaderFooterReference("headerReference", "even", ids.HeaderEvenRId);
         }
 
-        if (headerType != null && headerRId > 0)
+        if (allowsFooters)
         {
-            _writer.WriteStartElement("w", "headerReference", wNs);
-            _writer.WriteAttributeString("w", "type", wNs, headerType);
-            _writer.WriteAttributeString("r", "id", "http://schemas.openxmlformats.org/officeDocument/2006/relationships", $"rId{headerRId}");
-            _writer.WriteEndElement();
+            WriteHeaderFooterReference("footerReference", "default", ids.FooterOddRId);
+            if (usesFirstPage)
+                WriteHeaderFooterReference("footerReference", "first", ids.FooterFirstRId);
+            if (usesEvenAndOdd)
+                WriteHeaderFooterReference("footerReference", "even", ids.FooterEvenRId);
         }
 
-        // Decide which logical footer type applies to this section.
-        string? footerType = null;
-        HeaderFooterReferenceType footerRef = section?.FooterReference ?? HeaderFooterReferenceType.Default;
-
-        footerType = footerRef switch
+        if (usesFirstPage)
         {
-            HeaderFooterReferenceType.Default => "default",
-            HeaderFooterReferenceType.First => "first",
-            HeaderFooterReferenceType.Even => "even",
-            HeaderFooterReferenceType.None => null,
-            _ => "default"
-        };
-
-        int footerRId = 0;
-        if (footerType != null)
-        {
-            switch (footerRef)
-            {
-                case HeaderFooterReferenceType.First:
-                    footerRId = ids.FooterFirstRId != 0
-                        ? ids.FooterFirstRId
-                        : (ids.FooterOddRId != 0 ? ids.FooterOddRId : ids.FooterEvenRId);
-                    break;
-                case HeaderFooterReferenceType.Even:
-                    footerRId = ids.FooterEvenRId != 0
-                        ? ids.FooterEvenRId
-                        : (ids.FooterOddRId != 0 ? ids.FooterOddRId : ids.FooterFirstRId);
-                    break;
-                case HeaderFooterReferenceType.Default:
-                default:
-                    footerRId = ids.FooterOddRId != 0
-                        ? ids.FooterOddRId
-                        : (ids.FooterFirstRId != 0 ? ids.FooterFirstRId : ids.FooterEvenRId);
-                    break;
-            }
-        }
-
-        if (footerType != null && footerRId > 0)
-        {
-            _writer.WriteStartElement("w", "footerReference", wNs);
-            _writer.WriteAttributeString("w", "type", wNs, footerType);
-            _writer.WriteAttributeString("r", "id", "http://schemas.openxmlformats.org/officeDocument/2006/relationships", $"rId{footerRId}");
+            _writer.WriteStartElement("w", "titlePg", wNs);
             _writer.WriteEndElement();
         }
 
@@ -674,6 +620,25 @@ public partial class DocumentWriter
         _writer.WriteStartElement("w", "cols", wNs);
         _writer.WriteAttributeString("w", "space", wNs, "720");
         _writer.WriteEndElement();
+    }
+
+    private void WriteHeaderFooterReference(string elementName, string type, int relationshipId)
+    {
+        if (relationshipId <= 0)
+            return;
+
+        const string wNs = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+        _writer.WriteStartElement("w", elementName, wNs);
+        _writer.WriteAttributeString("w", "type", wNs, type);
+        _writer.WriteAttributeString("r", "id", "http://schemas.openxmlformats.org/officeDocument/2006/relationships", $"rId{relationshipId}");
+        _writer.WriteEndElement();
+    }
+
+    private static bool UsesEvenAndOddHeaders(DocumentModel document)
+    {
+        return document.Properties.FFacingPages ||
+               document.HeadersFooters.Headers.Any(h => h.Type == HeaderFooterType.HeaderEven) ||
+               document.HeadersFooters.Footers.Any(f => f.Type == HeaderFooterType.FooterEven);
     }
 
     /// <summary>
@@ -758,6 +723,13 @@ public partial class DocumentWriter
         return Math.Clamp(value, min, max);
     }
 
+    /// <summary>
+    /// Writes a single paragraph, optionally suppressing a leading page break or
+    /// appending a section break to the paragraph properties.
+    /// </summary>
+    /// <param name="paragraph">The paragraph model to write.</param>
+    /// <param name="suppressPageBreakBefore">Whether a pageBreakBefore flag should be ignored for this paragraph.</param>
+    /// <param name="sectionBreak">Optional section properties to append at the end of the paragraph properties.</param>
     public void WriteParagraph(ParagraphModel paragraph, bool suppressPageBreakBefore = false, SectionInfo? sectionBreak = null)
     {
         // If this paragraph is actually a wrapper for a nested table, write the table directly

@@ -335,67 +335,37 @@ public class SettingsWriter
     /// <summary>
     /// Writes the settings part
     /// </summary>
-    public void WriteSettings()
+    public void WriteSettings(DocumentModel? document = null)
     {
         _writer.WriteStartDocument();
         const string wNs = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
         _writer.WriteStartElement("w", "settings", wNs);
+
+        if (UsesEvenAndOddHeaders(document))
+        {
+            _writer.WriteStartElement("w", "evenAndOddHeaders", wNs);
+            _writer.WriteEndElement();
+        }
         
         // Force update fields on open (essential for TOC and page numbers)
         _writer.WriteStartElement("w", "updateFields", wNs);
         _writer.WriteAttributeString("w", "val", wNs, "true");
         _writer.WriteEndElement();
-
-        WriteZoom();
-        WriteProofState();
-        WriteDefaultTabStop();
-        WriteHyphenationZone();
-        WriteCharacterSpacing();
         
         _writer.WriteEndElement(); // w:settings
         _writer.WriteEndDocument();
     }
-    
-    private void WriteZoom()
+
+    private static bool UsesEvenAndOddHeaders(DocumentModel? document)
     {
-        const string wNs = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
-        _writer.WriteStartElement("w", "zoom", wNs);
-        _writer.WriteAttributeString("w", "percent", wNs, "100");
-        _writer.WriteEndElement();
+        if (document == null)
+            return false;
+
+        return document.Properties.FFacingPages ||
+               document.HeadersFooters.Headers.Any(h => h.Type == HeaderFooterType.HeaderEven) ||
+               document.HeadersFooters.Footers.Any(f => f.Type == HeaderFooterType.FooterEven);
     }
     
-    private void WriteProofState()
-    {
-        const string wNs = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
-        _writer.WriteStartElement("w", "proofState", wNs);
-        _writer.WriteAttributeString("w", "spelling", wNs, "clean");
-        _writer.WriteAttributeString("w", "grammar", wNs, "clean");
-        _writer.WriteEndElement();
-    }
-    
-    private void WriteDefaultTabStop()
-    {
-        const string wNs = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
-        _writer.WriteStartElement("w", "defaultTabStop", wNs);
-        _writer.WriteAttributeString("w", "val", wNs, "720");
-        _writer.WriteEndElement();
-    }
-    
-    private void WriteHyphenationZone()
-    {
-        const string wNs = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
-        _writer.WriteStartElement("w", "hyphenationZone", wNs);
-        _writer.WriteAttributeString("w", "val", wNs, "360");
-        _writer.WriteEndElement();
-    }
-    
-    private void WriteCharacterSpacing()
-    {
-        const string wNs = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
-        _writer.WriteStartElement("w", "characterSpacingControl", wNs);
-        _writer.WriteAttributeString("w", "val", wNs, "doNotCompress");
-        _writer.WriteEndElement();
-    }
 }
 
 /// <summary>
@@ -571,6 +541,10 @@ public class ContentTypesWriter
         WriteDefault("jpeg", "image/jpeg");
         WriteDefault("gif", "image/gif");
         WriteDefault("bmp", "image/bmp");
+        WriteDefault("emf", "image/x-emf");
+        WriteDefault("wmf", "image/x-wmf");
+        WriteDefault("tif", "image/tiff");
+        WriteDefault("tiff", "image/tiff");
         WriteDefault("odttf", "application/vnd.openxmlformats-officedocument.obfuscatedFont");
         WriteDefault("ttf", "application/x-font-ttf");
         

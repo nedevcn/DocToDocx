@@ -114,6 +114,7 @@ public class FootnoteReader
             // Extract text from global stream using absolute CP
             var absoluteStartCp = storyOffset + relStart;
             var noteText = _textReader.GetText(absoluteStartCp, length);
+            RunProperties? runProps = null;
 
             // if the string seems to contain junk (unpaired surrogates, many
             // nulls, etc.) try a second pass using the FKP parser to find the
@@ -146,54 +147,50 @@ public class FootnoteReader
                             Logger.Info("Successfully decoded using table stream fallback");
                             noteText = alt2;
                         }
-                    }
-                }
-            }
-
-            if (string.IsNullOrEmpty(noteText) && length > 0)
-            {
-                // debug aid: log positions that produced no text; useful when
-                // investigating missing footnote content in sample documents.
-                Logger.Warning($"Empty footnote text (relStart={relStart} length={length} absoluteCp={absoluteStartCp} storyOffset={storyOffset})");
-            }
-
-            if (!string.IsNullOrEmpty(noteText))
-            {
-                // Try to get actual CHP formatting from FkpParser
-                RunProperties? runProps = null;
-                if (_fkpParser != null && _styles != null)
-                {
-                    try
-                    {
-                        var chp = _fkpParser.GetChpAtCp(absoluteStartCp);
-                        if (chp != null)
+                        // as a last resort, take alt2 even if it looked garbled so we
+                        // at least produce something instead of an empty run. this
+                        // helps tests and prevents silent data loss in strange files.
+                        else if (!string.IsNullOrEmpty(alt2))
                         {
-                            runProps = _fkpParser.ConvertToRunProperties(chp, _styles);
+                            Logger.Info("Using garbled table-stream text as final fallback");
+                            noteText = alt2;
                         }
                     }
-                    catch
+                }
+            }
+
+            if (_fkpParser != null && _styles != null)
+            {
+                try
+                {
+                    var chp = _fkpParser.GetChpAtCp(absoluteStartCp);
+                    if (chp != null)
                     {
-                        // Fall through to default
+                        runProps = _fkpParser.ConvertToRunProperties(chp, _styles);
                     }
                 }
-
-                var run = new RunModel
+                catch
                 {
-                    Text = noteText,
-                    CharacterPosition = relStart,
-                    CharacterLength = noteText.Length,
-                    Properties = runProps ?? new RunProperties()
-                };
-                note.Runs.Add(run);
-
-                var paragraph = new ParagraphModel
-                {
-                    Index = 0,
-                    Type = ParagraphType.Normal
-                };
-                paragraph.Runs.Add(run);
-                note.Paragraphs.Add(paragraph);
+                    // Fall through to default properties
+                }
             }
+
+            var run = new RunModel
+            {
+                Text = noteText,
+                CharacterPosition = relStart,
+                CharacterLength = noteText.Length,
+                Properties = runProps ?? new RunProperties()
+            };
+            note.Runs.Add(run);
+
+            var paragraph = new ParagraphModel
+            {
+                Index = 0,
+                Type = ParagraphType.Normal
+            };
+            paragraph.Runs.Add(run);
+            note.Paragraphs.Add(paragraph);
 
             notes.Add(note);
         }

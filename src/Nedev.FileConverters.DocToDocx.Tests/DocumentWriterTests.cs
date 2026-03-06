@@ -15,6 +15,12 @@ namespace Nedev.FileConverters.DocToDocx.Tests
 {
     public class DocumentWriterTests
     {
+        private readonly Xunit.Abstractions.ITestOutputHelper _output;
+
+        public DocumentWriterTests(Xunit.Abstractions.ITestOutputHelper output)
+        {
+            _output = output;
+        }
         [Fact]
         public void WriteDocument_MinimalParagraph_EmitsTextRun()
         {
@@ -542,6 +548,80 @@ namespace Nedev.FileConverters.DocToDocx.Tests
         }
 
         [Fact]
+        public void WriteDocument_FirstAndEvenHeaders_EnableSectionSemantics()
+        {
+            var doc = new DocumentModel();
+            doc.Paragraphs.Add(new ParagraphModel { Runs = { new RunModel { Text = "body" } } });
+            doc.HeadersFooters.Headers.Add(new HeaderFooterModel { Type = HeaderFooterType.HeaderFirst, Text = "first header" });
+            doc.HeadersFooters.Headers.Add(new HeaderFooterModel { Type = HeaderFooterType.HeaderOdd, Text = "odd header" });
+            doc.HeadersFooters.Headers.Add(new HeaderFooterModel { Type = HeaderFooterType.HeaderEven, Text = "even header" });
+            doc.HeadersFooters.Footers.Add(new HeaderFooterModel { Type = HeaderFooterType.FooterFirst, Text = "first footer" });
+            doc.HeadersFooters.Footers.Add(new HeaderFooterModel { Type = HeaderFooterType.FooterOdd, Text = "odd footer" });
+            doc.HeadersFooters.Footers.Add(new HeaderFooterModel { Type = HeaderFooterType.FooterEven, Text = "even footer" });
+
+            byte[] package;
+            using (var ms = new MemoryStream())
+            {
+                var zw = new ZipWriter(ms);
+                zw.WriteDocument(doc);
+                zw.Dispose();
+                package = ms.ToArray();
+            }
+
+            using var zip = new System.IO.Compression.ZipArchive(new MemoryStream(package), System.IO.Compression.ZipArchiveMode.Read);
+            var documentXml = new StreamReader(zip.GetEntry("word/document.xml").Open()).ReadToEnd();
+            var settingsXml = new StreamReader(zip.GetEntry("word/settings.xml").Open()).ReadToEnd();
+
+            Assert.Contains("<w:titlePg", documentXml);
+            Assert.Contains("w:headerReference", documentXml);
+            Assert.Contains("w:type=\"default\"", documentXml);
+            Assert.Contains("w:type=\"first\"", documentXml);
+            Assert.Contains("w:type=\"even\"", documentXml);
+            Assert.Contains("w:footerReference", documentXml);
+            Assert.Contains("<w:evenAndOddHeaders", settingsXml);
+        }
+
+        [Fact]
+        public void ContentTypes_IncludeExtendedImageFormats()
+        {
+            var doc = new DocumentModel();
+            doc.Paragraphs.Add(new ParagraphModel { Runs = { new RunModel { Text = "img", IsPicture = true, ImageIndex = 0 } } });
+            doc.Images.Add(new ImageModel { WidthEMU = 100, HeightEMU = 100, Data = new byte[] { 1 }, Type = ImageType.Emf });
+
+            byte[] package;
+            using (var ms = new MemoryStream())
+            {
+                var zw = new ZipWriter(ms);
+                zw.WriteDocument(doc);
+                zw.Dispose();
+                package = ms.ToArray();
+            }
+
+            using var zip = new System.IO.Compression.ZipArchive(new MemoryStream(package), System.IO.Compression.ZipArchiveMode.Read);
+            var contentTypes = new StreamReader(zip.GetEntry("[Content_Types].xml").Open()).ReadToEnd();
+            Assert.Contains("Extension=\"emf\"", contentTypes);
+            Assert.Contains("ContentType=\"image/x-emf\"", contentTypes);
+        }
+
+        [Fact]
+        public void MtefReader_UsesOfficeMathNamespace()
+        {
+            var mtef = new byte[]
+            {
+                0x03, 0x01, 0x01, 0x03, 0x00,
+                0x02,
+                0x78, 0x00,
+                0x00
+            };
+
+            var omml = new Nedev.FileConverters.DocToDocx.Readers.MtefReader(mtef).ConvertToOmml();
+
+            Assert.NotNull(omml);
+            Assert.Contains("http://schemas.openxmlformats.org/officeDocument/2006/math", omml);
+            Assert.DoesNotContain("http://schemas.openxmlformats.org/wordprocessingml/2006/main", omml);
+        }
+
+        [Fact]
         public void CommentsOnEmptyParagraph_AreMappedCorrectly()
         {
             // include a quick sanity check that the public SaveDocument helper honors
@@ -592,7 +672,21 @@ namespace Nedev.FileConverters.DocToDocx.Tests
             using (var package = DocumentFormat.OpenXml.Packaging.WordprocessingDocument.Open(tmp, false))
             {
                 var validator = new DocumentFormat.OpenXml.Validation.OpenXmlValidator();
-                var errors = validator.Validate(package);
+                var errors = validator.Validate(package).ToList();
+                if (errors.Count > 0)
+                {
+                    // dump detailed information to help debugging
+                    foreach (var err in errors)
+                    {
+                        _output.WriteLine("Validation error: " + err.Description);
+                        _output.WriteLine("  Path: " + err.Path);
+                        _output.WriteLine("  Part: " + err.Part.Uri);
+                        if (err.Node != null)
+                        {
+                            _output.WriteLine("  Node XML: " + err.Node.OuterXml);
+                        }
+                    }
+                }
                 Assert.Empty(errors);
             }
             File.Delete(tmp);
