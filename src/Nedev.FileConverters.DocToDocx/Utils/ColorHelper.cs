@@ -9,8 +9,8 @@ public static class ColorHelper
     /// Word ICO color index (0-16) to RGB mapping
     /// Reference: MS-DOC 2.9.98 ico
     /// </summary>
-    private static readonly uint[] IcoToRgbTable =
-    [
+    private static readonly uint[] IcoToRgbTable = new uint[]
+    {
         0x000000, // 0 = Auto (black)
         0x000000, // 1 = Black
         0x0000FF, // 2 = Blue
@@ -28,13 +28,13 @@ public static class ColorHelper
         0x808000, // 14 = DarkYellow (Olive)
         0xA9A9A9, // 15 = DarkGray
         0xD3D3D3, // 16 = LightGray
-    ];
+    };
 
     /// <summary>
     /// Word highlight color index to OOXML highlight name mapping
     /// </summary>
-    private static readonly string[] HighlightNames =
-    [
+    private static readonly string[] HighlightNames = new string[]
+    {
         "none",        // 0
         "black",       // 1
         "blue",        // 2
@@ -52,16 +52,16 @@ public static class ColorHelper
         "darkYellow",  // 14
         "darkGray",    // 15
         "lightGray",   // 16
-    ];
+    };
 
     /// <summary>
     /// OOXML theme color names mapping from MS-DOC theme index
     /// </summary>
-    private static readonly string[] ThemeColorNames =
-    [
+    private static readonly string[] ThemeColorNames = new string[]
+    {
         "dk1", "lt1", "dk2", "lt2", "accent1", "accent2", 
         "accent3", "accent4", "accent5", "accent6", "hlink", "folHlink"
-    ];
+    };
 
     /// <summary>
     /// Converts a Word ICO color index to a 6-digit hex RGB string (e.g. "FF0000")

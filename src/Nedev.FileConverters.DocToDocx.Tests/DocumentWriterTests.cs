@@ -448,7 +448,7 @@ namespace Nedev.FileConverters.DocToDocx.Tests
         {
             // verify that any run containing characters outside the ASCII + CJK
             // set is returned as an empty string.
-            var method = typeof(Nedev.DocToDocx.Writers.DocumentWriter)
+            var method = typeof(Nedev.FileConverters.DocToDocx.Writers.DocumentWriter)
                 .GetMethod("SanitizeXmlString", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
             string input = "HelloᔗWorld中文";
             string cleaned = (string)method.Invoke(null, new object[] { input })!;

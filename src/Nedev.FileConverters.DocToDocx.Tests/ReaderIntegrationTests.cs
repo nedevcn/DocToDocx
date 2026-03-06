@@ -8,7 +8,6 @@ using Xunit;
 using System.Reflection;
 using System.Text;
 using Nedev.FileConverters.DocToDocx.Readers;
-using Nedev.FileConverters.DocToDocx.
 using Nedev.FileConverters.DocToDocx.Cli;
 using Nedev.FileConverters.DocToDocx.Models;
 using Nedev.FileConverters.DocToDocx.Writers;
@@ -54,7 +53,7 @@ namespace Nedev.FileConverters.DocToDocx.Tests
             DocToDocxConverter.SaveDocument(doc, tempInput);
 
             string outPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString() + ".docx");
-            await Nedev.DocToDocx.Cli.Program.Main(new[] { tempInput, outPath });
+            await Nedev.FileConverters.DocToDocx.Cli.Program.Main(new[] { tempInput, outPath });
             Assert.True(File.Exists(outPath));
 
             // verify copy semantics (size)
@@ -111,7 +110,7 @@ namespace Nedev.FileConverters.DocToDocx.Tests
         {
             using var sw = new StringWriter();
             Console.SetOut(sw);
-            await Nedev.DocToDocx.Cli.Program.Main(new[] { "--version" });
+            await Nedev.FileConverters.DocToDocx.Cli.Program.Main(new[] { "--version" });
             string output = sw.ToString();
             Assert.Contains("Version", output);
         }
@@ -132,7 +131,7 @@ namespace Nedev.FileConverters.DocToDocx.Tests
             doc.Paragraphs.Add(new ParagraphModel { Runs = { new RunModel { Text = "Z" } } });
             DocToDocxConverter.SaveDocument(doc, aPath);
 
-            await Nedev.DocToDocx.Cli.Program.Main(new[] { tempInput, tempOutput, "-r" });
+            await Nedev.FileConverters.DocToDocx.Cli.Program.Main(new[] { tempInput, tempOutput, "-r" });
 
             string expected = Path.Combine(tempOutput, "sub", "a.docx");
             Assert.True(File.Exists(expected), "Converted file should exist");
@@ -196,7 +195,7 @@ namespace Nedev.FileConverters.DocToDocx.Tests
             {
                 string text = r.Text ?? string.Empty;
                 // invoke private sanitizer using reflection
-                var method = typeof(Nedev.DocToDocx.Writers.DocumentWriter).GetMethod("SanitizeXmlString", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
+                var method = typeof(Nedev.FileConverters.DocToDocx.Writers.DocumentWriter).GetMethod("SanitizeXmlString", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Static)!;
                 string cleaned = (string)method.Invoke(null, new object[] { text })!;
                 Console.WriteLine($"Original run ({text.Length}): '{text}'");
                 Console.WriteLine($" Sanitize -> '{cleaned}'");
@@ -270,11 +269,11 @@ namespace Nedev.FileConverters.DocToDocx.Tests
         public void ProblematicDoc_FibValues()
         {
             string sample = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", "..", "tests", "渠道授权协议v5.doc"));
-            using var reader = new Nedev.DocToDocx.Readers.DocReader(sample);
+            using var reader = new Nedev.FileConverters.DocToDocx.Readers.DocReader(sample);
             // before loading, dump OLE container directory for inspection
-            var cfbField = typeof(Nedev.DocToDocx.Readers.DocReader)
+            var cfbField = typeof(Nedev.FileConverters.DocToDocx.Readers.DocReader)
                 .GetField("_cfb", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance);
-            var cfb = cfbField?.GetValue(reader) as Nedev.DocToDocx.Readers.CfbReader;
+            var cfb = cfbField?.GetValue(reader) as Nedev.FileConverters.DocToDocx.Readers.CfbReader;
             if (cfb != null)
             {
                 Console.WriteLine("OLE directory listing:\n" + cfb.GetDiagnostics());
@@ -282,16 +281,16 @@ namespace Nedev.FileConverters.DocToDocx.Tests
 
             reader.Load();
             // grab private fields via reflection for inspection
-            var fib = typeof(Nedev.DocToDocx.Readers.DocReader)
+            var fib = typeof(Nedev.FileConverters.DocToDocx.Readers.DocReader)
                 .GetField("_fibReader", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
-                ?.GetValue(reader) as Nedev.DocToDocx.Readers.FibReader;
-            var textReader = typeof(Nedev.DocToDocx.Readers.DocReader)
+                ?.GetValue(reader) as Nedev.FileConverters.DocToDocx.Readers.FibReader;
+            var textReader = typeof(Nedev.FileConverters.DocToDocx.Readers.DocReader)
                 .GetField("_textReader", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
-                ?.GetValue(reader) as Nedev.DocToDocx.Readers.TextReader;
-            var ftStream = typeof(Nedev.DocToDocx.Readers.DocReader)
+                ?.GetValue(reader) as Nedev.FileConverters.DocToDocx.Readers.TextReader;
+            var ftStream = typeof(Nedev.FileConverters.DocToDocx.Readers.DocReader)
                 .GetField("_footnoteStream", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
                 ?.GetValue(reader) as System.IO.Stream;
-            var tableReader = typeof(Nedev.DocToDocx.Readers.DocReader)
+            var tableReader = typeof(Nedev.FileConverters.DocToDocx.Readers.DocReader)
                 .GetField("_tableReader", System.Reflection.BindingFlags.NonPublic | System.Reflection.BindingFlags.Instance)
                 ?.GetValue(reader) as System.IO.BinaryReader;
 
