@@ -507,6 +507,7 @@ namespace Nedev.FileConverters.DocToDocx.Tests
                 Assert.Equal(12, Regex.Matches(firstTableXml, "<w:tc(?=[ >])").Count);
                 Assert.Contains("账号：121928482010902", firstTableXml);
                 Assert.Contains("账号：154408672", firstTableXml);
+                Assert.DoesNotContain("HYPERLINK", documentXml);
             }
             finally
             {

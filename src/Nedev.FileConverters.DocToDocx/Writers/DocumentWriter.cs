@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using System.Xml;
 using Nedev.FileConverters.DocToDocx.Models;
 using Nedev.FileConverters.DocToDocx.Utils;
@@ -740,13 +741,13 @@ public partial class DocumentWriter
         }
 
         // Filter runs to only those with actual content
-        var runsWithContent = paragraph.Runs.Where(r => !string.IsNullOrEmpty(r.Text) || r.IsPicture || r.IsField).ToList();
+        var runsWithContent = paragraph.Runs.Where(HasRenderableContent).ToList();
         
         // Always write the paragraph element - OOXML requires at least one w:p in table cells,
         // and empty paragraphs (blank lines, page breaks) are meaningful document structure.
         _writer.WriteStartElement("w", "p", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
         
-        WriteParagraphProperties(paragraph.Properties, suppressPageBreakBefore, sectionBreak);
+        WriteParagraphProperties(paragraph, suppressPageBreakBefore, sectionBreak);
 
         // Emit w:commentRangeStart for any comments that start at this paragraph
         if (_commentStartsByParagraph.TryGetValue(paragraph.Index, out var commentStarts))
@@ -790,8 +791,10 @@ public partial class DocumentWriter
         _writer.WriteEndElement(); // w:p
     }
     
-    private void WriteParagraphProperties(ParagraphProperties? props, bool suppressPageBreakBefore = false, SectionInfo? sectionBreak = null)
+    private void WriteParagraphProperties(ParagraphModel paragraph, bool suppressPageBreakBefore = false, SectionInfo? sectionBreak = null)
     {
+        var props = paragraph.Properties;
+
         // Always emit w:pPr if there is a sectionBreak, even when props is null
         if (props == null && sectionBreak == null) return;
         
@@ -814,11 +817,9 @@ public partial class DocumentWriter
         }
 
         // 2. keepNext
-        if (props != null && props.KeepWithNext)
-        {
-            _writer.WriteStartElement("w", "keepNext", wNs);
-            _writer.WriteEndElement();
-        }
+        // MS-DOC keep-with-next flags are noisy in this corpus and surface as
+        // black margin markers in Word when formatting marks are shown.
+        // Prefer stable visible layout over carrying forward unreliable hints.
         
         // 3. keepLines
         if (props != null && props.KeepTogether)
@@ -1295,7 +1296,7 @@ public partial class DocumentWriter
         // sanitize display text in case reader left a field code like
         // "HYPERLINK \"http:...\"" in the run text.  Word does not expect
         // field codes inside a w:hyperlink element.
-        string display = run.Text ?? string.Empty;
+        string display = StripInlineHyperlinkFieldArtifacts(run.Text ?? string.Empty);
         // remove any embedded HYPERLINK field codes that slipped into text
         int idx;
         while ((idx = display.IndexOf("HYPERLINK", StringComparison.OrdinalIgnoreCase)) >= 0)
@@ -1815,7 +1816,12 @@ public partial class DocumentWriter
         const string wNs = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
 
         // Convert \r\n to \n first to avoid double counting
-        string text = run.Text.Replace("\r\n", "\n").Replace("\r", "\n");
+        string text = StripInlineHyperlinkFieldArtifacts(run.Text)
+            .Replace("\r\n", "\n")
+            .Replace("\r", "\n");
+
+        if (string.IsNullOrWhiteSpace(text))
+            return;
 
         // Handle tabs, line breaks, and page breaks
         int startIndex = 0;
@@ -1871,6 +1877,29 @@ public partial class DocumentWriter
                 _writer.WriteEndElement();
             }
         }
+    }
+
+    private static string StripInlineHyperlinkFieldArtifacts(string text)
+    {
+        if (string.IsNullOrEmpty(text))
+            return text;
+
+        string sanitized = Regex.Replace(
+            text,
+            "\\s*HYPERLINK\\s+\"[^\"]*\"\\s*",
+            " ",
+            RegexOptions.IgnoreCase | RegexOptions.CultureInvariant);
+
+        sanitized = Regex.Replace(sanitized, "[ ]{2,}", " ");
+        return sanitized;
+    }
+
+    private static bool HasRenderableContent(RunModel run)
+    {
+        if (run.IsPicture || run.IsField)
+            return true;
+
+        return !string.IsNullOrWhiteSpace(StripInlineHyperlinkFieldArtifacts(run.Text ?? string.Empty));
     }
     
     /// <summary>
