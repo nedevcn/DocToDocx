@@ -795,10 +795,11 @@ public class DocReader : IDisposable
                     }
 
                     // Apply active hyperlink state mapped across all split runs within the boundaries
-                    if (activeHyperlink != null && !string.IsNullOrEmpty(activeHyperlink.Url))
+                    if (activeHyperlink != null && (!string.IsNullOrEmpty(activeHyperlink.Url) || !string.IsNullOrEmpty(activeHyperlink.Bookmark)))
                     {
                         run.IsHyperlink = true;
                         run.HyperlinkUrl = activeHyperlink.Url;
+                        run.HyperlinkBookmark = activeHyperlink.Bookmark;
                         run.HyperlinkRelationshipId = activeHyperlink.RelationshipId;
                         run.IsField = false; // Treat as hyperlink, overriding generic field semantics
 

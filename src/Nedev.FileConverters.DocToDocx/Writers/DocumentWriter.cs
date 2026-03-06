@@ -817,9 +817,11 @@ public partial class DocumentWriter
         }
 
         // 2. keepNext
-        // MS-DOC keep-with-next flags are noisy in this corpus and surface as
-        // black margin markers in Word when formatting marks are shown.
-        // Prefer stable visible layout over carrying forward unreliable hints.
+        if (props != null && props.KeepWithNext)
+        {
+            _writer.WriteStartElement("w", "keepNext", wNs);
+            _writer.WriteEndElement();
+        }
         
         // 3. keepLines
         if (props != null && props.KeepTogether)
@@ -1145,7 +1147,7 @@ public partial class DocumentWriter
         }
 
         // Handle hyperlink (skip entirely when hyperlinks are disabled)
-        if (_options.EnableHyperlinks && run.IsHyperlink && !string.IsNullOrEmpty(run.HyperlinkUrl))
+        if (_options.EnableHyperlinks && run.IsHyperlink && RunHasHyperlinkTarget(run))
         {
             // if the run text contains extra material before an embedded HYPERLINK
             // field code (common when the reader leaves the field code in the same
@@ -1180,6 +1182,7 @@ public partial class DocumentWriter
                         // explicitly clear hyperlink flags
                         IsHyperlink = false,
                         HyperlinkUrl = null,
+                        HyperlinkBookmark = null,
                         HyperlinkRelationshipId = null,
                         IsBookmark = run.IsBookmark,
                         BookmarkName = run.BookmarkName,
@@ -1333,15 +1336,37 @@ public partial class DocumentWriter
         {
             _writer.WriteAttributeString("r", "id", "http://schemas.openxmlformats.org/officeDocument/2006/relationships", run.HyperlinkRelationshipId);
         }
-        else if (!string.IsNullOrEmpty(run.HyperlinkUrl))
+
+        var hyperlinkUrl = run.HyperlinkUrl;
+        var bookmarkTarget = run.HyperlinkBookmark;
+        if (string.IsNullOrEmpty(bookmarkTarget) && !string.IsNullOrEmpty(hyperlinkUrl))
         {
-            // For internal bookmarks
-            if (run.HyperlinkUrl.StartsWith("#"))
+            if (hyperlinkUrl.StartsWith("#", StringComparison.Ordinal))
             {
-                _writer.WriteAttributeString("w", "anchor", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", run.HyperlinkUrl.Substring(1));
+                bookmarkTarget = hyperlinkUrl.Substring(1);
+                hyperlinkUrl = string.Empty;
             }
-            // External links without a relationship ID: skip r:id to avoid corruption.
-            // The hyperlink text will still be visible but not clickable.
+            else
+            {
+                var hashIndex = hyperlinkUrl.IndexOf('#');
+                if (hashIndex >= 0)
+                {
+                    bookmarkTarget = hyperlinkUrl.Substring(hashIndex + 1);
+                    hyperlinkUrl = hyperlinkUrl.Substring(0, hashIndex);
+                }
+            }
+        }
+
+        if (!string.IsNullOrEmpty(bookmarkTarget))
+        {
+            if (!string.IsNullOrEmpty(run.HyperlinkRelationshipId) || !string.IsNullOrEmpty(hyperlinkUrl))
+            {
+                _writer.WriteAttributeString("w", "docLocation", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", bookmarkTarget);
+            }
+            else
+            {
+                _writer.WriteAttributeString("w", "anchor", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", bookmarkTarget);
+            }
         }
 
         // write a single run containing the sanitized text
@@ -1800,6 +1825,14 @@ public partial class DocumentWriter
         var props = run.Properties;
         if (props == null) return;
         RunPropertiesHelper.WriteRunProperties(_writer, props);
+    }
+
+    private static bool RunHasHyperlinkTarget(RunModel run)
+    {
+        if (!string.IsNullOrEmpty(run.HyperlinkBookmark))
+            return true;
+
+        return !string.IsNullOrEmpty(run.HyperlinkUrl);
     }
     
     private void WriteRunText(RunModel run)

@@ -150,6 +150,7 @@ public class FootnotesWriter
             {
                 _writer.WriteStartElement("w", "rFonts", wNs);
                 _writer.WriteAttributeString("w", "ascii", null, run.Properties.FontName);
+                _writer.WriteAttributeString("w", "eastAsia", null, run.Properties.FontName);
                 _writer.WriteAttributeString("w", "hAnsi", null, run.Properties.FontName);
                 _writer.WriteEndElement();
             }

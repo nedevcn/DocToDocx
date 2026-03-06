@@ -245,6 +245,9 @@ public class RunModel
     /// <summary>Hyperlink URL or bookmark reference</summary>
     public string? HyperlinkUrl { get; set; }
 
+    /// <summary>Bookmark target for internal links or document fragments.</summary>
+    public string? HyperlinkBookmark { get; set; }
+
     /// <summary>Hyperlink relationship ID for DOCX</summary>
     public string? HyperlinkRelationshipId { get; set; }
 

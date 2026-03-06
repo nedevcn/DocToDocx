@@ -117,6 +117,7 @@ public class CommentsWriter
         {
             _writer.WriteStartElement("w", "rFonts", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
             _writer.WriteAttributeString("w", "ascii", null, props.FontName);
+            _writer.WriteAttributeString("w", "eastAsia", null, props.FontName);
             _writer.WriteAttributeString("w", "hAnsi", null, props.FontName);
             _writer.WriteEndElement();
         }

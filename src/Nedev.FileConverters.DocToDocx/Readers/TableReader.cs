@@ -182,6 +182,7 @@ public class TableReader
                             FieldCode = r.FieldCode,
                             IsHyperlink = r.IsHyperlink,
                             HyperlinkUrl = r.HyperlinkUrl,
+                            HyperlinkBookmark = r.HyperlinkBookmark,
                             HyperlinkRelationshipId = r.HyperlinkRelationshipId,
                             IsBookmark = r.IsBookmark,
                             IsBookmarkStart = r.IsBookmarkStart,

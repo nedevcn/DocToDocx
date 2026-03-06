@@ -535,12 +535,173 @@ namespace Nedev.FileConverters.DocToDocx.Tests
                 zw.Dispose();
                 pkg = ms.ToArray();
             }
-            var rels = new StreamReader(new System.IO.Compression.ZipArchive(new MemoryStream(pkg), System.IO.Compression.ZipArchiveMode.Read).GetEntry("word/_rels/document.xml.rels").Open()).ReadToEnd();
-            Assert.Contains("foo", rels);
-            Assert.Contains("bar", rels);
+            var zip = new System.IO.Compression.ZipArchive(new MemoryStream(pkg), System.IO.Compression.ZipArchiveMode.Read);
+            var documentXml = new StreamReader(zip.GetEntry("word/document.xml").Open()).ReadToEnd();
+            var rels = new StreamReader(zip.GetEntry("word/_rels/document.xml.rels").Open()).ReadToEnd();
+            Assert.Contains("docLocation=\"foo\"", documentXml);
+            Assert.Contains("docLocation=\"bar\"", documentXml);
+            Assert.Contains("Target=\"http://a.com\"", rels);
             // ensure two hyperlink relationships only
             var hyperCount = Regex.Matches(rels, "Type=\\\"http://schemas.openxmlformats.org/officeDocument/2006/relationships/hyperlink\\\"").Count;
             Assert.Equal(2, hyperCount);
+        }
+
+        [Fact]
+        public void InternalBookmarkHyperlink_WritesAnchorWithoutRelationship()
+        {
+            var doc = new DocumentModel();
+            var para = new ParagraphModel();
+            para.Runs.Add(new RunModel
+            {
+                Text = "jump",
+                IsHyperlink = true,
+                HyperlinkBookmark = "targetBookmark"
+            });
+            doc.Paragraphs.Add(para);
+
+            byte[] pkg;
+            using (var ms = new MemoryStream())
+            {
+                var zw = new ZipWriter(ms);
+                zw.WriteDocument(doc);
+                zw.Dispose();
+                pkg = ms.ToArray();
+            }
+
+            using var zip = new System.IO.Compression.ZipArchive(new MemoryStream(pkg), System.IO.Compression.ZipArchiveMode.Read);
+            var documentXml = new StreamReader(zip.GetEntry("word/document.xml").Open()).ReadToEnd();
+            var rels = new StreamReader(zip.GetEntry("word/_rels/document.xml.rels").Open()).ReadToEnd();
+
+            Assert.Contains("anchor=\"targetBookmark\"", documentXml);
+            Assert.DoesNotContain("hyperlink", rels, StringComparison.OrdinalIgnoreCase);
+        }
+
+        [Fact]
+        public void ParagraphKeepWithNext_IsSerialized()
+        {
+            var doc = new DocumentModel();
+            doc.Paragraphs.Add(new ParagraphModel
+            {
+                Properties = new ParagraphProperties { KeepWithNext = true },
+                Runs = { new RunModel { Text = "Heading" } }
+            });
+
+            byte[] pkg;
+            using (var ms = new MemoryStream())
+            {
+                var zw = new ZipWriter(ms);
+                zw.WriteDocument(doc);
+                zw.Dispose();
+                pkg = ms.ToArray();
+            }
+
+            using var zip = new System.IO.Compression.ZipArchive(new MemoryStream(pkg), System.IO.Compression.ZipArchiveMode.Read);
+            var documentXml = new StreamReader(zip.GetEntry("word/document.xml").Open()).ReadToEnd();
+
+            Assert.Contains("<w:keepNext", documentXml);
+        }
+
+        [Fact]
+        public void RunFonts_WriteEastAsiaSlot()
+        {
+            var doc = new DocumentModel();
+            doc.Paragraphs.Add(new ParagraphModel
+            {
+                Runs =
+                {
+                    new RunModel
+                    {
+                        Text = "中文",
+                        Properties = new RunProperties { FontName = "SimSun" }
+                    }
+                }
+            });
+
+            byte[] pkg;
+            using (var ms = new MemoryStream())
+            {
+                var zw = new ZipWriter(ms);
+                zw.WriteDocument(doc);
+                zw.Dispose();
+                pkg = ms.ToArray();
+            }
+
+            using var zip = new System.IO.Compression.ZipArchive(new MemoryStream(pkg), System.IO.Compression.ZipArchiveMode.Read);
+            var documentXml = new StreamReader(zip.GetEntry("word/document.xml").Open()).ReadToEnd();
+
+            Assert.Contains("w:eastAsia=\"SimSun\"", documentXml);
+        }
+
+        [Fact]
+        public void CustomTableStyle_WritesTableParagraphAndRunDefaults()
+        {
+            var doc = new DocumentModel();
+            var tableStyleId = 42;
+            var tableStyleName = "My Table Style";
+            var tableStyleXmlId = Nedev.FileConverters.DocToDocx.Utils.StyleHelper.GetTableStyleId(tableStyleId, tableStyleName);
+
+            doc.Styles.Styles.Add(new StyleDefinition
+            {
+                StyleId = (ushort)tableStyleId,
+                Name = tableStyleName,
+                Type = StyleType.Table,
+                TableProperties = new TableProperties
+                {
+                    Alignment = TableAlignment.Center,
+                    PreferredWidth = 5000,
+                    BorderTop = new BorderInfo { Style = BorderStyle.Single, Width = 4, Color = 1 },
+                    BorderInsideH = new BorderInfo { Style = BorderStyle.Single, Width = 4, Color = 1 },
+                    Shading = new ShadingInfo { BackgroundColor = 0x00FFFF }
+                },
+                ParagraphProperties = new ParagraphProperties { Alignment = ParagraphAlignment.Center },
+                RunProperties = new RunProperties { FontName = "SimSun", FontSize = 28, IsBold = true }
+            });
+
+            var table = new TableModel
+            {
+                StartParagraphIndex = 0,
+                EndParagraphIndex = 0,
+                Properties = new TableProperties { StyleIndex = tableStyleId },
+                Rows =
+                {
+                    new TableRowModel
+                    {
+                        Cells =
+                        {
+                            new TableCellModel
+                            {
+                                ColumnIndex = 0,
+                                Paragraphs = { new ParagraphModel { Runs = { new RunModel { Text = "Cell" } } } },
+                                Properties = new TableCellProperties { Width = 2400 }
+                            }
+                        }
+                    }
+                }
+            };
+            table.RowCount = 1;
+            table.ColumnCount = 1;
+            doc.Tables.Add(table);
+            doc.Paragraphs.Add(new ParagraphModel { Index = 0, Type = ParagraphType.TableCell, Runs = { new RunModel { Text = "Cell" } } });
+
+            byte[] pkg;
+            using (var ms = new MemoryStream())
+            {
+                var zw = new ZipWriter(ms);
+                zw.WriteDocument(doc);
+                zw.Dispose();
+                pkg = ms.ToArray();
+            }
+
+            using var zip = new System.IO.Compression.ZipArchive(new MemoryStream(pkg), System.IO.Compression.ZipArchiveMode.Read);
+            var stylesXml = new StreamReader(zip.GetEntry("word/styles.xml").Open()).ReadToEnd();
+            var documentXml = new StreamReader(zip.GetEntry("word/document.xml").Open()).ReadToEnd();
+
+            Assert.Contains($"styleId=\"{tableStyleXmlId}\"", stylesXml);
+            Assert.Contains("<w:tblPr", stylesXml);
+            Assert.Contains("<w:tblBorders", stylesXml);
+            Assert.Contains("<w:pPr", stylesXml);
+            Assert.Contains("<w:rPr", stylesXml);
+            Assert.Contains($"<w:tblStyle w:val=\"{tableStyleXmlId}\"", documentXml);
         }
 
         [Fact]

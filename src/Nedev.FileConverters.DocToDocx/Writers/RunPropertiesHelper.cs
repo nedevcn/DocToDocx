@@ -94,6 +94,7 @@ internal static class RunPropertiesHelper
         {
             writer.WriteStartElement("w", "rFonts", WNs);
             writer.WriteAttributeString("w", "ascii", WNs, props.FontName);
+            writer.WriteAttributeString("w", "eastAsia", WNs, props.FontName);
             writer.WriteAttributeString("w", "hAnsi", WNs, props.FontName);
             writer.WriteAttributeString("w", "cs", WNs, props.FontName);
             writer.WriteEndElement();

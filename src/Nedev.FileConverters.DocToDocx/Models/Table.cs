@@ -79,6 +79,28 @@ public class TableProperties
     public BorderInfo? BorderInsideH { get; set; }
     public BorderInfo? BorderInsideV { get; set; }
     public ShadingInfo? Shading { get; set; }
+
+    /// <summary>
+    /// Merges missing table properties from a base style.
+    /// </summary>
+    public void MergeWith(TableProperties? baseProps)
+    {
+        if (baseProps == null) return;
+
+        if (StyleIndex < 0 && baseProps.StyleIndex >= 0) StyleIndex = baseProps.StyleIndex;
+        if (CellSpacing == 0 && baseProps.CellSpacing != 0) CellSpacing = baseProps.CellSpacing;
+        if (Indent == 0 && baseProps.Indent != 0) Indent = baseProps.Indent;
+        if (Alignment == TableAlignment.Left && baseProps.Alignment != TableAlignment.Left) Alignment = baseProps.Alignment;
+        if (PreferredWidth == 0 && baseProps.PreferredWidth != 0) PreferredWidth = baseProps.PreferredWidth;
+
+        BorderTop ??= baseProps.BorderTop;
+        BorderBottom ??= baseProps.BorderBottom;
+        BorderLeft ??= baseProps.BorderLeft;
+        BorderRight ??= baseProps.BorderRight;
+        BorderInsideH ??= baseProps.BorderInsideH;
+        BorderInsideV ??= baseProps.BorderInsideV;
+        Shading ??= baseProps.Shading;
+    }
 }
 
 public enum TableAlignment
@@ -176,6 +198,7 @@ public class StyleDefinition
     public ushort StyleId { get; set; }
     public string Name { get; set; } = string.Empty;
     public StyleType Type { get; set; }
+    public TableProperties? TableProperties { get; set; }
     public ParagraphProperties? ParagraphProperties { get; set; }
     public RunProperties? RunProperties { get; set; }
     public ushort? BasedOn { get; set; }

@@ -25,6 +25,10 @@ public class HyperlinkReader
         @"HYPERLINK\s+""([^""]+)""(?:\s+\\l\s+""([^""]+)"")?(?:\s+\\m\s+""([^""]+)"")?",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
 
+    private static readonly Regex HyperlinkBookmarkOnlyRegex = new(
+        @"HYPERLINK\s+\\l\s+""([^""]+)""(?:\s+\\m\s+""([^""]+)"")?",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     private static readonly Regex HyperlinkSimpleRegex = new(
         @"HYPERLINK\s+(?:""([^""]+)""|'([^']+)'|(\S+))",
         RegexOptions.Compiled | RegexOptions.IgnoreCase);
@@ -41,36 +45,58 @@ public class HyperlinkReader
 
         // Try regex match
         var match = HyperlinkRegex.Match(fieldCode);
+        bool bookmarkOnly = false;
+        bool simpleMatch = false;
+        if (!match.Success)
+        {
+            match = HyperlinkBookmarkOnlyRegex.Match(fieldCode);
+            bookmarkOnly = match.Success;
+        }
+
         if (!match.Success)
         {
             match = HyperlinkSimpleRegex.Match(fieldCode);
+            simpleMatch = match.Success;
         }
 
         if (!match.Success)
             return null;
 
-        // Extract URL
-        var url = match.Groups[1].Value;
-        if (string.IsNullOrEmpty(url) && match.Groups.Count > 2)
+        string url = string.Empty;
+        string? bookmark = null;
+
+        if (bookmarkOnly)
         {
-            url = match.Groups[2].Value;
+            bookmark = match.Groups[1].Value;
         }
-        if (string.IsNullOrEmpty(url) && match.Groups.Count > 3)
+        else
         {
-            url = match.Groups[3].Value;
+            url = match.Groups[1].Value;
+            if (string.IsNullOrEmpty(url) && match.Groups.Count > 2)
+            {
+                url = match.Groups[2].Value;
+            }
+            if (string.IsNullOrEmpty(url) && match.Groups.Count > 3)
+            {
+                url = match.Groups[3].Value;
+            }
+
+            if (!simpleMatch)
+            {
+                bookmark = match.Groups.Count > 2 && match.Groups[2].Success ? match.Groups[2].Value : null;
+            }
         }
 
-        if (string.IsNullOrEmpty(url))
+        if (string.IsNullOrEmpty(url) && string.IsNullOrEmpty(bookmark))
             return null;
 
-        // Extract bookmark anchor if present
-        var bookmark = match.Groups[2].Success ? match.Groups[2].Value : null;
+        NormalizeTarget(ref url, ref bookmark);
 
         return new HyperlinkModel
         {
             Url = url,
             Bookmark = bookmark,
-            IsExternal = !url.StartsWith("#") && !string.IsNullOrEmpty(url)
+            IsExternal = !string.IsNullOrEmpty(url)
         };
     }
 
@@ -103,15 +129,43 @@ public class HyperlinkReader
     /// </summary>
     public HyperlinkModel CreateHyperlink(string url, string? displayText = null)
     {
+        string normalizedUrl = url;
+        string? bookmark = null;
+        NormalizeTarget(ref normalizedUrl, ref bookmark);
+
         return new HyperlinkModel
         {
-            Url = url,
+            Url = normalizedUrl,
+            Bookmark = bookmark,
             DisplayText = displayText,
-            IsExternal = url.StartsWith("http://") ||
-                        url.StartsWith("https://") ||
-                        url.StartsWith("ftp://") ||
-                        url.StartsWith("mailto:")
+            IsExternal = normalizedUrl.StartsWith("http://") ||
+                        normalizedUrl.StartsWith("https://") ||
+                        normalizedUrl.StartsWith("ftp://") ||
+                        normalizedUrl.StartsWith("mailto:") ||
+                        normalizedUrl.StartsWith("file://")
         };
+    }
+
+    private static void NormalizeTarget(ref string url, ref string? bookmark)
+    {
+        if (!string.IsNullOrEmpty(url) && url.StartsWith("#", StringComparison.Ordinal))
+        {
+            bookmark ??= url.Substring(1);
+            url = string.Empty;
+            return;
+        }
+
+        if (string.IsNullOrEmpty(url))
+            return;
+
+        var hashIndex = url.IndexOf('#');
+        if (hashIndex < 0)
+            return;
+
+        if (hashIndex + 1 < url.Length)
+            bookmark ??= url.Substring(hashIndex + 1);
+
+        url = url.Substring(0, hashIndex);
     }
 
     /// <summary>

@@ -42,18 +42,35 @@ public static class HyperlinkIdAssigner
         {
             foreach (var run in runs)
             {
-                if (!run.IsHyperlink || string.IsNullOrEmpty(run.HyperlinkUrl))
+                if (!run.IsHyperlink)
                     continue;
 
                 // split url and optional fragment so we dedupe the same way as HyperlinkModel
-                string original = run.HyperlinkUrl!;
-                string url = original;
-                string? bookmark = null;
-                int hash = url.IndexOf('#');
-                if (hash >= 0)
+                string url = run.HyperlinkUrl ?? string.Empty;
+                string? bookmark = run.HyperlinkBookmark;
+
+                if (string.IsNullOrEmpty(bookmark) && url.StartsWith("#", StringComparison.Ordinal))
                 {
-                    bookmark = url.Substring(hash + 1);
-                    url = url.Substring(0, hash);
+                    bookmark = url.Substring(1);
+                    url = string.Empty;
+                }
+
+                if (string.IsNullOrEmpty(bookmark))
+                {
+                    int hash = url.IndexOf('#');
+                    if (hash >= 0)
+                    {
+                        bookmark = url.Substring(hash + 1);
+                        url = url.Substring(0, hash);
+                    }
+                }
+
+                run.HyperlinkBookmark = bookmark;
+
+                if (string.IsNullOrEmpty(url))
+                {
+                    run.HyperlinkRelationshipId = null;
+                    continue;
                 }
 
                 var key = (url.ToLowerInvariant(), bookmark);
@@ -83,7 +100,7 @@ public static class HyperlinkIdAssigner
                 {
                     document.Hyperlinks.Add(new HyperlinkModel
                     {
-                        Url = original,   // preserve fragment in the stored url
+                        Url = url,
                         Bookmark = bookmark,
                         IsExternal = true,
                         RelationshipId = relId

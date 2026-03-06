@@ -460,10 +460,38 @@ public class StylesWriter
         _writer.WriteStartElement("w", "name", wNs);
         _writer.WriteAttributeString("w", "val", wNs, style.Name ?? $"Table Style {style.StyleId}");
         _writer.WriteEndElement();
-        
+
+        var basedOnId = "TableNormal";
+        if (style.BasedOn.HasValue)
+        {
+            var basedOnStyle = _document?.Styles.Styles.FirstOrDefault(s => s.Type == StyleType.Table && s.StyleId == style.BasedOn.Value);
+            basedOnId = StyleHelper.GetTableStyleId(style.BasedOn.Value, basedOnStyle?.Name);
+        }
+
         _writer.WriteStartElement("w", "basedOn", wNs);
-        _writer.WriteAttributeString("w", "val", wNs, "TableNormal");
+        _writer.WriteAttributeString("w", "val", wNs, basedOnId);
         _writer.WriteEndElement();
+
+        if (style.IsPrimary || style.IsQuickStyle)
+        {
+            _writer.WriteStartElement("w", "qFormat", wNs);
+            _writer.WriteEndElement();
+        }
+
+        if (style.TableProperties != null)
+        {
+            WriteStyleTableProperties(style.TableProperties);
+        }
+
+        if (style.ParagraphProperties != null)
+        {
+            WriteStyleParagraphProperties(style.ParagraphProperties);
+        }
+
+        if (style.RunProperties != null)
+        {
+            WriteStyleRunProperties(style.RunProperties);
+        }
         
         _writer.WriteEndElement();
     }
@@ -611,6 +639,120 @@ public class StylesWriter
         }
 
         _writer.WriteEndElement(); // w:pPr
+    }
+
+    private void WriteStyleTableProperties(TableProperties props)
+    {
+        const string wNs = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+        _writer.WriteStartElement("w", "tblPr", wNs);
+
+        if (props.PreferredWidth > 0)
+        {
+            _writer.WriteStartElement("w", "tblW", wNs);
+            _writer.WriteAttributeString("w", "w", wNs, Math.Clamp(props.PreferredWidth, 1, 31680).ToString());
+            _writer.WriteAttributeString("w", "type", wNs, "dxa");
+            _writer.WriteEndElement();
+        }
+
+        if (props.Alignment != TableAlignment.Left)
+        {
+            _writer.WriteStartElement("w", "jc", wNs);
+            var alignment = props.Alignment switch
+            {
+                TableAlignment.Center => "center",
+                TableAlignment.Right => "right",
+                _ => "left"
+            };
+            _writer.WriteAttributeString("w", "val", wNs, alignment);
+            _writer.WriteEndElement();
+        }
+
+        if (props.Indent != 0)
+        {
+            _writer.WriteStartElement("w", "tblInd", wNs);
+            _writer.WriteAttributeString("w", "w", wNs, Math.Clamp(props.Indent, -31680, 31680).ToString());
+            _writer.WriteAttributeString("w", "type", wNs, "dxa");
+            _writer.WriteEndElement();
+        }
+
+        if (props.BorderTop != null || props.BorderBottom != null || props.BorderLeft != null || props.BorderRight != null || props.BorderInsideH != null || props.BorderInsideV != null)
+        {
+            _writer.WriteStartElement("w", "tblBorders", wNs);
+            if (props.BorderTop != null) WriteStyleBorder("top", props.BorderTop);
+            if (props.BorderBottom != null) WriteStyleBorder("bottom", props.BorderBottom);
+            if (props.BorderLeft != null) WriteStyleBorder("left", props.BorderLeft);
+            if (props.BorderRight != null) WriteStyleBorder("right", props.BorderRight);
+            if (props.BorderInsideH != null) WriteStyleBorder("insideH", props.BorderInsideH);
+            if (props.BorderInsideV != null) WriteStyleBorder("insideV", props.BorderInsideV);
+            _writer.WriteEndElement();
+        }
+
+        if (props.Shading != null)
+        {
+            WriteStyleShading(props.Shading);
+        }
+
+        if (props.CellSpacing > 0)
+        {
+            int sidePadding = Math.Clamp(props.CellSpacing / 2, 0, 720);
+            _writer.WriteStartElement("w", "tblCellMar", wNs);
+            WriteStyleMargin("top", 0);
+            WriteStyleMargin("left", sidePadding);
+            WriteStyleMargin("bottom", 0);
+            WriteStyleMargin("right", sidePadding);
+            _writer.WriteEndElement();
+        }
+
+        _writer.WriteEndElement();
+    }
+
+    private void WriteStyleBorder(string position, BorderInfo border)
+    {
+        if (border.Style == BorderStyle.None) return;
+
+        const string wNs = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+        _writer.WriteStartElement("w", position, wNs);
+        _writer.WriteAttributeString("w", "val", wNs, GetBorderStyle(border.Style));
+        _writer.WriteAttributeString("w", "sz", wNs, border.Width.ToString());
+        _writer.WriteAttributeString("w", "space", wNs, border.Space.ToString());
+        _writer.WriteAttributeString("w", "color", wNs, ColorHelper.ColorToHex(border.Color));
+        _writer.WriteEndElement();
+    }
+
+    private void WriteStyleShading(ShadingInfo shading)
+    {
+        const string wNs = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+        _writer.WriteStartElement("w", "shd", wNs);
+        _writer.WriteAttributeString("w", "val", wNs, !string.IsNullOrEmpty(shading.PatternVal) ? shading.PatternVal : "clear");
+        if (shading.ForegroundColor != 0)
+            _writer.WriteAttributeString("w", "color", wNs, ColorHelper.ColorToHex(shading.ForegroundColor));
+        _writer.WriteAttributeString("w", "fill", wNs, ColorHelper.ColorToHex(shading.BackgroundColor));
+        _writer.WriteEndElement();
+    }
+
+    private void WriteStyleMargin(string position, int width)
+    {
+        const string wNs = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+        _writer.WriteStartElement("w", position, wNs);
+        _writer.WriteAttributeString("w", "w", wNs, width.ToString());
+        _writer.WriteAttributeString("w", "type", wNs, "dxa");
+        _writer.WriteEndElement();
+    }
+
+    private static string GetBorderStyle(BorderStyle style)
+    {
+        return style switch
+        {
+            BorderStyle.Single => "single",
+            BorderStyle.Thick => "thick",
+            BorderStyle.Double => "double",
+            BorderStyle.Dotted => "dotted",
+            BorderStyle.Dashed => "dash",
+            BorderStyle.DotDash => "dotDash",
+            BorderStyle.DotDotDash => "dotDotDash",
+            BorderStyle.Wave => "wave",
+            _ => "nil"
+        };
     }
 
     /// <summary>

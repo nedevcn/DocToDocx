@@ -408,9 +408,13 @@ public class StyleReader
             IsAutoRedefined = fAutoRedef != 0,
             IsLinked = false,
             IsPrimary = sti < 266,
+            TableProperties = styleType == StyleType.Table ? new TableProperties() : null,
             ParagraphProperties = new ParagraphProperties(),
             RunProperties = new RunProperties()
         };
+
+        var sprmParser = new SprmParser(_tableReader, 0);
+        var fkpParser = new FkpParser(null!, null!, _fib, null!);
 
         // Read properties (UPX)
         // For paragraph styles, first UPX is PAP, second is CHP
@@ -438,8 +442,8 @@ public class StyleReader
                         var papGrpprl = new byte[cbUpx - 2];
                         Array.Copy(grpprl, 2, papGrpprl, 0, cbUpx - 2);
                         var pap = new PapBase();
-                        new SprmParser(_tableReader, 0).ApplyToPap(papGrpprl, pap);
-                        style.ParagraphProperties = new FkpParser(null!, null!, _fib, null!).ConvertToParagraphProperties(pap, Styles);
+                        sprmParser.ApplyToPap(papGrpprl, pap);
+                        style.ParagraphProperties = fkpParser.ConvertToParagraphProperties(pap, Styles);
                     }
                 }
                 else if (i == 1) // CHP UPX — per MS-DOC may start with 2-byte istd (char style ref); skip so grpprl is correct
@@ -453,8 +457,8 @@ public class StyleReader
                     }
                     else
                         chpGrpprl = grpprl;
-                    new SprmParser(_tableReader, 0).ApplyToChp(chpGrpprl, chp);
-                    style.RunProperties = new FkpParser(null!, null!, _fib, null!).ConvertToRunProperties(chp, Styles);
+                    sprmParser.ApplyToChp(chpGrpprl, chp);
+                    style.RunProperties = fkpParser.ConvertToRunProperties(chp, Styles);
                 }
             }
             else if (styleType == StyleType.Character)
@@ -462,8 +466,29 @@ public class StyleReader
                 if (i == 0) // CHP UPX
                 {
                     var chp = new ChpBase();
-                    new SprmParser(_tableReader, 0).ApplyToChp(grpprl, chp);
-                    style.RunProperties = new FkpParser(null!, null!, _fib, null!).ConvertToRunProperties(chp, Styles);
+                    sprmParser.ApplyToChp(grpprl, chp);
+                    style.RunProperties = fkpParser.ConvertToRunProperties(chp, Styles);
+                }
+            }
+            else if (styleType == StyleType.Table)
+            {
+                if (i == 0)
+                {
+                    var tap = new TapBase();
+                    sprmParser.ApplyToTap(grpprl, tap);
+                    style.TableProperties = ConvertToTableProperties(tap);
+                }
+                else if (i == 1)
+                {
+                    var pap = new PapBase();
+                    sprmParser.ApplyToPap(SkipStylePrefix(grpprl), pap);
+                    style.ParagraphProperties = fkpParser.ConvertToParagraphProperties(pap, Styles);
+                }
+                else if (i == 2)
+                {
+                    var chp = new ChpBase();
+                    sprmParser.ApplyToChp(SkipStylePrefix(grpprl), chp);
+                    style.RunProperties = fkpParser.ConvertToRunProperties(chp, Styles);
                 }
             }
             
@@ -515,6 +540,12 @@ public class StyleReader
             // Ensure base style is resolved first
             ResolveStyle(baseStyle, resolved, visiting);
 
+            if (baseStyle.TableProperties != null)
+            {
+                style.TableProperties ??= new TableProperties();
+                style.TableProperties.MergeWith(baseStyle.TableProperties);
+            }
+
             // Merge properties from base style
             if (baseStyle.ParagraphProperties != null)
             {
@@ -531,6 +562,39 @@ public class StyleReader
 
         visiting.Remove(style.StyleId);
         resolved.Add(style.StyleId);
+    }
+
+    private static byte[] SkipStylePrefix(byte[] grpprl)
+    {
+        if (grpprl.Length <= 2)
+            return grpprl;
+
+        var trimmed = new byte[grpprl.Length - 2];
+        Array.Copy(grpprl, 2, trimmed, 0, trimmed.Length);
+        return trimmed;
+    }
+
+    private static TableProperties ConvertToTableProperties(TapBase tap)
+    {
+        return new TableProperties
+        {
+            Alignment = tap.Justification switch
+            {
+                1 => TableAlignment.Center,
+                2 => TableAlignment.Right,
+                _ => TableAlignment.Left
+            },
+            CellSpacing = tap.CellSpacing != 0 ? tap.CellSpacing : (tap.GapHalf != 0 ? tap.GapHalf * 2 : 0),
+            Indent = tap.IndentLeft,
+            PreferredWidth = tap.TableWidth,
+            BorderTop = tap.BorderTop,
+            BorderBottom = tap.BorderBottom,
+            BorderLeft = tap.BorderLeft,
+            BorderRight = tap.BorderRight,
+            BorderInsideH = tap.BorderInsideH,
+            BorderInsideV = tap.BorderInsideV,
+            Shading = tap.Shading
+        };
     }
 
     /// <summary>
