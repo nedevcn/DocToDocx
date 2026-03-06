@@ -5,6 +5,7 @@ using System.Text;
 using System.Xml;
 using System.Linq;
 using System.Collections.Generic;
+using System.Text.RegularExpressions;
 using Nedev.DocToDocx.Models;
 using Nedev.DocToDocx.Writers;
 using Nedev.DocToDocx.Utils;
@@ -355,6 +356,136 @@ namespace Nedev.DocToDocx.Tests
             var docXml = reader.ReadToEnd();
             // ensure the text content appears; xml:space attribute may be present
             Assert.Contains("A", docXml);
+        }
+
+        [Fact]
+        public void CroppingValues_AreClamped()
+        {
+            var doc = new DocumentModel();
+            var para = new ParagraphModel();
+            var run = new RunModel { Text = "img", IsPicture = true, ImageIndex = 0, CropTop = -1000, CropRight = 200000 };
+            para.Runs.Add(run);
+            doc.Paragraphs.Add(para);
+            doc.Images.Add(new ImageModel { WidthEMU = 100, HeightEMU = 100, Data = new byte[] {1} });
+
+            byte[] pkg;
+            using (var ms = new MemoryStream())
+            {
+                var zw = new ZipWriter(ms);
+                zw.WriteDocument(doc);
+                zw.Dispose();
+                pkg = ms.ToArray();
+            }
+            using var zip = new System.IO.Compression.ZipArchive(new MemoryStream(pkg), System.IO.Compression.ZipArchiveMode.Read);
+            var xml = new StreamReader(zip.GetEntry("word/document.xml").Open()).ReadToEnd();
+            // ensure crop attributes not negative or >100000
+            Assert.DoesNotMatch("t=-", xml);
+            Assert.DoesNotMatch("r=\\\"1[0-9]{6}", xml);
+        }
+
+        [Fact]
+        public void FirstBodyPictureFlag_ClearedImmediately()
+        {
+            var doc = new DocumentModel();
+            // two images, small size so neither looks full-page
+            for (int i = 0; i < 2; i++)
+            {
+                var para = new ParagraphModel();
+                var run = new RunModel { Text = "img", IsPicture = true, ImageIndex = i };
+                para.Runs.Add(run);
+                doc.Paragraphs.Add(para);
+                doc.Images.Add(new ImageModel { WidthEMU = 1, HeightEMU = 1, Data = new byte[] {1} });
+            }
+
+            byte[] pkg;
+            using (var ms = new MemoryStream())
+            {
+                var zw = new ZipWriter(ms);
+                zw.WriteDocument(doc);
+                zw.Dispose();
+                pkg = ms.ToArray();
+            }
+            var xml = new StreamReader(new System.IO.Compression.ZipArchive(new MemoryStream(pkg), System.IO.Compression.ZipArchiveMode.Read).GetEntry("word/document.xml").Open()).ReadToEnd();
+            // ensure first picture not expanded to full page (no large cx values)
+            Assert.DoesNotMatch("<wp:extent cx=[0-9]{7,}", xml);
+        }
+
+        [Fact]
+        public void DuplicateBookmarkNames_GetDistinctIds()
+        {
+            var doc = new DocumentModel();
+            var para = new ParagraphModel();
+            para.Runs.Add(new RunModel { Text = "A", IsBookmark = true, BookmarkName = "x", IsBookmarkStart = true });
+            para.Runs.Add(new RunModel { Text = "B", IsBookmark = true, BookmarkName = "x", IsBookmarkStart = false });
+            para.Runs.Add(new RunModel { Text = "C", IsBookmark = true, BookmarkName = "x", IsBookmarkStart = true });
+            para.Runs.Add(new RunModel { Text = "D", IsBookmark = true, BookmarkName = "x", IsBookmarkStart = false });
+            doc.Paragraphs.Add(para);
+
+            byte[] pkg;
+            using (var ms = new MemoryStream())
+            {
+                var zw = new ZipWriter(ms);
+                zw.WriteDocument(doc);
+                zw.Dispose();
+                pkg = ms.ToArray();
+            }
+            var xml = new StreamReader(new System.IO.Compression.ZipArchive(new MemoryStream(pkg), System.IO.Compression.ZipArchiveMode.Read).GetEntry("word/document.xml").Open()).ReadToEnd();
+            var starts = Regex.Matches(xml, "bookmarkStart id=\\\"(\\d+)\\\"");
+            var ends = Regex.Matches(xml, "bookmarkEnd id=\\\"(\\d+)\\\"");
+            Assert.Equal(starts.Count, ends.Count);
+            // all ids should be unique
+            var allIds = starts.Cast<Match>().Select(m => m.Groups[1].Value)
+                .Concat(ends.Cast<Match>().Select(m => m.Groups[1].Value));
+            Assert.Equal(allIds.Distinct().Count(), allIds.Count());
+        }
+
+        [Fact]
+        public void HyperlinkIds_IncludeBookmark()
+        {
+            var doc = new DocumentModel();
+            var para = new ParagraphModel();
+            var run1 = new RunModel { Text = "link1", IsHyperlink = true, HyperlinkUrl = "http://a.com#foo" };
+            var run2 = new RunModel { Text = "link2", IsHyperlink = true, HyperlinkUrl = "http://a.com#bar" };
+            para.Runs.Add(run1);
+            para.Runs.Add(run2);
+            doc.Paragraphs.Add(para);
+            byte[] pkg;
+            using (var ms = new MemoryStream())
+            {
+                var zw = new ZipWriter(ms);
+                zw.WriteDocument(doc);
+                zw.Dispose();
+                pkg = ms.ToArray();
+            }
+            var rels = new StreamReader(new System.IO.Compression.ZipArchive(new MemoryStream(pkg), System.IO.Compression.ZipArchiveMode.Read).GetEntry("word/_rels/document.xml.rels").Open()).ReadToEnd();
+            Assert.Contains("foo", rels);
+            Assert.Contains("bar", rels);
+            // ensure two different rIds
+            var ids = Regex.Matches(rels, "Id=\\\"(rId\\d+)\\\"").Cast<Match>().Select(m=>m.Groups[1].Value).Distinct().ToList();
+            Assert.Equal(2, ids.Count);
+        }
+
+        [Fact]
+        public void CommentsOnEmptyParagraph_AreMappedCorrectly()
+        {
+            var doc = new DocumentModel();
+            var para1 = new ParagraphModel();
+            para1.Runs.Add(new RunModel { Text = "hello" });
+            var para2 = new ParagraphModel(); // empty
+            doc.Paragraphs.Add(para1);
+            doc.Paragraphs.Add(para2);
+            doc.Annotations.Add(new AnnotationModel { Id = "1", Author = "x", StartCharacterPosition = 0, EndCharacterPosition = 0 });
+            byte[] pkg;
+            using (var ms = new MemoryStream())
+            {
+                var zw = new ZipWriter(ms);
+                zw.WriteDocument(doc);
+                zw.Dispose();
+                pkg = ms.ToArray();
+            }
+            var xml = new StreamReader(new System.IO.Compression.ZipArchive(new MemoryStream(pkg), System.IO.Compression.ZipArchiveMode.Read).GetEntry("word/document.xml").Open()).ReadToEnd();
+            // comment range start should be inside first paragraph, not lost
+            Assert.Contains("commentRangeStart", xml);
         }
     }
 }

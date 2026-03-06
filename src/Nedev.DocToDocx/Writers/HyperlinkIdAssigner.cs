@@ -45,7 +45,17 @@ public static class HyperlinkIdAssigner
                 if (!run.IsHyperlink || string.IsNullOrEmpty(run.HyperlinkUrl))
                     continue;
 
-                var key = (run.HyperlinkUrl.ToLowerInvariant(), (string?)null);
+                // split url and optional fragment so we dedupe the same way as HyperlinkModel
+                string url = run.HyperlinkUrl;
+                string? bookmark = null;
+                int hash = url.IndexOf('#');
+                if (hash >= 0)
+                {
+                    bookmark = url.Substring(hash + 1);
+                    url = url.Substring(0, hash);
+                }
+
+                var key = (url.ToLowerInvariant(), bookmark);
                 if (!relIdByKey.TryGetValue(key, out var relId))
                 {
                     relId = $"rId{currentId++}";
@@ -53,6 +63,22 @@ public static class HyperlinkIdAssigner
                 }
 
                 run.HyperlinkRelationshipId = relId;
+
+                // ensure hyperlink model exists so relationships writer will emit it
+                if (document.Hyperlinks == null)
+                    document.Hyperlinks = new List<HyperlinkModel>();
+                if (!document.Hyperlinks.Any(h =>
+                    string.Equals(h.Url, url, StringComparison.OrdinalIgnoreCase) &&
+                    h.Bookmark == bookmark))
+                {
+                    document.Hyperlinks.Add(new HyperlinkModel
+                    {
+                        Url = url,
+                        Bookmark = bookmark,
+                        IsExternal = true,
+                        RelationshipId = relId
+                    });
+                }
             }
         }
 

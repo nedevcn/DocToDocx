@@ -163,6 +163,11 @@ public partial class DocumentWriter
     /// </summary>
     public void WriteDocument(DocumentModel document)
     {
+        // start fresh for each document so track change IDs don't carry over
+        _trackChangeId = 1;
+        _bookmarkIds.Clear();
+        _bookmarkCounter = 0;
+
         _document = document;
         _relationshipIds = RelationshipsWriter.ComputeRelationshipIds(document);
         
@@ -303,15 +308,27 @@ public partial class DocumentWriter
             return;
 
         // Build a sorted list of (firstRunCp, paragraph index) for quick lookup.
-        // Each entry represents the first CP of a paragraph.
+        // Each entry represents the first CP of a paragraph. Empty paragraphs are assigned
+        // a CP just past the previous paragraph to ensure comments anchored there stay put.
         var paragraphCpRanges = new List<(int startCp, int endCp, int paragraphIndex)>();
+        int lastCp = 0;
         foreach (var para in document.Paragraphs)
         {
-            if (para.Runs.Count == 0) continue;
-            int startCp = para.Runs[0].CharacterPosition;
-            var lastRun = para.Runs[para.Runs.Count - 1];
-            int endCp = lastRun.CharacterPosition + Math.Max(1, lastRun.CharacterLength);
+            int startCp;
+            int endCp;
+            if (para.Runs.Count == 0)
+            {
+                startCp = lastCp;
+                endCp = lastCp;
+            }
+            else
+            {
+                startCp = para.Runs[0].CharacterPosition;
+                var lastRun = para.Runs[para.Runs.Count - 1];
+                endCp = lastRun.CharacterPosition + Math.Max(1, lastRun.CharacterLength);
+            }
             paragraphCpRanges.Add((startCp, endCp, para.Index));
+            if (endCp > lastCp) lastCp = endCp;
         }
 
         if (paragraphCpRanges.Count == 0) return;
@@ -623,7 +640,7 @@ public partial class DocumentWriter
         if (props.FMirrorMargins)
         {
             _writer.WriteStartElement("w", "mirrorMargins", wNs);
-            _writer.WriteAttributeString("w", "val", wNs, "1");
+            // 'val' attribute is optional per spec; omit to avoid redundant data.
             _writer.WriteEndElement();
         }
 
@@ -1173,14 +1190,6 @@ public partial class DocumentWriter
                 // Run 1: fldChar begin
                 _writer.WriteStartElement("w", "fldChar", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
                 _writer.WriteAttributeString("w", "fldCharType", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", "begin");
-                
-                // Signal Word to update TOC and Page fields on open
-                if (run.FieldCode != null && (run.FieldCode.Contains("TOC", StringComparison.OrdinalIgnoreCase) || 
-                                            run.FieldCode.Contains("PAGE", StringComparison.OrdinalIgnoreCase)))
-                {
-                    _writer.WriteAttributeString("w", "dirty", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", "true");
-                }
-                
                 _writer.WriteEndElement();
                 _writer.WriteEndElement(); // w:r (begin)
 
@@ -1207,6 +1216,12 @@ public partial class DocumentWriter
                 {
                     _writer.WriteStartElement("w", "r", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
                     WriteRunProperties(run);
+                    // move dirty attribute here rather than on begin run
+                    if (run.FieldCode != null && (run.FieldCode.Contains("TOC", StringComparison.OrdinalIgnoreCase) || 
+                                                run.FieldCode.Contains("PAGE", StringComparison.OrdinalIgnoreCase)))
+                    {
+                        _writer.WriteAttributeString("w", "dirty", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", "true");
+                    }
                     WriteRunText(run);
                     _writer.WriteEndElement(); // w:r (result)
                 }
@@ -1240,6 +1255,25 @@ public partial class DocumentWriter
     /// </summary>
     private void WriteHyperlink(RunModel run)
     {
+        // sanitize display text in case reader left a field code like
+        // "HYPERLINK \"http:...\"" in the run text.  Word does not expect
+        // field codes inside a w:hyperlink element.
+        string display = run.Text ?? string.Empty;
+        // remove any embedded HYPERLINK field codes that slipped into text
+        int idx;
+        while ((idx = display.IndexOf("HYPERLINK", StringComparison.OrdinalIgnoreCase)) >= 0)
+        {
+            int quote1 = display.IndexOf('"', idx);
+            if (quote1 < 0) break;
+            int quote2 = display.IndexOf('"', quote1 + 1);
+            if (quote2 < 0) break;
+            display = display.Remove(idx, quote2 - idx + 1);
+        }
+
+        // if nothing remains, skip emitting the hyperlink element entirely
+        if (string.IsNullOrEmpty(display.Trim()))
+            return;
+
         _writer.WriteStartElement("w", "hyperlink", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
 
         if (!string.IsNullOrEmpty(run.HyperlinkRelationshipId))
@@ -1257,15 +1291,16 @@ public partial class DocumentWriter
             // The hyperlink text will still be visible but not clickable.
         }
 
-        // Only write run if there's text content
-        if (!string.IsNullOrEmpty(run.Text))
-        {
-            _writer.WriteStartElement("w", "r", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
-            WriteRunProperties(run);
-            WriteRunText(run);
-            _writer.WriteEndElement(); // w:r
-        }
-        
+        // write a single run containing the sanitized text
+        _writer.WriteStartElement("w", "r", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+        WriteRunProperties(run);
+        _writer.WriteStartElement("w", "t", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+        if (display.StartsWith(' ') || display.EndsWith(' ') || display.Contains("  "))
+            _writer.WriteAttributeString("xml", "space", "http://www.w3.org/XML/1998/namespace", "preserve");
+        _writer.WriteString(display);
+        _writer.WriteEndElement(); // w:t
+        _writer.WriteEndElement(); // w:r
+
         _writer.WriteEndElement(); // w:hyperlink
     }
 
@@ -1275,12 +1310,9 @@ public partial class DocumentWriter
     private void WriteBookmarkStart(string? name)
     {
         if (string.IsNullOrEmpty(name)) return;
-
-        if (!_bookmarkIds.TryGetValue(name, out var id))
-        {
-            id = ++_bookmarkCounter;
-            _bookmarkIds[name] = id;
-        }
+        // assign unique ID per occurrence rather than per name to avoid overlaps
+        var id = ++_bookmarkCounter;
+        _bookmarkIds[name + "#" + id] = id;
 
         _writer.WriteStartElement("w", "bookmarkStart", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
         _writer.WriteAttributeString("w", "id", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", id.ToString());
@@ -1295,12 +1327,13 @@ public partial class DocumentWriter
     {
         if (string.IsNullOrEmpty(name)) return;
 
-        if (!_bookmarkIds.TryGetValue(name, out var id))
+        // find the most recent id with this name prefix
+        var key = _bookmarkIds.Keys.LastOrDefault(k => k.StartsWith(name + "#"));
+        int id;
+        if (key == null || !_bookmarkIds.TryGetValue(key, out id))
         {
-            // If we never saw a start for this bookmark name, allocate one so
-            // the resulting document remains structurally valid.
+            // allocate fallback if missing
             id = ++_bookmarkCounter;
-            _bookmarkIds[name] = id;
         }
 
         _writer.WriteStartElement("w", "bookmarkEnd", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
@@ -1416,7 +1449,8 @@ public partial class DocumentWriter
             {
                 widthEmu = pageWidthEmu;
                 heightEmu = pageHeightEmu;
-                if (forceFirstFullPage) _firstBodyPictureNotYetWritten = false;
+                // clear flag on first picture regardless so it never repeats
+                _firstBodyPictureNotYetWritten = false;
             }
             else
             {
@@ -1509,10 +1543,12 @@ public partial class DocumentWriter
         if (run.CropTop != 0 || run.CropBottom != 0 || run.CropLeft != 0 || run.CropRight != 0)
         {
             _writer.WriteStartElement("a", "srcRect", "http://schemas.openxmlformats.org/drawingml/2006/main");
-            if (run.CropTop != 0) _writer.WriteAttributeString("t", ((long)run.CropTop * 100000 / 65536).ToString());
-            if (run.CropBottom != 0) _writer.WriteAttributeString("b", ((long)run.CropBottom * 100000 / 65536).ToString());
-            if (run.CropLeft != 0) _writer.WriteAttributeString("l", ((long)run.CropLeft * 100000 / 65536).ToString());
-            if (run.CropRight != 0) _writer.WriteAttributeString("r", ((long)run.CropRight * 100000 / 65536).ToString());
+            // crop values are stored in 16ths of a percent; clamp 0–100000 (0–100%)
+            long ClampCrop(int v) => Math.Clamp((long)v, 0, 100000);
+            if (run.CropTop != 0) _writer.WriteAttributeString("t", ((ClampCrop(run.CropTop) * 100000 / 65536)).ToString());
+            if (run.CropBottom != 0) _writer.WriteAttributeString("b", ((ClampCrop(run.CropBottom) * 100000 / 65536)).ToString());
+            if (run.CropLeft != 0) _writer.WriteAttributeString("l", ((ClampCrop(run.CropLeft) * 100000 / 65536)).ToString());
+            if (run.CropRight != 0) _writer.WriteAttributeString("r", ((ClampCrop(run.CropRight) * 100000 / 65536)).ToString());
             _writer.WriteEndElement();
         }
 
@@ -1821,7 +1857,18 @@ public partial class DocumentWriter
                 }
             }
         }
-        return sb.ToString();
+        // if resulting string is mostly non-letter/digit/punctuation then it's
+        // probably garbage extracted from a binary blob; drop it entirely.
+        string result = sb.ToString();
+        if (result.Length > 0)
+        {
+            int good = result.Count(ch => char.IsLetterOrDigit(ch) ||
+                                           char.IsPunctuation(ch) ||
+                                           char.IsWhiteSpace(ch));
+            if (good * 2 < result.Length)
+                return string.Empty;
+        }
+        return result;
     }
 
     private string GenerateRsid()

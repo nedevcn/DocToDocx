@@ -512,7 +512,7 @@ public partial class DocumentWriter
         var relHeight = anchor.ZOrder;
         if (relHeight < 0) relHeight = 0;
         _writer.WriteAttributeString("relativeHeight", relHeight.ToString());
-        _writer.WriteAttributeString("relativeHeight", relHeight.ToString());
+        // NOTE: duplicate attribute removed (was accidentally written twice)
         _writer.WriteAttributeString("behindDoc", anchor.WrapType == ShapeWrapType.BehindText ? "1" : "0");
         _writer.WriteAttributeString("locked", "0");
         _writer.WriteAttributeString("layoutInCell", "1");
@@ -601,10 +601,11 @@ public partial class DocumentWriter
         if (shape.CropTop != 0 || shape.CropBottom != 0 || shape.CropLeft != 0 || shape.CropRight != 0)
         {
             _writer.WriteStartElement("a", "srcRect", "http://schemas.openxmlformats.org/drawingml/2006/main");
-            if (shape.CropTop != 0) _writer.WriteAttributeString("t", ((long)shape.CropTop * 100000 / 65536).ToString());
-            if (shape.CropBottom != 0) _writer.WriteAttributeString("b", ((long)shape.CropBottom * 100000 / 65536).ToString());
-            if (shape.CropLeft != 0) _writer.WriteAttributeString("l", ((long)shape.CropLeft * 100000 / 65536).ToString());
-            if (shape.CropRight != 0) _writer.WriteAttributeString("r", ((long)shape.CropRight * 100000 / 65536).ToString());
+            long ClampCrop(int v) => Math.Clamp((long)v, 0, 100000);
+            if (shape.CropTop != 0) _writer.WriteAttributeString("t", ((ClampCrop(shape.CropTop) * 100000 / 65536)).ToString());
+            if (shape.CropBottom != 0) _writer.WriteAttributeString("b", ((ClampCrop(shape.CropBottom) * 100000 / 65536)).ToString());
+            if (shape.CropLeft != 0) _writer.WriteAttributeString("l", ((ClampCrop(shape.CropLeft) * 100000 / 65536)).ToString());
+            if (shape.CropRight != 0) _writer.WriteAttributeString("r", ((ClampCrop(shape.CropRight) * 100000 / 65536)).ToString());
             _writer.WriteEndElement();
         }
 
