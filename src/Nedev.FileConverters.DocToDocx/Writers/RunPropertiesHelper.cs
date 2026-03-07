@@ -21,10 +21,12 @@ internal static class RunPropertiesHelper
                props.IsUnderline || props.IsStrikeThrough || props.IsDoubleStrikeThrough ||
                props.IsSmallCaps || props.IsAllCaps || props.IsSuperscript || props.IsSubscript ||
                props.IsHidden || props.IsOutline || props.IsShadow || props.IsEmboss || props.IsImprint ||
+             (props.Border?.Style != BorderStyle.None) ||
                props.FontSize != 24 || props.FontSizeCs != 24 ||
                props.Color != 0 || props.HasRgbColor || props.HighlightColor > 0 ||
                props.Kerning > 0 || props.CharacterSpacingAdjustment != 0 ||
                props.Position != 0 || (props.CharacterScale != 100 && props.CharacterScale > 0) ||
+             props.IsEastAsianVertical || props.IsEastAsianVerticalCompress || props.EastAsianLayoutType != 0 ||
                !props.SnapToGrid ||
                props.Language > 0 || !string.IsNullOrEmpty(props.LanguageAsia) || !string.IsNullOrEmpty(props.LanguageCs) ||
                !string.IsNullOrEmpty(props.FontName);
@@ -47,6 +49,32 @@ internal static class RunPropertiesHelper
             UnderlineType.DotDotDash => "dotDotDash",
             UnderlineType.Wave => "wave",
             UnderlineType.ThickWave => "thickWave",
+            _ => "none"
+        };
+    }
+
+    private static string GetBorderStyle(BorderStyle style)
+    {
+        return style switch
+        {
+            BorderStyle.Single => "single",
+            BorderStyle.Thick => "thick",
+            BorderStyle.Double => "double",
+            BorderStyle.Dotted => "dotted",
+            BorderStyle.Dashed => "dash",
+            BorderStyle.DotDash => "dotDash",
+            BorderStyle.DotDotDash => "dotDotDash",
+            BorderStyle.Triple => "triple",
+            BorderStyle.ThinThickSmallGap => "thinThickSmallGap",
+            BorderStyle.ThickThinSmallGap => "thickThinSmallGap",
+            BorderStyle.ThinThickThinSmallGap => "thinThickThinSmallGap",
+            BorderStyle.ThinThickMediumGap => "thinThickMediumGap",
+            BorderStyle.ThickThinMediumGap => "thickThinMediumGap",
+            BorderStyle.ThinThickThinMediumGap => "thinThickThinMediumGap",
+            BorderStyle.ThinThickLargeGap => "thinThickLargeGap",
+            BorderStyle.ThickThinLargeGap => "thickThinLargeGap",
+            BorderStyle.ThinThickThinLargeGap => "thinThickThinLargeGap",
+            BorderStyle.Wave => "wave",
             _ => "none"
         };
     }
@@ -247,11 +275,35 @@ internal static class RunPropertiesHelper
             writer.WriteEndElement();
         }
 
+        if (props.Border?.Style is not null && props.Border.Style != BorderStyle.None)
+        {
+            writer.WriteStartElement("w", "bdr", WNs);
+            writer.WriteAttributeString("w", "val", WNs, GetBorderStyle(props.Border.Style));
+            writer.WriteAttributeString("w", "sz", WNs, props.Border.Width.ToString());
+            writer.WriteAttributeString("w", "space", WNs, props.Border.Space.ToString());
+            writer.WriteAttributeString("w", "color", WNs, ColorHelper.ColorToHex(props.Border.Color));
+            writer.WriteEndElement();
+        }
+
         // 12. u
         if (props.IsUnderline)
         {
             writer.WriteStartElement("w", "u", WNs);
             writer.WriteAttributeString("w", "val", WNs, GetUnderlineType(props.UnderlineType));
+            writer.WriteEndElement();
+        }
+
+        if (props.IsEastAsianVertical || props.IsEastAsianVerticalCompress || props.EastAsianLayoutType != 0)
+        {
+            writer.WriteStartElement("w", "eastAsianLayout", WNs);
+            if (props.IsEastAsianVertical || props.EastAsianLayoutType != 0)
+            {
+                writer.WriteAttributeString("w", "vert", WNs, "1");
+            }
+            if (props.IsEastAsianVerticalCompress)
+            {
+                writer.WriteAttributeString("w", "vertCompress", WNs, "1");
+            }
             writer.WriteEndElement();
         }
 

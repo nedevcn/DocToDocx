@@ -207,9 +207,37 @@ public class SprmParser
             case 0x2A53:
                 chp.IsDoubleStrikeThrough = sprm.Operand != 0;
                 return;
+            case 0x6865:
+                chp.Border = DecodeBrc(sprm.Operand);
+                return;
             case 0x6815:
             case 0x6816:
             case 0x6817:
+                return;
+            case 0xCA72:
+                if (sprm.VariableOperand != null && sprm.VariableOperand.Length >= 4)
+                {
+                    var border = DecodeBrc(BitConverter.ToUInt32(sprm.VariableOperand, 0));
+                    if (border.Style == BorderStyle.None && sprm.VariableOperand.Length >= 8)
+                    {
+                        border = DecodeBrc(BitConverter.ToUInt32(sprm.VariableOperand, sprm.VariableOperand.Length - 4));
+                    }
+                    chp.Border = border;
+                }
+                return;
+            case 0xCA78:
+                if (sprm.VariableOperand != null && sprm.VariableOperand.Length >= 2)
+                {
+                    var ufel = BitConverter.ToUInt16(sprm.VariableOperand, 0);
+                    chp.EastAsianLayoutType = (byte)(ufel & 0x00FF);
+                    chp.IsEastAsianVertical = ufel != 0;
+
+                    if (sprm.VariableOperand.Length >= 3)
+                    {
+                        var copt = sprm.VariableOperand[2];
+                        chp.IsEastAsianVerticalCompress = (copt & 0x10) != 0;
+                    }
+                }
                 return;
             case 0x4845:
                 chp.Position = (int)(short)sprm.Operand;
@@ -737,8 +765,12 @@ public class ChpBase
     public bool IsShadow { get; set; }
     public bool IsEmboss { get; set; }
     public bool IsImprint { get; set; }
+    public BorderInfo? Border { get; set; }
     public uint RgbColor { get; set; }
     public bool HasRgbColor { get; set; }
+    public byte EastAsianLayoutType { get; set; }
+    public bool IsEastAsianVertical { get; set; }
+    public bool IsEastAsianVerticalCompress { get; set; }
     
     // Track Changes
     public bool IsDeleted { get; set; }

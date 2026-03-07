@@ -930,6 +930,10 @@ namespace Nedev.FileConverters.DocToDocx.Tests
                 Assert.Contains("<w:color w:val=\"FF0000\" />", documentXml);
                 Assert.Contains("<w:highlight w:val=\"yellow\" />", documentXml);
                 Assert.Contains("<w:sz w:val=\"44\" />", documentXml);
+                Assert.Contains("<w:vertAlign w:val=\"superscript\" />", documentXml);
+                Assert.Contains("<w:vertAlign w:val=\"subscript\" />", documentXml);
+                Assert.Contains("<w:bdr ", documentXml);
+                Assert.Contains("<w:eastAsianLayout ", documentXml);
                 Assert.DoesNotContain("<w:shadow", documentXml, StringComparison.Ordinal);
                 Assert.DoesNotContain("<w:del", documentXml, StringComparison.Ordinal);
                 Assert.DoesNotContain("<w:ins", documentXml, StringComparison.Ordinal);
@@ -1001,7 +1005,6 @@ namespace Nedev.FileConverters.DocToDocx.Tests
             Assert.Contains(listParagraphs, paragraph => paragraph.ListLevel > 0);
         }
 
-        [Fact]
         [Fact]
         public void SampleTableDoc_Conversion_DoesNotHang()
         {

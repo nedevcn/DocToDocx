@@ -898,6 +898,8 @@ public class DocReader : IDisposable
              a.IsBoldCs == b.IsBoldCs &&
              a.IsItalic == b.IsItalic &&
              a.IsItalicCs == b.IsItalicCs &&
+                         a.IsSuperscript == b.IsSuperscript &&
+                         a.IsSubscript == b.IsSubscript &&
                a.IsStrikeThrough == b.IsStrikeThrough &&
              a.IsDoubleStrikeThrough == b.IsDoubleStrikeThrough &&
                a.IsUnderline == b.IsUnderline &&
@@ -914,10 +916,25 @@ public class DocReader : IDisposable
              a.IsShadow == b.IsShadow &&
              a.IsEmboss == b.IsEmboss &&
              a.IsImprint == b.IsImprint &&
+                         BordersEqual(a.Border, b.Border) &&
              a.Position == b.Position &&
              a.Kerning == b.Kerning &&
-               a.Scale == b.Scale;
+                         a.Scale == b.Scale &&
+                         a.EastAsianLayoutType == b.EastAsianLayoutType &&
+                         a.IsEastAsianVertical == b.IsEastAsianVertical &&
+                         a.IsEastAsianVerticalCompress == b.IsEastAsianVerticalCompress;
     }
+
+        private static bool BordersEqual(BorderInfo? a, BorderInfo? b)
+        {
+                if (ReferenceEquals(a, b)) return true;
+                if (a == null || b == null) return false;
+
+                return a.Style == b.Style &&
+                             a.Width == b.Width &&
+                             a.Color == b.Color &&
+                             a.Space == b.Space;
+        }
 
     private static ChpBase CloneChpBase(ChpBase source)
     {
@@ -954,8 +971,20 @@ public class DocReader : IDisposable
             IsShadow = source.IsShadow,
             IsEmboss = source.IsEmboss,
             IsImprint = source.IsImprint,
+            Border = source.Border == null
+                ? null
+                : new BorderInfo
+                {
+                    Style = source.Border.Style,
+                    Width = source.Border.Width,
+                    Color = source.Border.Color,
+                    Space = source.Border.Space
+                },
             RgbColor = source.RgbColor,
             HasRgbColor = source.HasRgbColor,
+            EastAsianLayoutType = source.EastAsianLayoutType,
+            IsEastAsianVertical = source.IsEastAsianVertical,
+            IsEastAsianVerticalCompress = source.IsEastAsianVerticalCompress,
             IsDeleted = source.IsDeleted,
             IsInserted = source.IsInserted,
             AuthorIndexDel = source.AuthorIndexDel,
@@ -998,11 +1027,24 @@ public class DocReader : IDisposable
         target.IsShadow |= overlay.IsShadow;
         target.IsEmboss |= overlay.IsEmboss;
         target.IsImprint |= overlay.IsImprint;
+        if (overlay.Border != null)
+        {
+            target.Border = new BorderInfo
+            {
+                Style = overlay.Border.Style,
+                Width = overlay.Border.Width,
+                Color = overlay.Border.Color,
+                Space = overlay.Border.Space
+            };
+        }
         if (overlay.HasRgbColor)
         {
             target.RgbColor = overlay.RgbColor;
             target.HasRgbColor = true;
         }
+        if (overlay.EastAsianLayoutType != 0) target.EastAsianLayoutType = overlay.EastAsianLayoutType;
+        target.IsEastAsianVertical |= overlay.IsEastAsianVertical;
+        target.IsEastAsianVerticalCompress |= overlay.IsEastAsianVerticalCompress;
         target.IsDeleted |= overlay.IsDeleted;
         target.IsInserted |= overlay.IsInserted;
         if (overlay.AuthorIndexDel != 0) target.AuthorIndexDel = overlay.AuthorIndexDel;
@@ -1141,6 +1183,16 @@ public class DocReader : IDisposable
         merged.IsShadow = directProps.IsShadow || merged.IsShadow;
         merged.IsEmboss = directProps.IsEmboss || merged.IsEmboss;
         merged.IsImprint = directProps.IsImprint || merged.IsImprint;
+        if (directProps.Border != null)
+        {
+            merged.Border = new BorderInfo
+            {
+                Style = directProps.Border.Style,
+                Width = directProps.Border.Width,
+                Color = directProps.Border.Color,
+                Space = directProps.Border.Space
+            };
+        }
 
         if (directProps.HasRgbColor)
         {
@@ -1165,6 +1217,10 @@ public class DocReader : IDisposable
             merged.Position = directProps.Position;
         if (directProps.CharacterScale != 100)
             merged.CharacterScale = directProps.CharacterScale;
+        if (directProps.EastAsianLayoutType != 0)
+            merged.EastAsianLayoutType = directProps.EastAsianLayoutType;
+        merged.IsEastAsianVertical = directProps.IsEastAsianVertical || merged.IsEastAsianVertical;
+        merged.IsEastAsianVerticalCompress = directProps.IsEastAsianVerticalCompress || merged.IsEastAsianVerticalCompress;
         if (!directProps.SnapToGrid)
             merged.SnapToGrid = false;
         if (directProps.Language != 0)
@@ -1224,9 +1280,21 @@ public class DocReader : IDisposable
             IsShadow = sr.IsShadow,
             IsEmboss = sr.IsEmboss,
             IsImprint = sr.IsImprint,
+            Border = sr.Border == null
+                ? null
+                : new BorderInfo
+                {
+                    Style = sr.Border.Style,
+                    Width = sr.Border.Width,
+                    Color = sr.Border.Color,
+                    Space = sr.Border.Space
+                },
             Kerning = sr.Kerning,
             Position = sr.Position
             ,CharacterScale = sr.CharacterScale
+            ,EastAsianLayoutType = sr.EastAsianLayoutType
+            ,IsEastAsianVertical = sr.IsEastAsianVertical
+            ,IsEastAsianVerticalCompress = sr.IsEastAsianVerticalCompress
             ,SnapToGrid = sr.SnapToGrid
             ,RubyText = sr.RubyText
             ,IsDeleted = sr.IsDeleted

@@ -491,9 +491,13 @@ public class RunProperties
     public bool IsShadow { get; set; }
     public bool IsEmboss { get; set; }
     public bool IsImprint { get; set; }
+    public BorderInfo? Border { get; set; }
     public int Kerning { get; set; }
     public int Position { get; set; }
     public int CharacterScale { get; set; } = 100; // Character scaling in % (sprmCHwcr)
+    public byte EastAsianLayoutType { get; set; }
+    public bool IsEastAsianVertical { get; set; }
+    public bool IsEastAsianVerticalCompress { get; set; }
 
     // Phase 1 Additions (Typography)
     public bool SnapToGrid { get; set; } = true; // Character level snap to grid (sprmCFIco/sprmCFUsePgsuSettings)
@@ -553,9 +557,13 @@ public class RunProperties
         if (!IsShadow && baseProps.IsShadow) IsShadow = baseProps.IsShadow;
         if (!IsEmboss && baseProps.IsEmboss) IsEmboss = baseProps.IsEmboss;
         if (!IsImprint && baseProps.IsImprint) IsImprint = baseProps.IsImprint;
+        Border ??= baseProps.Border;
         if (Kerning == 0 && baseProps.Kerning != 0) Kerning = baseProps.Kerning;
         if (Position == 0 && baseProps.Position != 0) Position = baseProps.Position;
         if (CharacterScale == 100 && baseProps.CharacterScale != 100) CharacterScale = baseProps.CharacterScale;
+        if (EastAsianLayoutType == 0 && baseProps.EastAsianLayoutType != 0) EastAsianLayoutType = baseProps.EastAsianLayoutType;
+        if (!IsEastAsianVertical && baseProps.IsEastAsianVertical) IsEastAsianVertical = baseProps.IsEastAsianVertical;
+        if (!IsEastAsianVerticalCompress && baseProps.IsEastAsianVerticalCompress) IsEastAsianVerticalCompress = baseProps.IsEastAsianVerticalCompress;
 
         if (SnapToGrid && !baseProps.SnapToGrid) SnapToGrid = baseProps.SnapToGrid;
         RubyText ??= baseProps.RubyText;

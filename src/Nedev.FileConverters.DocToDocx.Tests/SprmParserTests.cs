@@ -264,12 +264,85 @@ public class SprmParserTests
         Assert.True(indentPap!.IndentLeft > 0, report.ToString());
     }
 
+    [Fact]
+    public void ApplyToChp_DecodesCharacterBorderAndEastAsianLayout()
+    {
+        using var stream = new MemoryStream();
+        using var reader = new BinaryReader(stream);
+        var parser = new SprmParser(reader, 0);
+        var chp = new ChpBase();
+        var applyMethod = typeof(SprmParser).GetMethod("ApplyChpSprm", BindingFlags.Instance | BindingFlags.NonPublic);
+        var sprmType = typeof(SprmParser).GetNestedType("Sprm", BindingFlags.NonPublic);
+
+        Assert.NotNull(applyMethod);
+        Assert.NotNull(sprmType);
+
+        ApplySprm(parser, sprmType!, applyMethod!, chp, 0x6865, 0x00010108);
+        ApplyVariableSprm(parser, sprmType!, applyMethod!, chp, 0xCA78, 0x01, 0x01, 0x10);
+
+        Assert.NotNull(chp.Border);
+        Assert.Equal(Nedev.FileConverters.DocToDocx.Models.BorderStyle.Single, chp.Border!.Style);
+        Assert.True(chp.IsEastAsianVertical);
+        Assert.True(chp.IsEastAsianVerticalCompress);
+    }
+
+    [Fact]
+    public void SampleTextDoc_PreservesBorderAndVerticalMarkersInChpMap()
+    {
+        var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+        var inputPath = Path.Combine(repoRoot, "samples", "text.doc");
+
+        using var docReader = new DocReader(inputPath);
+        docReader.Load();
+
+        var textReader = (Nedev.FileConverters.DocToDocx.Readers.TextReader)GetPrivateField(docReader, "_textReader")!;
+        var globalChpMap = (Dictionary<int, ChpBase>)GetPrivateField(docReader, "_globalChpMap")!;
+        var globalPapMap = (Dictionary<int, PapBase>)GetPrivateField(docReader, "_globalPapMap")!;
+
+        var borderCp = textReader.Text.IndexOf("文字边框", StringComparison.Ordinal);
+        var verticalCp = textReader.Text.IndexOf("纵向", StringComparison.Ordinal);
+        var report = new StringBuilder();
+        report.AppendLine($"shapes={docReader.Document.Shapes.Count} textboxes={docReader.Document.Textboxes.Count}");
+
+        Assert.True(borderCp >= 0, "Failed to locate border marker in sample text.");
+        Assert.True(verticalCp >= 0, "Failed to locate vertical marker in sample text.");
+
+        var borderChp = ResolveChpAtCp(globalChpMap, borderCp, 32);
+        var verticalChp = ResolveChpAtCp(globalChpMap, verticalCp, 32);
+        var borderPap = ResolvePapAtCp(globalPapMap, borderCp, 64);
+        var verticalPap = ResolvePapAtCp(globalPapMap, verticalCp, 64);
+
+        report.AppendLine($"borderCp={borderCp} chp={FormatChp(borderChp)} pap={FormatPap(borderPap)}");
+        foreach (var line in GetFkpEntriesForCp(docReader, borderCp))
+            report.AppendLine("  " + line);
+
+        report.AppendLine($"verticalCp={verticalCp} chp={FormatChp(verticalChp)} pap={FormatPap(verticalPap)}");
+        foreach (var line in GetFkpEntriesForCp(docReader, verticalCp))
+            report.AppendLine("  " + line);
+
+        Assert.NotNull(borderChp);
+        Assert.NotNull(borderChp!.Border);
+        Assert.True(borderChp.Border!.Style != Nedev.FileConverters.DocToDocx.Models.BorderStyle.None, report.ToString());
+        Assert.NotNull(verticalChp);
+        Assert.True(verticalChp!.IsEastAsianVertical, report.ToString());
+    }
+
     private static void ApplySprm(SprmParser parser, Type sprmType, MethodInfo applyMethod, ChpBase chp, ushort code, uint operand)
     {
         var sprm = Activator.CreateInstance(sprmType)!;
         sprmType.GetProperty("Code")!.SetValue(sprm, code);
         sprmType.GetProperty("Operand")!.SetValue(sprm, operand);
         sprmType.GetProperty("OperandSize")!.SetValue(sprm, 0);
+        applyMethod.Invoke(parser, new object[] { sprm, chp });
+    }
+
+    private static void ApplyVariableSprm(SprmParser parser, Type sprmType, MethodInfo applyMethod, ChpBase chp, ushort code, params byte[] operand)
+    {
+        var sprm = Activator.CreateInstance(sprmType)!;
+        sprmType.GetProperty("Code")!.SetValue(sprm, code);
+        sprmType.GetProperty("Operand")!.SetValue(sprm, 0u);
+        sprmType.GetProperty("OperandSize")!.SetValue(sprm, 0xFF);
+        sprmType.GetProperty("VariableOperand")!.SetValue(sprm, operand);
         applyMethod.Invoke(parser, new object[] { sprm, chp });
     }
 
@@ -345,7 +418,23 @@ public class SprmParserTests
         if (chp == null)
             return "<none>";
 
-        return $"bold={chp.IsBold} italic={chp.IsItalic} underline={chp.Underline} scale={chp.Scale} kern={chp.Kerning} size={chp.FontSize} color={chp.Color} highlight={chp.HighlightColor} pos={chp.Position} lang={chp.LanguageId}";
+        return $"bold={chp.IsBold} italic={chp.IsItalic} underline={chp.Underline} scale={chp.Scale} kern={chp.Kerning} size={chp.FontSize} color={chp.Color} highlight={chp.HighlightColor} pos={chp.Position} lang={chp.LanguageId} border={chp.Border?.Style}/{chp.Border?.Width} eastAsiaType={chp.EastAsianLayoutType} vert={chp.IsEastAsianVertical} vertCompress={chp.IsEastAsianVerticalCompress}";
+    }
+
+    private static ChpBase? ResolveChpAtCp(Dictionary<int, ChpBase> chpMap, int cp, int maxLookaround)
+    {
+        if (chpMap.TryGetValue(cp, out var chp))
+            return chp;
+
+        for (var offset = 1; offset <= maxLookaround; offset++)
+        {
+            if (chpMap.TryGetValue(cp - offset, out chp))
+                return chp;
+            if (chpMap.TryGetValue(cp + offset, out chp))
+                return chp;
+        }
+
+        return null;
     }
 
     private static string TakeExcerpt(string text, int start, int length)

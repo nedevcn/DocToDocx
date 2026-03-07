@@ -43,11 +43,10 @@ public class FkpParser
         var chpMap = new Dictionary<int, ChpBase>();
         _tableReader.BaseStream.Seek(_fib.FcPlcfBteChpx, SeekOrigin.Begin);
         
-        // PLC structure: CP array (n+1 entries) + PCD array (n entries)
-        // Each CP is 4 bytes, each PCD is 8 bytes
-        // Total size = 4 + n*12, so n = (lcb - 4) / 12
+        // BTE PLC structure: CP array (n+1 entries) + PN array (n entries).
+        // Both entries are 4 bytes here, so total size = 4 + n*8.
         var lcb = (int)_fib.LcbPlcfBteChpx;
-        var numPcd = (lcb - 4) / 12;
+        var numPcd = (lcb - 4) / 8;
         if (numPcd <= 0) return chpMap;
         
         // Read CP array: numPcd + 1 entries
@@ -195,11 +194,10 @@ public class FkpParser
 
         _tableReader.BaseStream.Seek(_fib.FcPlcfBtePapx, SeekOrigin.Begin);
         
-        // PLC structure: CP array (n+1 entries) + PCD array (n entries)
-        // Each CP is 4 bytes, each PCD is 8 bytes
-        // Total size = 4 + n*12, so n = (lcb - 4) / 12
+        // BTE PLC structure: CP array (n+1 entries) + PN array (n entries).
+        // Both entries are 4 bytes here, so total size = 4 + n*8.
         var lcb = (int)_fib.LcbPlcfBtePapx;
-        var numPcd = (lcb - 4) / 12;
+        var numPcd = (lcb - 4) / 8;
         if (numPcd <= 0) return papMap;
         
         // Read CP array: numPcd + 1 entries
@@ -488,9 +486,13 @@ public class FkpParser
             IsShadow = chp.IsShadow,
             IsEmboss = chp.IsEmboss,
             IsImprint = chp.IsImprint,
+            Border = chp.Border,
             Kerning = chp.Kerning,
             Position = chp.Position,
             CharacterScale = chp.Scale,
+            EastAsianLayoutType = chp.EastAsianLayoutType,
+            IsEastAsianVertical = chp.IsEastAsianVertical,
+            IsEastAsianVerticalCompress = chp.IsEastAsianVerticalCompress,
             
             // Track Changes
             IsDeleted = chp.IsDeleted,
