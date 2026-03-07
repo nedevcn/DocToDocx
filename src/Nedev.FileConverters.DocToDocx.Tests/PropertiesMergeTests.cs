@@ -87,5 +87,25 @@ namespace Nedev.FileConverters.DocToDocx.Tests
             Assert.Equal(36, r.FontSize);
             Assert.True(r.IsItalic);
         }
+
+        [Fact]
+        public void RunProperties_MergeWith_PreservesNonDefaultExtendedProperties()
+        {
+            var baseProps = new RunProperties
+            {
+                CharacterScale = 200,
+                HasRgbColor = true,
+                RgbColor = 0x112233,
+                FontName = "SimSun"
+            };
+            var r = new RunProperties();
+
+            r.MergeWith(baseProps);
+
+            Assert.Equal(200, r.CharacterScale);
+            Assert.True(r.HasRgbColor);
+            Assert.Equal((uint)0x112233, r.RgbColor);
+            Assert.Equal("SimSun", r.FontName);
+        }
     }
 }

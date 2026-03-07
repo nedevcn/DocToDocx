@@ -6,6 +6,7 @@ using System.Xml;
 using System.Linq;
 using System.Collections.Generic;
 using System.Text.RegularExpressions;
+using System.IO.Compression;
 using Nedev.FileConverters.DocToDocx.Models;
 using Nedev.FileConverters.DocToDocx.Writers;
 using Nedev.FileConverters.DocToDocx.Utils;
@@ -898,6 +899,43 @@ namespace Nedev.FileConverters.DocToDocx.Tests
                 Assert.Empty(errors);
             }
             File.Delete(tmp);
+        }
+
+        [Fact]
+        public void SampleTextDoc_Conversion_PreservesRecoveredRunStyling()
+        {
+            var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+            var inputPath = Path.Combine(repoRoot, "samples", "text.doc");
+            var outputPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".docx");
+
+            try
+            {
+                DocToDocxConverter.Convert(inputPath, outputPath);
+
+                using var archive = new ZipArchive(File.OpenRead(outputPath), ZipArchiveMode.Read);
+                var documentXml = new StreamReader(archive.GetEntry("word/document.xml").Open()).ReadToEnd();
+                var stylesXml = new StreamReader(archive.GetEntry("word/styles.xml").Open()).ReadToEnd();
+                var visibleText = Regex.Replace(documentXml, "<[^>]+>", string.Empty);
+
+                Assert.Contains("粗体斜体下划线中横线颜色背景色字体大小字体上标下标组合", visibleText);
+                Assert.Contains("<w:pStyle", documentXml);
+                Assert.Contains("<w:pStyle w:val=\"Normal\"", documentXml);
+                Assert.Contains("<w:b", documentXml);
+                Assert.Contains("<w:i", documentXml);
+                Assert.Contains("<w:u w:val=\"single\" />", documentXml);
+                Assert.Contains("<w:color w:val=\"FF0000\" />", documentXml);
+                Assert.Contains("<w:highlight w:val=\"yellow\" />", documentXml);
+                Assert.Contains("<w:sz w:val=\"44\" />", documentXml);
+                Assert.DoesNotContain("<w:shadow", documentXml, StringComparison.Ordinal);
+                Assert.DoesNotContain("<w:del", documentXml, StringComparison.Ordinal);
+                Assert.DoesNotContain("<w:ins", documentXml, StringComparison.Ordinal);
+                Assert.Contains("styleId=\"Normal\"", stylesXml);
+            }
+            finally
+            {
+                if (File.Exists(outputPath))
+                    File.Delete(outputPath);
+            }
         }
     }
 }

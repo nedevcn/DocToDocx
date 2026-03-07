@@ -19,6 +19,7 @@ public class TextReader
     private readonly FibReader _fib;
     private string _text = string.Empty;
     private List<Piece> _pieces = new();
+    private readonly Dictionary<ushort, byte[]> _piecePropertyModifiers = new();
 
     /// <param name="wordDocReader">Reader for the WordDocument stream</param>
     /// <param name="tableReader">Reader for the Table stream (0Table or 1Table)</param>
@@ -44,6 +45,39 @@ public class TextReader
     /// Gets the piece table entries.
     /// </summary>
     public IReadOnlyList<Piece> Pieces => _pieces;
+
+    /// <summary>
+    /// Gets any CLX PRC/PRM-based character properties for the piece containing the supplied CP.
+    /// </summary>
+    public ChpBase? GetPieceRunPropertiesAtCp(int cp)
+    {
+        var piece = _pieces.FirstOrDefault(p => cp >= p.CpStart && cp < p.CpEnd);
+        if (piece == null || piece.Prm == 0)
+            return null;
+
+        var candidateKeys = new[]
+        {
+            piece.Prm,
+            (ushort)(piece.Prm & 0xFFFE),
+            (ushort)(piece.Prm >> 1),
+            (ushort)(piece.Prm & 0x7FFF),
+            (ushort)((piece.Prm & 0x7FFF) >> 1)
+        };
+
+        byte[]? grpprl = null;
+        foreach (var candidateKey in candidateKeys)
+        {
+            if (_piecePropertyModifiers.TryGetValue(candidateKey, out grpprl))
+                break;
+        }
+
+        if (grpprl == null)
+            return null;
+
+        var chp = new ChpBase();
+        new SprmParser(_wordDocReader, 0).ApplyToChp(grpprl, chp);
+        return chp;
+    }
 
     /// <summary>
     /// Reads the complete text content from the main document body.
@@ -211,6 +245,8 @@ public class TextReader
         if (_fib.FcClx == 0 || _fib.LcbClx == 0)
             return;
 
+        _piecePropertyModifiers.Clear();
+        ushort grpprlPoolOffset = 0;
         TableReader.BaseStream.Seek(_fib.FcClx, SeekOrigin.Begin);
         var endPosition = _fib.FcClx + _fib.LcbClx;
 
@@ -222,9 +258,22 @@ public class TextReader
             if (clxt == 0x01)
             {
                 // Prc — contains a GrpPrl
+                var offsetBeforeSize = (ushort)(TableReader.BaseStream.Position - _fib.FcClx);
                 var cbGrpprl = TableReader.ReadInt16();
                 if (cbGrpprl > 0)
-                    TableReader.BaseStream.Seek(cbGrpprl, SeekOrigin.Current);
+                {
+                    var grpprlOffset = (ushort)(TableReader.BaseStream.Position - _fib.FcClx);
+                    var grpprl = TableReader.ReadBytes(cbGrpprl);
+                    _piecePropertyModifiers[offsetBeforeSize] = grpprl;
+                    _piecePropertyModifiers[grpprlOffset] = grpprl;
+                    _piecePropertyModifiers[(ushort)(offsetBeforeSize >> 1)] = grpprl;
+                    _piecePropertyModifiers[(ushort)(grpprlOffset >> 1)] = grpprl;
+                    _piecePropertyModifiers[grpprlPoolOffset] = grpprl;
+                    _piecePropertyModifiers[(ushort)(grpprlPoolOffset >> 1)] = grpprl;
+                    _piecePropertyModifiers[(ushort)(grpprlPoolOffset + 2)] = grpprl;
+                    _piecePropertyModifiers[(ushort)((grpprlPoolOffset + 2) >> 1)] = grpprl;
+                    grpprlPoolOffset = (ushort)(grpprlPoolOffset + cbGrpprl + 2);
+                }
             }
             else if (clxt == 0x02)
             {

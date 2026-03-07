@@ -73,9 +73,9 @@ public class FkpParser
             
             foreach (var entry in fkp.Entries)
             {
-                // FKP entries contain absolute File Character (FC) values
-                int startCp = FcToCp(entry.StartCpOffset);
-                int endCp = FcToCp(entry.EndCpOffset);
+                // ParseChpFkp already normalized the FKP FC bounds into CP bounds.
+                int startCp = entry.StartCpOffset;
+                int endCp = entry.EndCpOffset;
                 
                 int finalStart = Math.Max(0, startCp);
                 int finalEnd = Math.Min(_fib.CcpText, endCp);
@@ -161,6 +161,7 @@ public class FkpParser
                 EndCpOffset = cpEnd,
                 StartFcOffset = startFc,
                 EndFcOffset = endFc,
+                RawGrpprl = grpprl,
                 Properties = chp
             });
             // remember segment for CP→FC lookups later
@@ -210,9 +211,9 @@ public class FkpParser
             
             foreach (var entry in fkp.Entries)
             {
-                // FKP entries contain absolute File Character (FC) values
-                int startCp = FcToCp(entry.StartCpOffset);
-                int endCp = FcToCp(entry.EndCpOffset);
+                // ParsePapFkp already converted the FKP range from FC into CP.
+                int startCp = entry.StartCpOffset;
+                int endCp = entry.EndCpOffset;
                 
                 int finalStart = Math.Max(0, startCp);
                 int finalEnd = Math.Min(_fib.CcpText, endCp);
@@ -360,6 +361,19 @@ public class FkpParser
                 var offsetInPiece = fc - pieceFc;
                 return piece.CpStart + (offsetInPiece / bytesPerChar);
             }
+
+            // Some structures expose FC values in the raw PCD encoding rather than
+            // the decoded byte offset used by TextReader.FileOffset. For compressed
+            // pieces RawFcMasked advances by 2 per character even though the actual
+            // byte stream advances by 1. Try this representation as a fallback.
+            var rawPieceFc = (int)piece.RawFcMasked;
+            var rawUnitsPerChar = 2;
+            var rawPieceLength = piece.CharCount * rawUnitsPerChar;
+            if (fc >= rawPieceFc && fc < rawPieceFc + rawPieceLength)
+            {
+                var rawOffsetInPiece = fc - rawPieceFc;
+                return piece.CpStart + (rawOffsetInPiece / rawUnitsPerChar);
+            }
         }
         
         // If not found, check if it's the exact end of the last piece
@@ -371,6 +385,13 @@ public class FkpParser
             var pieceLengthBytes = lastPiece.CharCount * bytesPerChar;
             
             if (fc == pieceFc + pieceLengthBytes)
+            {
+                return lastPiece.CpEnd;
+            }
+
+            var rawPieceFc = (int)lastPiece.RawFcMasked;
+            var rawPieceLength = lastPiece.CharCount * 2;
+            if (fc == rawPieceFc + rawPieceLength)
             {
                 return lastPiece.CpEnd;
             }
@@ -442,6 +463,7 @@ public class FkpParser
             IsImprint = chp.IsImprint,
             Kerning = chp.Kerning,
             Position = chp.Position,
+            CharacterScale = chp.Scale,
             
             // Track Changes
             IsDeleted = chp.IsDeleted,
@@ -500,6 +522,7 @@ public class ChpFkpEntry
     public int StartFcOffset { get; set; }
     public int EndFcOffset { get; set; }
 
+    public byte[] RawGrpprl { get; set; } = Array.Empty<byte>();
     public ChpBase Properties { get; set; } = new();
 }
 

@@ -663,7 +663,7 @@ public class DocReader : IDisposable
                 Type = ParagraphType.Normal,
                 Properties = pap != null 
                     ? _fkpParser!.ConvertToParagraphProperties(pap, Document.Styles)
-                    : new ParagraphProperties(),
+                    : new ParagraphProperties { StyleIndex = 0 },
                 NestingLevel = pap?.InTable == true ? Math.Max(1, pap.Itap) : (pap?.Itap ?? 0),
                 ListFormatId = pap?.ListFormatId ?? 0,
                 ListLevel = pap?.ListLevel ?? 0
@@ -736,6 +736,21 @@ public class DocReader : IDisposable
             if (chpMap.TryGetValue(cp, out var foundChp))
                 chpAtCp = foundChp;
 
+            var pieceChp = _textReader?.GetPieceRunPropertiesAtCp(cp);
+            if (pieceChp != null)
+            {
+                if (chpAtCp == null)
+                {
+                    chpAtCp = pieceChp;
+                }
+                else
+                {
+                    var mergedPieceChp = CloneChpBase(chpAtCp);
+                    OverlayChpBase(mergedPieceChp, pieceChp);
+                    chpAtCp = mergedPieceChp;
+                }
+            }
+
             // Isolate special characters into their own runs of length 1 to prevent data loss or index smearing
             // We isolate \x01 (inline picture) and \x08 (floating picture) because they map to complex objects.
             bool isSpecialChar = i < paraText.Length && (paraText[i] == '\x01' || paraText[i] == '\x08');
@@ -752,11 +767,7 @@ public class DocReader : IDisposable
                 // Even if text is empty (special char stripped), preserve it if it's visual or structural (hyperlink/field)
                 if (!string.IsNullOrEmpty(cleanText) || isPicture || runText.Contains('\x13') || runText.Contains('\x14') || runText.Contains('\x15'))
                 {
-                    RunProperties runProps;
-                    if (currentChp != null)
-                        runProps = _fkpParser!.ConvertToRunProperties(currentChp, Document.Styles);
-                    else
-                        runProps = GetRunPropertiesFromParagraphStyleAtCp(papMap, paraStartCp) ?? new RunProperties { FontSize = 24 };
+                    var runProps = GetEffectiveRunPropertiesAtCp(papMap, paraStartCp + runStart, currentChp);
 
                     var run = new RunModel
                     {
@@ -879,16 +890,121 @@ public class DocReader : IDisposable
         if (ReferenceEquals(a, b)) return true;
         if (a == null || b == null) return false;
 
-        return a.IsBold == b.IsBold &&
-               a.IsItalic == b.IsItalic &&
+         return a.IsBold == b.IsBold &&
+             a.IsBoldCs == b.IsBoldCs &&
+             a.IsItalic == b.IsItalic &&
+             a.IsItalicCs == b.IsItalicCs &&
                a.IsStrikeThrough == b.IsStrikeThrough &&
+             a.IsDoubleStrikeThrough == b.IsDoubleStrikeThrough &&
                a.IsUnderline == b.IsUnderline &&
+             a.Underline == b.Underline &&
                a.FontSize == b.FontSize &&
                a.FontSizeCs == b.FontSizeCs &&
                a.FontIndex == b.FontIndex &&
-                a.Color == b.Color &&
+             a.FontIndexCs == b.FontIndexCs &&
+             a.Color == b.Color &&
+             a.HighlightColor == b.HighlightColor &&
                a.HasRgbColor == b.HasRgbColor &&
-               a.RgbColor == b.RgbColor;
+               a.RgbColor == b.RgbColor &&
+             a.IsOutline == b.IsOutline &&
+             a.IsShadow == b.IsShadow &&
+             a.IsEmboss == b.IsEmboss &&
+             a.IsImprint == b.IsImprint &&
+             a.Position == b.Position &&
+             a.Kerning == b.Kerning &&
+               a.Scale == b.Scale;
+    }
+
+    private static ChpBase CloneChpBase(ChpBase source)
+    {
+        return new ChpBase
+        {
+            FontIndex = source.FontIndex,
+            FontSize = source.FontSize,
+            FontSizeCs = source.FontSizeCs,
+            IsBold = source.IsBold,
+            IsBoldCs = source.IsBoldCs,
+            IsItalic = source.IsItalic,
+            IsItalicCs = source.IsItalicCs,
+            IsUnderline = source.IsUnderline,
+            Underline = source.Underline,
+            IsStrikeThrough = source.IsStrikeThrough,
+            IsSmallCaps = source.IsSmallCaps,
+            IsAllCaps = source.IsAllCaps,
+            IsHidden = source.IsHidden,
+            IsSuperscript = source.IsSuperscript,
+            IsSubscript = source.IsSubscript,
+            Color = source.Color,
+            FontIndexCs = source.FontIndexCs,
+            CharacterSpacingAdjustment = source.CharacterSpacingAdjustment,
+            Language = source.Language,
+            LanguageId = source.LanguageId,
+            IsDoubleStrikeThrough = source.IsDoubleStrikeThrough,
+            DxaOffset = source.DxaOffset,
+            IsOutline = source.IsOutline,
+            Kerning = source.Kerning,
+            Position = source.Position,
+            FcPic = source.FcPic,
+            Scale = source.Scale,
+            HighlightColor = source.HighlightColor,
+            IsShadow = source.IsShadow,
+            IsEmboss = source.IsEmboss,
+            IsImprint = source.IsImprint,
+            RgbColor = source.RgbColor,
+            HasRgbColor = source.HasRgbColor,
+            IsDeleted = source.IsDeleted,
+            IsInserted = source.IsInserted,
+            AuthorIndexDel = source.AuthorIndexDel,
+            AuthorIndexIns = source.AuthorIndexIns,
+            DateDel = source.DateDel,
+            DateIns = source.DateIns
+        };
+    }
+
+    private static void OverlayChpBase(ChpBase target, ChpBase overlay)
+    {
+        if (overlay.FontIndex != -1) target.FontIndex = overlay.FontIndex;
+        if (overlay.FontSize != 24) target.FontSize = overlay.FontSize;
+        if (overlay.FontSizeCs != 24) target.FontSizeCs = overlay.FontSizeCs;
+        target.IsBold |= overlay.IsBold;
+        target.IsBoldCs |= overlay.IsBoldCs;
+        target.IsItalic |= overlay.IsItalic;
+        target.IsItalicCs |= overlay.IsItalicCs;
+        target.IsUnderline |= overlay.IsUnderline;
+        if (overlay.Underline != 0) target.Underline = overlay.Underline;
+        target.IsStrikeThrough |= overlay.IsStrikeThrough;
+        target.IsDoubleStrikeThrough |= overlay.IsDoubleStrikeThrough;
+        target.IsSmallCaps |= overlay.IsSmallCaps;
+        target.IsAllCaps |= overlay.IsAllCaps;
+        target.IsHidden |= overlay.IsHidden;
+        target.IsSuperscript |= overlay.IsSuperscript;
+        target.IsSubscript |= overlay.IsSubscript;
+        if (overlay.Color != 0) target.Color = overlay.Color;
+        if (overlay.FontIndexCs != -1) target.FontIndexCs = overlay.FontIndexCs;
+        if (overlay.CharacterSpacingAdjustment != 0) target.CharacterSpacingAdjustment = overlay.CharacterSpacingAdjustment;
+        if (overlay.Language != 0) target.Language = overlay.Language;
+        if (overlay.LanguageId != 0) target.LanguageId = overlay.LanguageId;
+        if (overlay.DxaOffset != 0) target.DxaOffset = overlay.DxaOffset;
+        target.IsOutline |= overlay.IsOutline;
+        if (overlay.Kerning != 0) target.Kerning = overlay.Kerning;
+        if (overlay.Position != 0) target.Position = overlay.Position;
+        if (overlay.FcPic != 0) target.FcPic = overlay.FcPic;
+        if (overlay.Scale != 100) target.Scale = overlay.Scale;
+        if (overlay.HighlightColor != 0) target.HighlightColor = overlay.HighlightColor;
+        target.IsShadow |= overlay.IsShadow;
+        target.IsEmboss |= overlay.IsEmboss;
+        target.IsImprint |= overlay.IsImprint;
+        if (overlay.HasRgbColor)
+        {
+            target.RgbColor = overlay.RgbColor;
+            target.HasRgbColor = true;
+        }
+        target.IsDeleted |= overlay.IsDeleted;
+        target.IsInserted |= overlay.IsInserted;
+        if (overlay.AuthorIndexDel != 0) target.AuthorIndexDel = overlay.AuthorIndexDel;
+        if (overlay.AuthorIndexIns != 0) target.AuthorIndexIns = overlay.AuthorIndexIns;
+        if (overlay.DateDel != 0) target.DateDel = overlay.DateDel;
+        if (overlay.DateIns != 0) target.DateIns = overlay.DateIns;
     }
 
     private void ParseSections()
@@ -937,16 +1053,137 @@ public class DocReader : IDisposable
     /// Gets run properties from the paragraph style at the given CP when there is no direct CHP,
     /// so that style-based font size and color from the .doc are preserved.
     /// </summary>
+    private RunProperties GetEffectiveRunPropertiesAtCp(Dictionary<int, PapBase> papMap, int cp, ChpBase? directChp)
+    {
+        var runProps = GetRunPropertiesFromParagraphStyleAtCp(papMap, cp) ?? new RunProperties { FontSize = 24 };
+        if (directChp == null)
+            return runProps;
+
+        var directProps = _fkpParser!.ConvertToRunProperties(directChp, Document.Styles);
+        runProps = MergeRunProperties(runProps, directProps);
+        return runProps;
+    }
+
     private RunProperties? GetRunPropertiesFromParagraphStyleAtCp(Dictionary<int, PapBase> papMap, int cp)
     {
-        if (!papMap.TryGetValue(cp, out var pap)) return null;
+        PapBase? pap = null;
+        if (papMap.TryGetValue(cp, out var exactPap))
+        {
+            pap = exactPap;
+        }
+        else
+        {
+            for (int probe = cp - 1; probe >= Math.Max(0, cp - 2048); probe--)
+            {
+                if (papMap.TryGetValue(probe, out var prevPap))
+                {
+                    pap = prevPap;
+                    break;
+                }
+            }
+        }
+
+        if (pap == null) return null;
         var styles = Document.Styles;
         if (styles?.Styles == null || styles.Styles.Count == 0) return null;
-        var styleIndex = pap.StyleId != 0 ? pap.StyleId : pap.Istd;
-        var style = styles.Styles.FirstOrDefault(s => s.Type == StyleType.Paragraph && s.StyleId == styleIndex);
+        var style = FindParagraphStyle(styles, pap);
         var sr = style?.RunProperties;
         if (sr == null) return null;
         return CloneRunProperties(sr);
+    }
+
+    private static StyleDefinition? FindParagraphStyle(StyleSheet styles, PapBase pap)
+    {
+        var styleIndex = pap.StyleId != 0 ? pap.StyleId : pap.Istd;
+        if (styleIndex > 0)
+        {
+            var exact = styles.Styles.FirstOrDefault(s => s.Type == StyleType.Paragraph && s.StyleId == styleIndex);
+            if (exact != null)
+                return exact;
+        }
+
+        return styles.Styles.FirstOrDefault(s => s.Type == StyleType.Paragraph && s.IsPrimary && s.RunProperties != null)
+            ?? styles.Styles.FirstOrDefault(s => s.Type == StyleType.Paragraph && s.RunProperties != null);
+    }
+
+    private static RunProperties MergeRunProperties(RunProperties baseProps, RunProperties directProps)
+    {
+        var merged = CloneRunProperties(baseProps);
+
+        if (directProps.FontIndex != -1)
+            merged.FontIndex = directProps.FontIndex;
+        if (!string.IsNullOrEmpty(directProps.FontName))
+            merged.FontName = directProps.FontName;
+        if (directProps.FontSize != 24)
+            merged.FontSize = directProps.FontSize;
+        if (directProps.FontSizeCs != 24)
+            merged.FontSizeCs = directProps.FontSizeCs;
+
+        merged.IsBold = directProps.IsBold || merged.IsBold;
+        merged.IsBoldCs = directProps.IsBoldCs || merged.IsBoldCs;
+        merged.IsItalic = directProps.IsItalic || merged.IsItalic;
+        merged.IsItalicCs = directProps.IsItalicCs || merged.IsItalicCs;
+        merged.IsUnderline = directProps.IsUnderline || merged.IsUnderline;
+        if (directProps.UnderlineType != UnderlineType.None)
+            merged.UnderlineType = directProps.UnderlineType;
+        merged.IsStrikeThrough = directProps.IsStrikeThrough || merged.IsStrikeThrough;
+        merged.IsDoubleStrikeThrough = directProps.IsDoubleStrikeThrough || merged.IsDoubleStrikeThrough;
+        merged.IsSmallCaps = directProps.IsSmallCaps || merged.IsSmallCaps;
+        merged.IsAllCaps = directProps.IsAllCaps || merged.IsAllCaps;
+        merged.IsHidden = directProps.IsHidden || merged.IsHidden;
+        merged.IsSuperscript = directProps.IsSuperscript || merged.IsSuperscript;
+        merged.IsSubscript = directProps.IsSubscript || merged.IsSubscript;
+        merged.IsOutline = directProps.IsOutline || merged.IsOutline;
+        merged.IsShadow = directProps.IsShadow || merged.IsShadow;
+        merged.IsEmboss = directProps.IsEmboss || merged.IsEmboss;
+        merged.IsImprint = directProps.IsImprint || merged.IsImprint;
+
+        if (directProps.HasRgbColor)
+        {
+            merged.RgbColor = directProps.RgbColor;
+            merged.HasRgbColor = true;
+            merged.Color = directProps.Color;
+        }
+        else if (directProps.Color != 0)
+        {
+            merged.Color = directProps.Color;
+        }
+
+        if (directProps.BgColor != -1)
+            merged.BgColor = directProps.BgColor;
+        if (directProps.HighlightColor != 0)
+            merged.HighlightColor = directProps.HighlightColor;
+        if (directProps.CharacterSpacingAdjustment != 0)
+            merged.CharacterSpacingAdjustment = directProps.CharacterSpacingAdjustment;
+        if (directProps.Kerning != 0)
+            merged.Kerning = directProps.Kerning;
+        if (directProps.Position != 0)
+            merged.Position = directProps.Position;
+        if (directProps.CharacterScale != 100)
+            merged.CharacterScale = directProps.CharacterScale;
+        if (!directProps.SnapToGrid)
+            merged.SnapToGrid = false;
+        if (directProps.Language != 0)
+            merged.Language = directProps.Language;
+        if (!string.IsNullOrEmpty(directProps.LanguageAsia))
+            merged.LanguageAsia = directProps.LanguageAsia;
+        if (!string.IsNullOrEmpty(directProps.LanguageCs))
+            merged.LanguageCs = directProps.LanguageCs;
+        if (!string.IsNullOrEmpty(directProps.RubyText))
+            merged.RubyText = directProps.RubyText;
+
+        merged.IsDeleted = directProps.IsDeleted || merged.IsDeleted;
+        merged.IsInserted = directProps.IsInserted || merged.IsInserted;
+        if (directProps.AuthorIndexDel != 0)
+            merged.AuthorIndexDel = directProps.AuthorIndexDel;
+        if (directProps.AuthorIndexIns != 0)
+            merged.AuthorIndexIns = directProps.AuthorIndexIns;
+        if (directProps.DateDel != 0)
+            merged.DateDel = directProps.DateDel;
+        if (directProps.DateIns != 0)
+            merged.DateIns = directProps.DateIns;
+
+        return merged;
     }
 
     private static RunProperties CloneRunProperties(RunProperties sr)
@@ -985,6 +1222,15 @@ public class DocReader : IDisposable
             IsImprint = sr.IsImprint,
             Kerning = sr.Kerning,
             Position = sr.Position
+            ,CharacterScale = sr.CharacterScale
+            ,SnapToGrid = sr.SnapToGrid
+            ,RubyText = sr.RubyText
+            ,IsDeleted = sr.IsDeleted
+            ,IsInserted = sr.IsInserted
+            ,AuthorIndexDel = sr.AuthorIndexDel
+            ,AuthorIndexIns = sr.AuthorIndexIns
+            ,DateDel = sr.DateDel
+            ,DateIns = sr.DateIns
         };
         return r;
     }

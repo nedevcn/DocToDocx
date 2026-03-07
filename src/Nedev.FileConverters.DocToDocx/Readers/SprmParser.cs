@@ -96,21 +96,156 @@ public class SprmParser
 
     private int GetOperandSize(ushort sprmCode)
     {
-        var spra = (sprmCode >> 10) & 0x07;
-        return spra switch { 0 => 1, 1 => 2, 2 => 4, 3 => 2, 4 => 2, 5 => 2, 6 => 4, 7 => 0xFF, _ => 1 };
+        var spra = (sprmCode >> 13) & 0x07;
+        return spra switch { 0 => 1, 1 => 1, 2 => 2, 3 => 4, 4 => 2, 5 => 2, 6 => 0xFF, 7 => 3, _ => 1 };
     }
 
     private void ApplyChpSprm(Sprm sprm, ChpBase chp)
     {
         // Extract 9-bit operation code from the 16-bit Word 97 sprm Code
         var sprmCode = sprm.Code & 0x01FF;
-        var sgc = (sprm.Code >> 13) & 0x07;
+        var sgc = (sprm.Code >> 10) & 0x07;
         
         // sprmCPicLocation (0x6A03) - picture position in Data stream; sgc can be 2 or 3 in practice
         if (sprm.Code == 0x6A03 && sprm.OperandSize == 4)
         {
             chp.FcPic = (uint)sprm.Operand;
             return;
+        }
+
+        // Revision-mark SPRMs must be matched on the full 16-bit opcode. Matching only
+        // the low 9 operation bits causes unrelated Word97 CHP opcodes like 0x4852 to be
+        // misread as revision metadata.
+        switch (sprm.Code)
+        {
+            case 0x0800:
+                chp.IsDeleted = sprm.Operand != 0;
+                return;
+            case 0x4804:
+                chp.AuthorIndexIns = (ushort)sprm.Operand;
+                return;
+            case 0x6805:
+                chp.DateIns = (uint)sprm.Operand;
+                return;
+            case 0x0801:
+                chp.IsInserted = sprm.Operand != 0;
+                return;
+            case 0x0802:
+            case 0x0806:
+            case 0x080A:
+            case 0x0811:
+            case 0x0818:
+            case 0x0855:
+            case 0x0856:
+            case 0x085A:
+            case 0x0875:
+            case 0x0882:
+            case 0x4807:
+            case 0x4867:
+            case 0x6A09:
+            case 0xC81A:
+            case 0xCA57:
+            case 0xCA62:
+            case 0xCA89:
+                return;
+            case 0x4863:
+                chp.AuthorIndexDel = (ushort)sprm.Operand;
+                return;
+            case 0x6864:
+                chp.DateDel = (uint)sprm.Operand;
+                return;
+            case 0x0835:
+                chp.IsBold = sprm.Operand != 0;
+                return;
+            case 0x0836:
+                chp.IsItalic = sprm.Operand != 0;
+                return;
+            case 0x0837:
+                chp.IsStrikeThrough = sprm.Operand != 0;
+                return;
+            case 0x0838:
+                chp.IsOutline = sprm.Operand != 0;
+                return;
+            case 0x0839:
+                chp.IsShadow = sprm.Operand != 0;
+                return;
+            case 0x083A:
+                chp.IsSmallCaps = sprm.Operand != 0;
+                return;
+            case 0x083B:
+                chp.IsAllCaps = sprm.Operand != 0;
+                return;
+            case 0x083C:
+                chp.IsHidden = sprm.Operand != 0;
+                return;
+            case 0x0854:
+                chp.IsImprint = sprm.Operand != 0;
+                return;
+            case 0x0858:
+                chp.IsEmboss = sprm.Operand != 0;
+                return;
+            case 0x085C:
+                chp.IsBoldCs = sprm.Operand != 0;
+                return;
+            case 0x085D:
+                chp.IsItalicCs = sprm.Operand != 0;
+                return;
+            case 0x2A0C:
+                chp.HighlightColor = (byte)sprm.Operand;
+                return;
+            case 0x2A3E:
+                chp.Underline = (byte)sprm.Operand;
+                chp.IsUnderline = chp.Underline != 0;
+                return;
+            case 0x2A42:
+                chp.Color = (byte)sprm.Operand;
+                return;
+            case 0x2A48:
+                chp.IsSuperscript = sprm.Operand == 1;
+                chp.IsSubscript = sprm.Operand == 2;
+                return;
+            case 0x2A53:
+                chp.IsDoubleStrikeThrough = sprm.Operand != 0;
+                return;
+            case 0x6815:
+            case 0x6816:
+            case 0x6817:
+                return;
+            case 0x4845:
+                chp.Position = (int)(short)sprm.Operand;
+                return;
+            case 0x484B:
+                chp.Kerning = (int)(short)sprm.Operand;
+                return;
+            case 0x4852:
+                chp.Scale = (int)sprm.Operand;
+                return;
+            case 0x485F:
+            case 0x486D:
+            case 0x486E:
+            case 0x4873:
+            case 0x4874:
+                chp.LanguageId = (int)(ushort)sprm.Operand;
+                chp.Language = chp.LanguageId;
+                return;
+            case 0x4A43:
+                chp.FontSize = (byte)sprm.Operand;
+                return;
+            case 0x4A4F:
+            case 0x4A50:
+            case 0x4A51:
+                chp.FontIndex = (short)sprm.Operand;
+                return;
+            case 0x4A5E:
+                chp.FontIndexCs = (short)sprm.Operand;
+                return;
+            case 0x4A61:
+                chp.FontSizeCs = (byte)sprm.Operand;
+                return;
+            case 0x6870:
+                chp.RgbColor = sprm.Operand;
+                chp.HasRgbColor = true;
+                return;
         }
 
         // sgc=2 is CHP (Character Properties). Some PAP/TAP might override CHP, so relax strictness
@@ -130,7 +265,7 @@ public class SprmParser
             case 0x3E: chp.Underline = (byte)sprm.Operand; break; // sprmCKul
             case 0x43: chp.FontSize = (byte)sprm.Operand; break; // sprmCHps (half-points)
             case 0x45: chp.Position = (int)(short)sprm.Operand; break; // sprmCHpsPos
-            case 0x4B: chp.Scale = (int)sprm.Operand; break; // sprmCHwcr
+            case 0x4B: chp.Kerning = (int)(short)sprm.Operand; break; // sprmCHpsKern
             case 0x4F: chp.FontIndex = (short)sprm.Operand; break; // sprmCRqftc
             case 0x5C: chp.IsBoldCs = sprm.Operand != 0; break; // sprmCFBoldBi
             case 0x5D: chp.IsItalicCs = sprm.Operand != 0; break; // sprmCFItalicBi
@@ -141,20 +276,13 @@ public class SprmParser
                 break;
             case 0x42: chp.Color = (byte)sprm.Operand; break; // sprmCIco
             case 0x0C: chp.HighlightColor = (byte)sprm.Operand; break; // sprmCHighlight
-            case 0x68: chp.Language = (int)sprm.Operand; break; // sprmCRgLid0
             case 0x5E: chp.FontIndexCs = (short)sprm.Operand; break; // sprmCRqftcBi
             
             // --- Word 6 (8-bit) SPRM Opcodes (Fallbacks) ---
             case 0x02: chp.IsBold = sprm.Operand != 0; break;
             case 0x03: chp.IsItalic = sprm.Operand != 0; break;
-            case 0x04: 
-                if (sprm.Code == 0x4804) chp.AuthorIndexDel = (ushort)sprm.Operand;
-                else chp.IsStrikeThrough = sprm.Operand != 0; 
-                break;
-            case 0x05: 
-                if (sprm.Code == 0x6805) chp.DateDel = (uint)sprm.Operand;
-                else chp.IsUnderline = sprm.Operand != 0; 
-                break;
+            case 0x04: chp.IsStrikeThrough = sprm.Operand != 0; break;
+            case 0x05: chp.IsUnderline = sprm.Operand != 0; break;
             case 0x06: chp.IsOutline = sprm.Operand != 0; break;
             case 0x07: chp.IsSmallCaps = sprm.Operand != 0; break;
             case 0x08: chp.IsAllCaps = sprm.Operand != 0; break;
@@ -177,20 +305,13 @@ public class SprmParser
             case 0x40: chp.IsSuperscript = sprm.Operand == 1; chp.IsSubscript = sprm.Operand == 2; break;
             case 0x41: chp.IsDoubleStrikeThrough = sprm.Operand != 0; break;
             case 0x44: chp.CharacterSpacingAdjustment = (int)sprm.Operand; break;
-
-            // --- Revision Marks (Track Changes) ---
-            case 0x00: chp.IsDeleted = sprm.Operand != 0; break;      // sprmCFRMarkDel
-            // sprmCIBstRMarkDel and sprmCDttmRMarkDel logic merged into 0x04 and 0x05 cases above
-            case 0x54: chp.IsInserted = sprm.Operand != 0; break;     // sprmCFRMark
-            case 0x63: chp.AuthorIndexIns = (ushort)sprm.Operand; break; // sprmCIBstRMark
-            case 0x64: chp.DateIns = (uint)sprm.Operand; break;      // sprmCDttmRMark
         }
     }
 
     private void ApplyPapSprm(Sprm sprm, PapBase pap)
     {
         var sprmCode = sprm.Code & 0x01FF;
-        var sgc = (sprm.Code >> 13) & 0x07;
+        var sgc = (sprm.Code >> 10) & 0x07;
         
         // sgc=1 is PAP (Paragraph Properties), but we also allow specific table-related PAP sprms like sprmPItap (0x6649, sgc=3)
         if (sgc != 1 && sgc != 2 && sprm.Code != 0x6649 && sprm.Code != 0x2416) return;
@@ -246,7 +367,7 @@ public class SprmParser
     private void ApplyTapSprm(Sprm sprm, TapBase tap)
     {
         var sprmCode = sprm.Code & 0x03FF;
-        var sgc = (sprm.Code >> 13) & 0x07;
+        var sgc = (sprm.Code >> 10) & 0x07;
         if (sgc != 3) return;
         switch (sprmCode)
         {
@@ -549,7 +670,7 @@ public class SprmParser
     private void ApplySepSprm(Sprm sprm, SepBase sep)
     {
         // bits 13-15 = sgc. For Section, sgc = 4.
-        var sgc = (sprm.Code >> 13) & 0x07;
+        var sgc = (sprm.Code >> 10) & 0x07;
         if (sgc != 4) return;
 
         var sprmCode = sprm.Code & 0x01FF;
