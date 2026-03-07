@@ -63,10 +63,10 @@ public class StylesWriter
         _writer.WriteAttributeString("w", "cs", wNs, "Times New Roman");
         _writer.WriteEndElement();
         _writer.WriteStartElement("w", "sz", wNs);
-        _writer.WriteAttributeString("w", "val", wNs, "22");
+        _writer.WriteAttributeString("w", "val", wNs, "24");
         _writer.WriteEndElement();
         _writer.WriteStartElement("w", "szCs", wNs);
-        _writer.WriteAttributeString("w", "val", wNs, "22");
+        _writer.WriteAttributeString("w", "val", wNs, "24");
         _writer.WriteEndElement();
         _writer.WriteStartElement("w", "lang", wNs);
         _writer.WriteAttributeString("w", "val", wNs, "en-US");
@@ -513,7 +513,9 @@ public class StylesWriter
         _writer.WriteEndElement();
         
         // Write any custom character styles from document
-        var existingCharStyles = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "DefaultParagraphFont" };
+        WriteHyperlinkCharacterStyle();
+
+        var existingCharStyles = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "DefaultParagraphFont", "Hyperlink" };
         foreach (var style in document.Styles.Styles.Where(s => s.Type == StyleType.Character))
         {
             var id = StyleHelper.GetCharacterStyleId(style.StyleId, style.Name);
@@ -544,6 +546,41 @@ public class StylesWriter
         {
             WriteStyleRunProperties(style.RunProperties);
         }
+
+        _writer.WriteEndElement();
+    }
+
+    private void WriteHyperlinkCharacterStyle()
+    {
+        const string wNs = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+        _writer.WriteStartElement("w", "style", wNs);
+        _writer.WriteAttributeString("w", "type", wNs, "character");
+        _writer.WriteAttributeString("w", "styleId", wNs, "Hyperlink");
+
+        _writer.WriteStartElement("w", "name", wNs);
+        _writer.WriteAttributeString("w", "val", wNs, "Hyperlink");
+        _writer.WriteEndElement();
+
+        _writer.WriteStartElement("w", "basedOn", wNs);
+        _writer.WriteAttributeString("w", "val", wNs, "DefaultParagraphFont");
+        _writer.WriteEndElement();
+
+        _writer.WriteStartElement("w", "uiPriority", wNs);
+        _writer.WriteAttributeString("w", "val", wNs, "99");
+        _writer.WriteEndElement();
+
+        _writer.WriteStartElement("w", "unhideWhenUsed", wNs);
+        _writer.WriteEndElement();
+
+        _writer.WriteStartElement("w", "rPr", wNs);
+        _writer.WriteStartElement("w", "color", wNs);
+        _writer.WriteAttributeString("w", "val", wNs, "0563C1");
+        _writer.WriteAttributeString("w", "themeColor", wNs, "hyperlink");
+        _writer.WriteEndElement();
+        _writer.WriteStartElement("w", "u", wNs);
+        _writer.WriteAttributeString("w", "val", wNs, "single");
+        _writer.WriteEndElement();
+        _writer.WriteEndElement();
 
         _writer.WriteEndElement();
     }

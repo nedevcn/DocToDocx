@@ -1371,7 +1371,15 @@ public partial class DocumentWriter
 
         // write a single run containing the sanitized text
         _writer.WriteStartElement("w", "r", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
-        WriteRunProperties(run);
+        _writer.WriteStartElement("w", "rPr", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+        _writer.WriteStartElement("w", "rStyle", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+        _writer.WriteAttributeString("w", "val", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", "Hyperlink");
+        _writer.WriteEndElement();
+        if (run.Properties != null && RunPropertiesHelper.HasRunProperties(run.Properties))
+        {
+            RunPropertiesHelper.WriteRunPropertiesContent(_writer, run.Properties, includeExtended: true);
+        }
+        _writer.WriteEndElement(); // w:rPr
         _writer.WriteStartElement("w", "t", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
         if (display.StartsWith(' ') || display.EndsWith(' ') || display.Contains("  "))
             _writer.WriteAttributeString("xml", "space", "http://www.w3.org/XML/1998/namespace", "preserve");

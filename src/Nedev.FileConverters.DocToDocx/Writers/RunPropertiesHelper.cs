@@ -65,7 +65,7 @@ internal static class RunPropertiesHelper
         // -> vanish -> outline -> shadow -> emboss -> imprint -> color -> kern
         // -> spacing -> sz -> szCs -> highlight -> u -> vertAlign -> position -> w -> snapToGrid -> lang
         writer.WriteStartElement("w", "rPr", WNs);
-        WriteRunPropertiesCore(writer, props, includeExtended: true);
+        WriteRunPropertiesContent(writer, props, includeExtended: true);
         writer.WriteEndElement(); // w:rPr
     }
 
@@ -78,7 +78,7 @@ internal static class RunPropertiesHelper
         if (!HasRunProperties(props)) return;
 
         writer.WriteStartElement("w", "rPr", WNs);
-        WriteRunPropertiesCore(writer, props, includeExtended: false);
+        WriteRunPropertiesContent(writer, props, includeExtended: false);
         writer.WriteEndElement(); // w:rPr
     }
 
@@ -87,7 +87,7 @@ internal static class RunPropertiesHelper
     /// When includeExtended is true, additional properties (hidden, outline/shadow/emboss/imprint,
     /// theme color, kern, spacing, position, character scale, snap-to-grid, language) are emitted.
     /// </summary>
-    private static void WriteRunPropertiesCore(XmlWriter writer, RunProperties props, bool includeExtended)
+    internal static void WriteRunPropertiesContent(XmlWriter writer, RunProperties props, bool includeExtended)
     {
         // 1. rFonts
         if (!string.IsNullOrEmpty(props.FontName))

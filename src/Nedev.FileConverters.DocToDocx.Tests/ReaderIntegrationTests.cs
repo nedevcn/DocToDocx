@@ -505,9 +505,82 @@ namespace Nedev.FileConverters.DocToDocx.Tests
                 string firstTableXml = documentXml.Substring(tableIndex, tableEndIndex - tableIndex);
                 Assert.Equal(6, Regex.Matches(firstTableXml, "<w:tr(?=[ >])").Count);
                 Assert.Equal(12, Regex.Matches(firstTableXml, "<w:tc(?=[ >])").Count);
-                Assert.Contains("账号：121928482010902", firstTableXml);
-                Assert.Contains("账号：154408672", firstTableXml);
+                Assert.Contains("账号：</w:t></w:r><w:r><w:t xml:space=\"preserve\">121928482010902", firstTableXml);
+                Assert.Contains("账号：</w:t></w:r><w:r><w:t xml:space=\"preserve\">154408672", firstTableXml);
                 Assert.DoesNotContain("HYPERLINK", documentXml);
+            }
+            finally
+            {
+                if (File.Exists(outputPath))
+                    File.Delete(outputPath);
+            }
+        }
+
+        [Fact]
+        public void Convert_ChineseSample_PreservesRecoveredFormattingCues()
+        {
+            string repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+            string samplePath = Path.Combine(repoRoot, "tests", "渠道授权协议v5.doc");
+            Assert.True(File.Exists(samplePath), $"Sample not found: {samplePath}");
+
+            string outputPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".docx");
+
+            try
+            {
+                DocToDocxConverter.Convert(samplePath, outputPath, enableHyperlinks: true);
+
+                using var archive = new System.IO.Compression.ZipArchive(File.OpenRead(outputPath), System.IO.Compression.ZipArchiveMode.Read);
+                string documentXml = new StreamReader(archive.GetEntry("word/document.xml")!.Open()).ReadToEnd();
+                string stylesXml = new StreamReader(archive.GetEntry("word/styles.xml")!.Open()).ReadToEnd();
+
+                Assert.Contains("<w:sz w:val=\"32\" />", documentXml);
+                Assert.Contains("渠道代理协议", documentXml);
+                Assert.Contains("<w:spacing w:before=\"240\" w:after=\"240\" />", documentXml);
+                Assert.Matches("第一条：协议总则</w:t></w:r>", documentXml);
+                Assert.Contains("<w:rPr><w:b /><w:bCs /></w:rPr><w:t xml:space=\"preserve\">甲方：</w:t>", documentXml);
+                Assert.Contains("<w:rStyle w:val=\"Hyperlink\" />", documentXml);
+                Assert.Contains("<w:style w:type=\"character\" w:styleId=\"Hyperlink\"", stylesXml);
+                Assert.Contains("<w:color w:val=\"0563C1\" w:themeColor=\"hyperlink\" />", stylesXml);
+                Assert.DoesNotContain("w:line=\"240\" w:lineRule=\"atLeast\"", documentXml, StringComparison.Ordinal);
+                Assert.DoesNotContain("账号：</w:t></w:r><w:r><w:rPr><w:b /><w:bCs /></w:rPr><w:t xml:space=\"preserve\">154408672</w:t>", documentXml, StringComparison.Ordinal);
+            }
+            finally
+            {
+                if (File.Exists(outputPath))
+                    File.Delete(outputPath);
+            }
+        }
+
+        [Fact]
+        public void Convert_ChineseSample_DoesNotEmitKeepNextForBodyParagraphsAfterFirstTable()
+        {
+            string repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+            string samplePath = Path.Combine(repoRoot, "tests", "渠道授权协议v5.doc");
+            Assert.True(File.Exists(samplePath), $"Sample not found: {samplePath}");
+
+            string outputPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N") + ".docx");
+
+            try
+            {
+                DocToDocxConverter.Convert(samplePath, outputPath, enableHyperlinks: false);
+
+                using var archive = new System.IO.Compression.ZipArchive(File.OpenRead(outputPath), System.IO.Compression.ZipArchiveMode.Read);
+                string documentXml = new StreamReader(archive.GetEntry("word/document.xml")!.Open()).ReadToEnd();
+
+                var headingMatch = Regex.Match(documentXml, "<w:p>[\\s\\S]*?第一条：协议总则[\\s\\S]*?</w:p>");
+                Assert.True(headingMatch.Success, "Expected the first article heading paragraph to be present.");
+                Assert.Contains("<w:keepNext />", headingMatch.Value);
+
+                const string firstBodyText = "1.1甲、乙双方在互惠互利的基础上";
+                int firstBodyTextIndex = documentXml.IndexOf(firstBodyText, StringComparison.Ordinal);
+                Assert.True(firstBodyTextIndex >= 0, "Expected the first body paragraph after the table to be present.");
+
+                int firstBodyStart = documentXml.LastIndexOf("<w:p>", firstBodyTextIndex, StringComparison.Ordinal);
+                int firstBodyEnd = documentXml.IndexOf("</w:p>", firstBodyTextIndex, StringComparison.Ordinal);
+                Assert.True(firstBodyStart >= 0 && firstBodyEnd > firstBodyStart, "Expected to isolate the first body paragraph XML.");
+
+                string firstBodyParagraphXml = documentXml.Substring(firstBodyStart, firstBodyEnd + "</w:p>".Length - firstBodyStart);
+                Assert.DoesNotContain("<w:keepNext />", firstBodyParagraphXml, StringComparison.Ordinal);
             }
             finally
             {

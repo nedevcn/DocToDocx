@@ -199,8 +199,8 @@ public class SprmParser
         {
             // --- Word 97+ (16-bit) SPRM Opcodes ---
             case 0x00: pap.StyleId = (ushort)sprm.Operand; break; // sprmPIstd
-            case 0x03: pap.KeepWithNext = sprm.Operand != 0; break; // sprmPFKeep
-            case 0x04: pap.KeepTogether = sprm.Operand != 0; break; // sprmPFKeepFollow
+                case 0x03: pap.KeepTogether = sprm.Operand != 0; break; // sprmPFKeep
+                case 0x04: pap.KeepWithNext = sprm.Operand != 0; break; // sprmPFKeepFollow
             case 0x05: pap.PageBreakBefore = sprm.Operand != 0; break; // sprmPPageBreakBefore
             case 0x0B: pap.ListFormatId = (int)(short)sprm.Operand; break; // sprmPIlfo
             case 0x0A: pap.ListLevel = (byte)sprm.Operand; break; // sprmPIlvl
@@ -640,7 +640,7 @@ public class PapBase
     public int IndentRight { get; set; }
     public int IndentFirstLine { get; set; }
     public int LineSpacing { get; set; } = 240;
-    public int LineSpacingMultiple { get; set; }
+    public int LineSpacingMultiple { get; set; } = 1;
     public int SpaceBefore { get; set; }
     public int SpaceAfter { get; set; }
     // Phase 3 additions

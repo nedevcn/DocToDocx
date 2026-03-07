@@ -28,6 +28,12 @@ internal class TableParseContext
 /// </summary>
 public class TableReader
 {
+    private sealed class RecoveredCell
+    {
+        public string Text { get; init; } = string.Empty;
+        public ParagraphModel? SourceParagraph { get; init; }
+    }
+
     private readonly BinaryReader _wordDocReader;
     private readonly BinaryReader _tableReader;
     private readonly FibReader _fib;
@@ -324,7 +330,33 @@ public class TableReader
                 title.Properties ??= new ParagraphProperties();
                 title.Properties.Alignment = ParagraphAlignment.Center;
                 title.Properties.KeepWithNext = true;
+                title.Properties.SpaceAfter = Math.Max(title.Properties.SpaceAfter, 120);
+
+                foreach (var run in title.Runs)
+                {
+                    run.Properties ??= new RunProperties();
+                    if (!run.Properties.IsBold)
+                    {
+                        run.Properties.IsBold = true;
+                        run.Properties.IsBoldCs = true;
+                    }
+
+                    if (run.Properties.FontSize <= 24)
+                    {
+                        run.Properties.FontSize = 32;
+                    }
+
+                    if (run.Properties.FontSizeCs <= 24)
+                    {
+                        run.Properties.FontSizeCs = 32;
+                    }
+                }
             }
+        }
+
+        foreach (var paragraph in document.Paragraphs)
+        {
+            ApplyRecoveredParagraphFormatting(paragraph, paragraph.Text);
         }
     }
 
@@ -369,7 +401,14 @@ public class TableReader
         {
             var rowCells = extraCells.Skip(index).Take(table.ColumnCount).ToList();
             NormalizeMetadataPairOrder(rowCells);
-            table.Rows.Add(BuildRecoveredRow(rowCells, table.Rows.Count, table.ColumnCount, paragraphsToRemove));
+            var recoveredCells = rowCells
+                .Select((text, cellIndex) => new RecoveredCell
+                {
+                    Text = text,
+                    SourceParagraph = paragraphsToRemove.ElementAtOrDefault(index + cellIndex)
+                })
+                .ToList();
+            table.Rows.Add(BuildRecoveredRow(recoveredCells, table.Rows.Count, table.ColumnCount));
         }
 
         foreach (var paragraph in paragraphsToRemove)
@@ -444,12 +483,14 @@ public class TableReader
 
         var trailingParagraphs = new List<ParagraphModel>();
         int rowIndex = 0;
-        var pendingCells = new List<string>();
+        var pendingCells = new List<RecoveredCell>();
 
         for (int paragraphIndex = 0; paragraphIndex < group.Count; paragraphIndex++)
         {
             var paragraph = group[paragraphIndex];
-            var rowCandidates = GetRowCandidates(paragraph).ToList();
+            var rowCandidates = GetRowCandidates(paragraph)
+                .Select(cells => cells.Select(text => new RecoveredCell { Text = text, SourceParagraph = paragraph }).ToList())
+                .ToList();
             if (rowCandidates.Count == 0)
                 continue;
 
@@ -473,7 +514,7 @@ public class TableReader
                     pendingCells.Add(cell);
                     if (pendingCells.Count == columnCount)
                     {
-                        table.Rows.Add(BuildRecoveredRow(pendingCells, rowIndex++, columnCount, group));
+                        table.Rows.Add(BuildRecoveredRow(pendingCells, rowIndex++, columnCount));
                         pendingCells.Clear();
                     }
                 }
@@ -482,13 +523,13 @@ public class TableReader
 
         if (pendingCells.Count == columnCount)
         {
-            table.Rows.Add(BuildRecoveredRow(pendingCells, rowIndex, columnCount, group));
+            table.Rows.Add(BuildRecoveredRow(pendingCells, rowIndex, columnCount));
             pendingCells.Clear();
         }
 
         if (pendingCells.Count > 0)
         {
-            trailingParagraphs.AddRange(BuildTrailingParagraphs(string.Join("\r", pendingCells), group.LastOrDefault()));
+            trailingParagraphs.AddRange(BuildTrailingParagraphs(string.Join("\r", pendingCells.Select(cell => cell.Text)), pendingCells.LastOrDefault()?.SourceParagraph ?? group.LastOrDefault()));
         }
 
         table.RowCount = table.Rows.Count;
@@ -498,31 +539,33 @@ public class TableReader
         return (table, trailingParagraphs);
     }
 
-    private static TableRowModel BuildRecoveredRow(List<string> cellTexts, int rowIndex, int columnCount, List<ParagraphModel> sourceParagraphs)
+    private static TableRowModel BuildRecoveredRow(List<RecoveredCell> cellTexts, int rowIndex, int columnCount)
     {
         var row = new TableRowModel { Index = rowIndex };
         int cellWidth = 9360 / Math.Max(1, columnCount);
-        var sourceProps = sourceParagraphs.FirstOrDefault()?.Properties;
-        var sourceRunProps = sourceParagraphs.FirstOrDefault(p => p.Runs.Count > 0)?.Runs[0].Properties;
 
         for (int columnIndex = 0; columnIndex < columnCount && columnIndex < cellTexts.Count; columnIndex++)
         {
-            string cellText = cellTexts[columnIndex].Trim();
+            var recoveredCell = cellTexts[columnIndex];
+            string cellText = recoveredCell.Text.Trim();
+            var sourceParagraph = recoveredCell.SourceParagraph;
             var paragraph = new ParagraphModel
             {
                 Type = ParagraphType.Normal,
-                Properties = sourceProps,
+                Properties = CloneParagraphProperties(sourceParagraph?.Properties),
                 Runs = new List<RunModel>()
             };
+            if (paragraph.Properties != null)
+            {
+                paragraph.Properties.KeepWithNext = false;
+            }
 
             if (!string.IsNullOrEmpty(cellText))
             {
-                paragraph.Runs.Add(new RunModel
-                {
-                    Text = cellText,
-                    Properties = sourceRunProps
-                });
+                AddRecoveredRuns(paragraph, cellText, sourceParagraph?.Runs.FirstOrDefault()?.Properties);
             }
+
+            ApplyRecoveredParagraphFormatting(paragraph, cellText);
 
             row.Cells.Add(new TableCellModel
             {
@@ -596,7 +639,7 @@ public class TableReader
         return separatorIndex > 0 ? text[..separatorIndex] : text;
     }
 
-    private static string SplitTrailingText(ref List<string> cells, int columnCount)
+    private static string SplitTrailingText(ref List<RecoveredCell> cells, int columnCount)
     {
         if (cells.Count == 0)
             return string.Empty;
@@ -605,13 +648,13 @@ public class TableReader
         {
             var trailingOverflow = cells.Skip(columnCount).ToList();
             cells = cells.Take(columnCount).ToList();
-            return string.Join("\r", trailingOverflow);
+            return string.Join("\r", trailingOverflow.Select(cell => cell.Text));
         }
 
         if (cells.Count < columnCount)
             return string.Empty;
 
-        var lastCell = cells[columnCount - 1];
+        var lastCell = cells[columnCount - 1].Text;
         var match = Regex.Match(lastCell, "(?<cell>.*?)(?<trail>(第[一二三四五六七八九十百0-9]+条[：:].*|[0-9]+\\.[0-9].*))$");
         if (!match.Success)
             return string.Empty;
@@ -621,7 +664,11 @@ public class TableReader
         if (string.IsNullOrWhiteSpace(cellText) || string.IsNullOrWhiteSpace(trailingText))
             return string.Empty;
 
-        cells[columnCount - 1] = cellText;
+        cells[columnCount - 1] = new RecoveredCell
+        {
+            Text = cellText,
+            SourceParagraph = cells[columnCount - 1].SourceParagraph
+        };
         return trailingText;
     }
 
@@ -640,18 +687,199 @@ public class TableReader
             {
                 Type = ParagraphType.Normal,
                 RawText = part,
-                Properties = sourceParagraph?.Properties,
+                Properties = CloneParagraphProperties(sourceParagraph?.Properties),
                 Runs = new List<RunModel>()
             };
-            paragraph.Runs.Add(new RunModel
+            if (paragraph.Properties != null)
             {
-                Text = part,
-                Properties = sourceParagraph?.Runs.FirstOrDefault()?.Properties
-            });
+                paragraph.Properties.KeepWithNext = false;
+            }
+            AddRecoveredRuns(paragraph, part, sourceParagraph?.Runs.FirstOrDefault()?.Properties);
+            ApplyRecoveredParagraphFormatting(paragraph, part);
             paragraphs.Add(paragraph);
         }
 
         return paragraphs;
+    }
+
+    private static void AddRecoveredRuns(ParagraphModel paragraph, string text, RunProperties? sourceRunProps)
+    {
+        var baseRunProps = CloneRunProperties(sourceRunProps);
+        int separatorIndex = text.IndexOfAny(new[] { '：', ':' });
+        bool isMetadataCell = separatorIndex > 0 && separatorIndex < text.Length && !LooksLikeSectionHeading(text);
+
+        if (isMetadataCell)
+        {
+            var labelProps = CloneRunProperties(baseRunProps) ?? new RunProperties();
+            labelProps.IsBold = true;
+            labelProps.IsBoldCs = true;
+
+            paragraph.Runs.Add(new RunModel
+            {
+                Text = text[..(separatorIndex + 1)],
+                Properties = labelProps
+            });
+
+            var valueText = text[(separatorIndex + 1)..];
+            if (!string.IsNullOrEmpty(valueText))
+            {
+                RunProperties? valueProps = null;
+                if (baseRunProps != null)
+                {
+                    valueProps = new RunProperties
+                    {
+                        FontIndex = baseRunProps.FontIndex,
+                        FontName = baseRunProps.FontName,
+                        FontSize = baseRunProps.FontSize,
+                        FontSizeCs = baseRunProps.FontSizeCs,
+                        Color = baseRunProps.Color,
+                        BgColor = baseRunProps.BgColor,
+                        Language = baseRunProps.Language,
+                        LanguageAsia = baseRunProps.LanguageAsia,
+                        LanguageCs = baseRunProps.LanguageCs,
+                        HighlightColor = baseRunProps.HighlightColor,
+                        RgbColor = baseRunProps.RgbColor,
+                        HasRgbColor = baseRunProps.HasRgbColor,
+                        CharacterSpacingAdjustment = baseRunProps.CharacterSpacingAdjustment,
+                        CharacterScale = baseRunProps.CharacterScale,
+                        SnapToGrid = baseRunProps.SnapToGrid
+                    };
+                }
+
+                if (valueProps != null)
+                {
+                    valueProps.IsBold = false;
+                    valueProps.IsBoldCs = false;
+                }
+
+                paragraph.Runs.Add(new RunModel
+                {
+                    Text = valueText,
+                    Properties = valueProps
+                });
+            }
+
+            return;
+        }
+
+        paragraph.Runs.Add(new RunModel
+        {
+            Text = text,
+            Properties = baseRunProps
+        });
+    }
+
+    private static void ApplyRecoveredParagraphFormatting(ParagraphModel paragraph, string text)
+    {
+        if (!LooksLikeArticleHeading(text))
+            return;
+
+        paragraph.Properties ??= new ParagraphProperties();
+        paragraph.Properties.KeepWithNext = true;
+        paragraph.Properties.SpaceBefore = Math.Max(paragraph.Properties.SpaceBefore, 240);
+        paragraph.Properties.SpaceAfter = Math.Max(paragraph.Properties.SpaceAfter, 240);
+
+        foreach (var run in paragraph.Runs)
+        {
+            run.Properties ??= new RunProperties();
+            run.Properties.IsBold = true;
+            run.Properties.IsBoldCs = true;
+        }
+    }
+
+    private static bool LooksLikeArticleHeading(string text)
+    {
+        return Regex.IsMatch(text, "^第[一二三四五六七八九十百0-9]+[条章节][：:、].*");
+    }
+
+    private static ParagraphProperties? CloneParagraphProperties(ParagraphProperties? source)
+    {
+        if (source == null)
+            return null;
+
+        return new ParagraphProperties
+        {
+            StyleIndex = source.StyleIndex,
+            Alignment = source.Alignment,
+            IndentLeft = source.IndentLeft,
+            IndentRight = source.IndentRight,
+            IndentFirstLine = source.IndentFirstLine,
+            SpaceBefore = source.SpaceBefore,
+            SpaceAfter = source.SpaceAfter,
+            LineSpacing = source.LineSpacing,
+            LineSpacingMultiple = source.LineSpacingMultiple,
+            KeepWithNext = source.KeepWithNext,
+            KeepTogether = source.KeepTogether,
+            PageBreakBefore = source.PageBreakBefore,
+            BorderTop = source.BorderTop,
+            BorderBottom = source.BorderBottom,
+            BorderLeft = source.BorderLeft,
+            BorderRight = source.BorderRight,
+            Shading = source.Shading,
+            ListFormatId = source.ListFormatId,
+            ListLevel = source.ListLevel,
+            OutlineLevel = source.OutlineLevel,
+            NumberFormat = source.NumberFormat,
+            NumberText = source.NumberText,
+            SnapToGrid = source.SnapToGrid,
+            AutoSpaceDe = source.AutoSpaceDe,
+            AutoSpaceDn = source.AutoSpaceDn,
+            WordWrap = source.WordWrap,
+            Kinsoku = source.Kinsoku,
+            OverflowPunct = source.OverflowPunct,
+            TopLinePunct = source.TopLinePunct
+        };
+    }
+
+    private static RunProperties? CloneRunProperties(RunProperties? source)
+    {
+        if (source == null)
+            return null;
+
+        return new RunProperties
+        {
+            FontIndex = source.FontIndex,
+            FontName = source.FontName,
+            FontSize = source.FontSize,
+            FontSizeCs = source.FontSizeCs,
+            IsBold = source.IsBold,
+            IsBoldCs = source.IsBoldCs,
+            IsItalic = source.IsItalic,
+            IsItalicCs = source.IsItalicCs,
+            IsUnderline = source.IsUnderline,
+            UnderlineType = source.UnderlineType,
+            IsStrikeThrough = source.IsStrikeThrough,
+            IsDoubleStrikeThrough = source.IsDoubleStrikeThrough,
+            IsSmallCaps = source.IsSmallCaps,
+            IsAllCaps = source.IsAllCaps,
+            IsHidden = source.IsHidden,
+            IsSuperscript = source.IsSuperscript,
+            IsSubscript = source.IsSubscript,
+            Color = source.Color,
+            BgColor = source.BgColor,
+            CharacterSpacingAdjustment = source.CharacterSpacingAdjustment,
+            Language = source.Language,
+            LanguageAsia = source.LanguageAsia,
+            LanguageCs = source.LanguageCs,
+            HighlightColor = source.HighlightColor,
+            RgbColor = source.RgbColor,
+            HasRgbColor = source.HasRgbColor,
+            IsOutline = source.IsOutline,
+            IsShadow = source.IsShadow,
+            IsEmboss = source.IsEmboss,
+            IsImprint = source.IsImprint,
+            Kerning = source.Kerning,
+            Position = source.Position,
+            CharacterScale = source.CharacterScale,
+            SnapToGrid = source.SnapToGrid,
+            RubyText = source.RubyText,
+            IsDeleted = source.IsDeleted,
+            IsInserted = source.IsInserted,
+            AuthorIndexDel = source.AuthorIndexDel,
+            AuthorIndexIns = source.AuthorIndexIns,
+            DateDel = source.DateDel,
+            DateIns = source.DateIns
+        };
     }
 
     private void FlushCurrentCell(TableContext ctx)
