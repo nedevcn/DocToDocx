@@ -734,6 +734,9 @@ public class DocReader : IDisposable
         string? activeEmbedProgId = null;
         string? activeOleObjectId = null;
         HyperlinkModel? activeHyperlink = null;
+        var activeFieldCode = new StringBuilder();
+        bool collectingFieldCode = false;
+        bool insideFieldResult = false;
 
         var runStart = 0;
         ChpBase? currentChp = null;
@@ -789,34 +792,29 @@ public class DocReader : IDisposable
 
                     run.FcPic = currentChp?.FcPic ?? 0;
 
-                    // Look ahead in paraText for field code if this run has field start
-                    if (runText.Contains('\x13'))
+                    var completedFieldCode = TryAdvanceFieldState(runText, activeFieldCode, ref collectingFieldCode, ref insideFieldResult);
+                    if (!string.IsNullOrEmpty(completedFieldCode))
                     {
                         run.IsField = true;
-                        var fieldStartPara = paraText.IndexOf('\x13', runStart);
-                        var fieldSepPara = paraText.IndexOf('\x14', fieldStartPara);
-                        if (fieldStartPara >= 0 && fieldSepPara > fieldStartPara)
+                        run.FieldCode = completedFieldCode;
+
+                        if (_fieldReader != null)
                         {
-                            run.FieldCode = paraText.Substring(fieldStartPara + 1, fieldSepPara - fieldStartPara - 1).Trim();
-                            
-                            if (_fieldReader != null)
+                            var parsedField = _fieldReader.ParseField(run.FieldCode);
+                            if (parsedField != null && parsedField.Type == FieldType.Embed)
                             {
-                                var parsedField = _fieldReader.ParseField(run.FieldCode);
-                                if (parsedField != null && parsedField.Type == FieldType.Embed)
-                                {
-                                    activeEmbedProgId = parsedField.Arguments;
-                                }
-                                else if (parsedField != null && parsedField.Type == FieldType.Hyperlink && _hyperlinkReader != null)
-                                {
-                                    activeHyperlink = _hyperlinkReader.ParseHyperlink(run.FieldCode)
-                                                    ?? _hyperlinkReader.CreateHyperlink(parsedField.Arguments);
-                                }
+                                activeEmbedProgId = parsedField.Arguments;
+                            }
+                            else if (parsedField != null && parsedField.Type == FieldType.Hyperlink && _hyperlinkReader != null)
+                            {
+                                activeHyperlink = _hyperlinkReader.ParseHyperlink(run.FieldCode)
+                                                ?? _hyperlinkReader.CreateHyperlink(parsedField.Arguments);
                             }
                         }
                     }
 
                     // Apply active hyperlink state mapped across all split runs within the boundaries
-                    if (activeHyperlink != null && (!string.IsNullOrEmpty(activeHyperlink.Url) || !string.IsNullOrEmpty(activeHyperlink.Bookmark)))
+                    if (insideFieldResult && activeHyperlink != null && (!string.IsNullOrEmpty(cleanText) || isPicture) && (!string.IsNullOrEmpty(activeHyperlink.Url) || !string.IsNullOrEmpty(activeHyperlink.Bookmark)))
                     {
                         run.IsHyperlink = true;
                         run.HyperlinkUrl = activeHyperlink.Url;
@@ -875,6 +873,9 @@ public class DocReader : IDisposable
                     if (runText.Contains('\x15'))
                     {
                         // Field end clears persistent modes
+                        activeFieldCode.Clear();
+                        collectingFieldCode = false;
+                        insideFieldResult = false;
                         activeEmbedProgId = null;
                         activeOleObjectId = null;
                         activeHyperlink = null;
@@ -890,6 +891,75 @@ public class DocReader : IDisposable
         }
 
         return runs;
+    }
+
+    private static string? TryAdvanceFieldState(string runText, StringBuilder activeFieldCode, ref bool collectingFieldCode, ref bool insideFieldResult)
+    {
+        string? completedFieldCode = null;
+        int index = 0;
+
+        while (index < runText.Length)
+        {
+            if (!collectingFieldCode)
+            {
+                var fieldStartIndex = runText.IndexOf(FieldReader.FieldStartChar, index);
+                if (fieldStartIndex < 0)
+                    break;
+
+                activeFieldCode.Clear();
+                collectingFieldCode = true;
+                insideFieldResult = false;
+                index = fieldStartIndex + 1;
+                continue;
+            }
+
+            int separatorIndex = runText.IndexOf(FieldReader.FieldSeparatorChar, index);
+            int fieldEndIndex = runText.IndexOf(FieldReader.FieldEndChar, index);
+
+            int stopIndex;
+            bool foundSeparator;
+            if (separatorIndex >= 0 && (fieldEndIndex < 0 || separatorIndex < fieldEndIndex))
+            {
+                stopIndex = separatorIndex;
+                foundSeparator = true;
+            }
+            else if (fieldEndIndex >= 0)
+            {
+                stopIndex = fieldEndIndex;
+                foundSeparator = false;
+            }
+            else
+            {
+                stopIndex = runText.Length;
+                foundSeparator = false;
+            }
+
+            if (stopIndex > index)
+                activeFieldCode.Append(runText, index, stopIndex - index);
+
+            if (foundSeparator)
+            {
+                completedFieldCode = activeFieldCode.ToString().Trim();
+                activeFieldCode.Clear();
+                collectingFieldCode = false;
+                insideFieldResult = true;
+                index = stopIndex + 1;
+                continue;
+            }
+
+            if (fieldEndIndex >= 0)
+            {
+                activeFieldCode.Clear();
+                collectingFieldCode = false;
+                insideFieldResult = false;
+                index = fieldEndIndex + 1;
+                continue;
+            }
+
+            break;
+        }
+
+        return completedFieldCode;
     }
 
     /// <summary>
