@@ -10,6 +10,37 @@ namespace Nedev.FileConverters.DocToDocx.Readers;
 /// </summary>
 public class FibReader
 {
+    private const int IndexStshf = 1;
+    private const int IndexPlcffndRef = 2;
+    private const int IndexPlcffndTxt = 3;
+    private const int IndexPlcfandRef = 4;
+    private const int IndexPlcfandTxt = 5;
+    private const int IndexPlcfSed = 6;
+    private const int IndexPlcfHdd = 11;
+    private const int IndexPlcfBteChpx = 12;
+    private const int IndexPlcfBtePapx = 13;
+    private const int IndexSttbfFfn = 15;
+    private const int IndexPlcfFldMom = 16;
+    private const int IndexPlcfFldHdr = 17;
+    private const int IndexPlcfFldFtn = 18;
+    private const int IndexPlcfFldAtn = 19;
+    private const int IndexSttbfBkmk = 21;
+    private const int IndexPlcfBkf = 22;
+    private const int IndexPlcfBkl = 23;
+    private const int IndexDop = 31;
+    private const int IndexClx = 33;
+    private const int IndexPlcSpaMom = 40;
+    private const int IndexPlcfAtnbkf = 42;
+    private const int IndexPlcfAtnbkl = 43;
+    private const int IndexPlcfendRef = 46;
+    private const int IndexPlcfendTxt = 47;
+    private const int IndexPlcfFldEdn = 48;
+    private const int IndexSttbfRgtlv = 51;
+    private const int IndexTxbxText = 56;
+    private const int IndexPlcfFldTxbx = 57;
+    private const int IndexPlcfLst = 73;
+    private const int IndexPlfLfo = 74;
+
     private readonly BinaryReader _reader;
 
     // ── FibBase fields ──────────────────────────────────────────────
@@ -216,53 +247,57 @@ public class FibReader
             _rgFcLcb.Add((fc, lcb));
         }
 
-        (FcStshf, LcbStshf)             = GetFcLcb(0);
-        (FcPlcfFldMom, LcbPlcfFldMom)   = GetFcLcb(4);
-        (FcPlcffndRef, LcbPlcffndRef)   = GetFcLcb(8);
-        (FcPlcffndTxt, LcbPlcffndTxt)   = GetFcLcb(9);
-        (FcPlcfandRef, LcbPlcfandRef)   = GetFcLcb(10);
-        (FcPlcfandTxt, LcbPlcfandTxt)   = GetFcLcb(11);
-        
-        (FcPlcfBteChpx, LcbPlcfBteChpx) = GetFcLcb(12);
-        (FcPlcfBtePapx, LcbPlcfBtePapx) = GetFcLcb(13);
+        (FcStshf, LcbStshf)             = GetFcLcb(IndexStshf);
+        (FcPlcffndRef, LcbPlcffndRef)   = GetFcLcb(IndexPlcffndRef);
+        (FcPlcffndTxt, LcbPlcffndTxt)   = GetFcLcb(IndexPlcffndTxt);
+        (FcPlcfandRef, LcbPlcfandRef)   = GetFcLcb(IndexPlcfandRef);
+        (FcPlcfandTxt, LcbPlcfandTxt)   = GetFcLcb(IndexPlcfandTxt);
+        (FcPlcfSed, LcbPlcfSed)         = GetFcLcb(IndexPlcfSed);
+        (FcPlcfHdd, LcbPlcfHdd)         = GetFcLcb(IndexPlcfHdd);
+        (FcPlcfBteChpx, LcbPlcfBteChpx) = GetFcLcb(IndexPlcfBteChpx);
+        (FcPlcfBtePapx, LcbPlcfBtePapx) = GetFcLcb(IndexPlcfBtePapx);
+        (FcSttbfFfn, LcbSttbfFfn)       = GetFcLcb(IndexSttbfFfn);
+        (FcPlcfFldMom, LcbPlcfFldMom)   = GetFcLcb(IndexPlcfFldMom);
+        (FcPlcfFldHdr, LcbPlcfFldHdr)   = GetFcLcb(IndexPlcfFldHdr);
+        (FcPlcfFldFtn, LcbPlcfFldFtn)   = GetFcLcb(IndexPlcfFldFtn);
+        (FcPlcfFldAtn, LcbPlcfFldAtn)   = GetFcLcb(IndexPlcfFldAtn);
+        (FcSttbfBkmk, LcbSttbfBkmk)     = GetFcLcb(IndexSttbfBkmk);
+        (FcPlcfBkf, LcbPlcfBkf)         = GetFcLcb(IndexPlcfBkf);
+        (FcPlcfBkl, LcbPlcfBkl)         = GetFcLcb(IndexPlcfBkl);
+        (FcDop, LcbDop)                 = GetFcLcb(IndexDop);
+        (FcClx, LcbClx)                 = GetFcLcb(IndexClx);
+        (FcPlcSpaMom, LcbPlcSpaMom)     = GetFcLcb(IndexPlcSpaMom);
+        (FcPlcfAtnbkf, LcbPlcfAtnbkf)   = GetFcLcb(IndexPlcfAtnbkf);
+        (FcPlcfAtnbkl, LcbPlcfAtnbkl)   = GetFcLcb(IndexPlcfAtnbkl);
+        (FcPlcfendRef, LcbPlcfendRef)   = GetFcLcb(IndexPlcfendRef);
+        (FcPlcfendTxt, LcbPlcfendTxt)   = GetFcLcb(IndexPlcfendTxt);
+        (FcPlcfFldEdn, LcbPlcfFldEdn)   = GetFcLcb(IndexPlcfFldEdn);
+        (FcSttbfRgtlv, LcbSttbfRgtlv)   = GetFcLcb(IndexSttbfRgtlv);
+        (FcTxbx, LcbTxbx)               = GetFcLcb(IndexTxbxText);
+        (FcPlcfFldTxbx, LcbPlcfFldTxbx) = GetFcLcb(IndexPlcfFldTxbx);
 
-        (FcPlcfBkf, LcbPlcfBkf)         = GetFcLcb(15);
-        (FcPlcfBkl, LcbPlcfBkl)         = GetFcLcb(16);
-        (FcSttbfAtnMod, LcbSttbfAtnMod) = GetFcLcb(17);
-        (FcPlcfAtnbkf, LcbPlcfAtnbkf)   = GetFcLcb(18);
-        (FcPlcfAtnbkl, LcbPlcfAtnbkl)   = GetFcLcb(19);
-        (FcPlcfFldAtn, LcbPlcfFldAtn)   = GetFcLcb(20);
-        (FcPlcfFldEdn, LcbPlcfFldEdn)   = GetFcLcb(21);
-        (FcPlcfFldFtn, LcbPlcfFldFtn)   = GetFcLcb(22);
-        (FcPlcfFldHdr, LcbPlcfFldHdr)   = GetFcLcb(23);
-        (FcPlcfFldTxbx, LcbPlcfFldTxbx) = GetFcLcb(24);
-        
-        (FcSttbfBkmk, LcbSttbfBkmk)     = GetFcLcb(26);
-        (FcPlcfHdd, LcbPlcfHdd)         = GetFcLcb(31);
-        (FcClx, LcbClx)                 = GetFcLcb(34);
-        (FcPlcSpaMom, LcbPlcSpaMom)     = GetFcLcb(37);
-        (FcPlcfendRef, LcbPlcfendRef)   = GetFcLcb(39);
-        (FcPlcfendTxt, LcbPlcfendTxt)   = GetFcLcb(40);
-        (FcFtn, LcbFtn)                 = GetFcLcb(41);
-        (FcEnd, LcbEnd)                 = GetFcLcb(42);
-        (FcAnot, LcbAnot)               = GetFcLcb(43);
-        (FcTxbx, LcbTxbx)               = GetFcLcb(44);
-        (FcGlsy, LcbGlsy)               = GetFcLcb(45);
-        (FcData, LcbData)               = GetFcLcb(46);
-        (FcSttbfFfn, LcbSttbfFfn)       = GetFcLcb(IndexSttbfFfn());
-        (FcDop, LcbDop)                 = GetFcLcb(IndexDop());
-        (FcSttbfRgtlv, LcbSttbfRgtlv)   = GetFcLcb(47);
-        (FcPlcfSed, LcbPlcfSed)         = GetFcLcb(33);
+        (FcFtn, LcbFtn)                 = (FcPlcffndTxt, LcbPlcffndTxt);
+        (FcEnd, LcbEnd)                 = (FcPlcfendTxt, LcbPlcfendTxt);
+        (FcAnot, LcbAnot)               = (FcPlcfandTxt, LcbPlcfandTxt);
 
-        if (cbRgFcLcb > 89)
+        if (cbRgFcLcb > IndexPlcfLst)
         {
-            (FcPlcfLst, LcbPlcfLst) = GetFcLcb(88);
-            (FcPlfLfo, LcbPlfLfo)   = GetFcLcb(89);
+            (FcPlcfLst, LcbPlcfLst) = GetFcLcb(IndexPlcfLst);
+        }
+
+        if (cbRgFcLcb > IndexPlfLfo)
+        {
+            (FcPlfLfo, LcbPlfLfo) = GetFcLcb(IndexPlfLfo);
         }
     }
 
-    private int IndexDop() => NFib >= 0x00D9 ? 31 : 19; // Simplified
-    private int IndexSttbfFfn() => 21; // Standard for 97+
+    public void SetDerivedFootnoteCharacterCount(int footnoteCharacterCount)
+    {
+        if (footnoteCharacterCount > 0 && CcpFtn == 0)
+        {
+            CcpFtn = footnoteCharacterCount;
+        }
+    }
 
     public (uint fc, uint lcb) GetFcLcb(int index)
     {

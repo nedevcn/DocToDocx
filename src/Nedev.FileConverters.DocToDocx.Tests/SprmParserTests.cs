@@ -217,8 +217,8 @@ public class SprmParserTests
         foreach (var line in fkpDetails)
             details.AppendLine(line);
 
-        Assert.Null(piece);
-        Assert.Null(pieceChp);
+        Assert.True(piece == null || piece.Prm == 0, details.ToString());
+        Assert.True(pieceChp == null || pieceChp.Scale == 100, details.ToString());
         Assert.NotNull(directChp);
         Assert.False(directChp!.IsBold, details.ToString());
         Assert.False(directChp.IsItalic, details.ToString());

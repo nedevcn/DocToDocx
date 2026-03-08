@@ -1,3 +1,4 @@
+using System.Buffers.Binary;
 using System.Text;
 using Nedev.FileConverters.DocToDocx.Models;
 using Nedev.FileConverters.DocToDocx.Utils;
@@ -57,26 +58,23 @@ public class StyleReader
             _tableReader.BaseStream.Seek(_fib.FcSttbfFfn, SeekOrigin.Begin);
             var endPos = _fib.FcSttbfFfn + _fib.LcbSttbfFfn;
 
-            // Read SttbfFfn header
-            var fExtend = _tableReader.ReadUInt16();
-            bool isExtended = (fExtend == 0xFFFF);
-
+            var header = _tableReader.ReadUInt16();
             int cData;
-            if (isExtended)
+            if (header == 0xFFFF)
             {
                 cData = _tableReader.ReadUInt16();
-                var cbExtra = _tableReader.ReadUInt16(); // should be 0
+                _tableReader.ReadUInt16();
             }
             else
             {
-                // Non-extended: fExtend is actually cData
-                cData = fExtend;
+                cData = header;
+                _tableReader.ReadUInt16();
             }
 
             // Read each font entry (FFN structure)
             for (int i = 0; i < cData && _tableReader.BaseStream.Position < endPos; i++)
             {
-                var font = ReadFfn(i, isExtended);
+                var font = ReadFfn(i);
                 if (font != null)
                     Styles.Fonts.Add(font);
             }
@@ -102,94 +100,76 @@ public class StyleReader
     ///   ixchSzAlt  (1 byte)  — index into name for alternate name
     ///   panose     (10 bytes)— PANOSE classification
     ///   fs         (24 bytes)— FONTSIGNATURE
-    ///   xszFfn     (variable)— font name (null-terminated, Unicode if extended)
+    ///   xszFfn     (variable)— UTF-16 font names, primary followed by alternate
     /// </summary>
-    private FontDefinition? ReadFfn(int index, bool isExtended)
+    private FontDefinition? ReadFfn(int index)
     {
-        var startPos = _tableReader.BaseStream.Position;
-
-        // For extended STTB, each entry has a 2-byte length prefix
-        int entryLength;
-        if (isExtended)
+        var cbFfnM1 = _tableReader.ReadByte();
+        var entryLength = cbFfnM1 + 1;
+        if (entryLength < 40)
         {
-            entryLength = _tableReader.ReadUInt16(); // byte count of this entry
-            if (entryLength == 0) return null;
-        }
-        else
-        {
-            var cbFfnM1 = _tableReader.ReadByte();
-            entryLength = cbFfnM1; // total length minus the cbFfnM1 byte itself
-        }
-
-        if (entryLength < 6)
-        {
-            // Skip malformed entry
-            _tableReader.BaseStream.Seek(startPos + (isExtended ? 2 : 1) + entryLength, SeekOrigin.Begin);
+            _tableReader.BaseStream.Seek(_tableReader.BaseStream.Position + cbFfnM1, SeekOrigin.Begin);
             return null;
         }
 
-        var entryStartPos = _tableReader.BaseStream.Position;
+        var entryData = new byte[entryLength];
+        entryData[0] = cbFfnM1;
+        var remaining = _tableReader.Read(entryData, 1, cbFfnM1);
+        if (remaining != cbFfnM1)
+            return null;
 
-        // Byte 0: packed bits
-        var packed = _tableReader.ReadByte();
+        var packed = entryData[1];
         var prq = packed & 0x03;
         var fTrueType = (packed & 0x04) != 0;
         var ff = (packed >> 4) & 0x07;
-
-        // Byte 1: wWeight low byte
-        var wWeightLo = _tableReader.ReadByte();
-
-        // Byte 2: chs (character set)
-        var chs = _tableReader.ReadByte();
-
-        // Byte 3: ixchSzAlt
-        var ixchSzAlt = _tableReader.ReadByte();
-
-        // Skip PANOSE (10 bytes) and FONTSIGNATURE (24 bytes) = 34 bytes
-        var bytesRead = (int)(_tableReader.BaseStream.Position - entryStartPos);
-        var bytesToSkip = Math.Min(34, entryLength - bytesRead);
-        if (bytesToSkip > 0)
-            _tableReader.BaseStream.Seek(bytesToSkip, SeekOrigin.Current);
-
-        // Read font name
-        bytesRead = (int)(_tableReader.BaseStream.Position - entryStartPos);
-        var nameBytes = entryLength - bytesRead;
-        string fontName;
-
-        if (nameBytes > 0)
-        {
-            if (isExtended)
-            {
-                // Unicode font name
-                var nameData = _tableReader.ReadBytes(nameBytes);
-                fontName = Encoding.Unicode.GetString(nameData).TrimEnd('\0');
-            }
-            else
-            {
-                // ANSI font name
-                var nameData = _tableReader.ReadBytes(nameBytes);
-                fontName = Encoding.ASCII.GetString(nameData).TrimEnd('\0');
-            }
-        }
-        else
-        {
-            fontName = $"Font{index}";
-        }
-
-        // Ensure we've consumed the full entry
-        var finalPos = entryStartPos + entryLength;
-        if (_tableReader.BaseStream.Position < finalPos)
-            _tableReader.BaseStream.Seek(finalPos, SeekOrigin.Begin);
+        var chs = entryData[4];
+        var ixchSzAlt = entryData[5];
+        var fontNameChars = ReadFfnNameChars(entryData);
+        var fontName = ReadNullTerminatedString(fontNameChars, 0);
+        var altName = ixchSzAlt < fontNameChars.Length
+            ? ReadNullTerminatedString(fontNameChars, ixchSzAlt)
+            : null;
 
         return new FontDefinition
         {
             Index = index,
-            Name = fontName,
+            Name = string.IsNullOrEmpty(fontName) ? $"Font{index}" : fontName,
             Family = ff,
             Charset = chs,
             Pitch = prq,
-            Type = fTrueType ? 1 : 0
+            Type = fTrueType ? 1 : 0,
+            AltName = string.IsNullOrEmpty(altName) ? null : altName
         };
+    }
+
+    private static char[] ReadFfnNameChars(byte[] entryData)
+    {
+        const int nameOffset = 40;
+        if (entryData.Length <= nameOffset)
+            return Array.Empty<char>();
+
+        var charCount = (entryData.Length - nameOffset) / 2;
+        var chars = new char[charCount];
+        for (int i = 0; i < charCount; i++)
+        {
+            chars[i] = (char)BinaryPrimitives.ReadUInt16LittleEndian(entryData.AsSpan(nameOffset + i * 2, 2));
+        }
+
+        return chars;
+    }
+
+    private static string ReadNullTerminatedString(char[] value, int startIndex)
+    {
+        if (startIndex < 0 || startIndex >= value.Length)
+            return string.Empty;
+
+        int endIndex = startIndex;
+        while (endIndex < value.Length && value[endIndex] != '\0')
+        {
+            endIndex++;
+        }
+
+        return new string(value, startIndex, endIndex - startIndex);
     }
 
     private void AddDefaultFonts()

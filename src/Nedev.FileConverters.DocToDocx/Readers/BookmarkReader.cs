@@ -1,4 +1,3 @@
-using System.Text;
 using Nedev.FileConverters.DocToDocx.Models;
 using Nedev.FileConverters.DocToDocx.Utils;
 
@@ -125,27 +124,10 @@ public class BookmarkReader
 
     private List<string> ReadSttbfBkmk(int n)
     {
-        var names = new List<string>();
-        if (_fib.FcSttbfBkmk == 0 || _fib.LcbSttbfBkmk == 0) return names;
+        var names = SttbfHelper.ReadSttbf(_tableReader, _fib.FcSttbfBkmk, _fib.LcbSttbfBkmk);
+        if (names.Count > n)
+            return names.Take(n).ToList();
 
-        _tableReader.BaseStream.Seek(_fib.FcSttbfBkmk, SeekOrigin.Begin);
-        
-        // STTBF structure: fExtend (2 bytes), cData (2 bytes or 4 bytes depending on fExtend)
-        // For Word 97+, fExtend is 0xFFFF (ushort), cData is 4 bytes (uint)
-        ushort fExtend = _tableReader.ReadUInt16();
-        uint cData = _tableReader.ReadUInt32();
-
-        for (int i = 0; i < cData; i++)
-        {
-            try
-            {
-                byte len = _tableReader.ReadByte();
-                byte[] bytes = _tableReader.ReadBytes(len * 2); // Unicode
-                string name = Encoding.Unicode.GetString(bytes).TrimEnd('\0');
-                names.Add(name);
-            }
-            catch { break; }
-        }
         return names;
     }
     
