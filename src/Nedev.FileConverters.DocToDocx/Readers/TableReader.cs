@@ -954,8 +954,9 @@ public class TableReader
         if (string.IsNullOrWhiteSpace(trailingText))
             return paragraphs;
 
-        foreach (var part in trailingText.Split('\r', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        foreach (var rawPart in trailingText.Split(new[] { '\r' }, StringSplitOptions.RemoveEmptyEntries))
         {
+            var part = rawPart.Trim();
             if (string.IsNullOrWhiteSpace(part))
                 continue;
 

@@ -23,12 +23,25 @@ public class DocToDocxFileConverter : IFileConverter
             throw new ArgumentNullException(nameof(input));
 
         var output = new MemoryStream();
+        MemoryStream? bufferedInput = null;
         
         try
         {
-            input.Position = 0;
+            Stream workingInput;
+            if (input.CanSeek)
+            {
+                input.Position = 0;
+                workingInput = input;
+            }
+            else
+            {
+                bufferedInput = new MemoryStream();
+                input.CopyTo(bufferedInput);
+                bufferedInput.Position = 0;
+                workingInput = bufferedInput;
+            }
             
-            using var reader = new DocReader(input, password: null);
+            using var reader = new DocReader(workingInput, password: null);
             reader.Load();
             var doc = reader.Document;
             
@@ -43,6 +56,10 @@ public class DocToDocxFileConverter : IFileConverter
         {
             output.Dispose();
             throw;
+        }
+        finally
+        {
+            bufferedInput?.Dispose();
         }
     }
 }

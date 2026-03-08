@@ -48,8 +48,10 @@ public class Program
                     if (i + 1 < args.Length)
                     {
                         password = args[++i];
+                        break;
                     }
-                    break;
+
+                    throw new ArgumentException("Missing password value after -p/--password.");
                 case "-r":
                 case "--recursive":
                     recursive = true;
@@ -57,6 +59,8 @@ public class Program
                 case "--no-hyperlinks":
                     disableHyperlinks = true;
                     break;
+                default:
+                    throw new ArgumentException($"Unknown option: {args[i]}");
             }
         }
 
@@ -117,7 +121,7 @@ public class Program
                     }
                 });
 
-                await Task.Run(() => DocToDocxConverter.Convert(inputPath, outputPath, progress, password, enableHyperlinks: !disableHyperlinks));
+                await DocToDocxConverter.ConvertAsync(inputPath, outputPath, progress, password, enableHyperlinks: !disableHyperlinks);
 
             Console.WriteLine("Successfully converted the document.");
         }

@@ -63,7 +63,7 @@ internal static class HeaderFooterContentHelper
             if (char.IsWhiteSpace(ch) || char.IsPunctuation(ch))
                 continue;
 
-            if (char.IsAsciiLetterOrDigit(ch))
+            if (ch <= 0x7F && char.IsLetterOrDigit(ch))
             {
                 hasLatinOrDigit = true;
                 continue;
