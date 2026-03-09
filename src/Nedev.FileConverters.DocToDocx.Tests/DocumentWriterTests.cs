@@ -1100,6 +1100,58 @@ namespace Nedev.FileConverters.DocToDocx.Tests
         }
 
         [Fact]
+        public void SampleTableDoc_Conversion_PreservesSecondTopLevelTableWithoutMergingFirstRowSecondCell()
+        {
+            var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+            var inputPath = Path.Combine(repoRoot, "samples", "table.doc");
+            var outputPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".docx");
+
+            try
+            {
+                var document = DocToDocxConverter.LoadDocument(inputPath);
+                var secondTable = document.Tables
+                    .Where(table => table.ParentTableIndex == null)
+                    .OrderBy(table => table.StartParagraphIndex)
+                    .Skip(1)
+                    .First();
+
+                Assert.Equal(2, secondTable.RowCount);
+                Assert.Equal(2, secondTable.ColumnCount);
+                Assert.Equal(2, secondTable.Rows[0].Cells.Count);
+                Assert.Equal(2, secondTable.Rows[1].Cells.Count);
+                Assert.Equal(1, secondTable.Rows[0].Cells[0].Paragraphs.Count(p => p.Type == ParagraphType.NestedTable && p.NestedTable != null));
+                Assert.Equal(1, secondTable.Rows[0].Cells[1].ColumnSpan);
+                Assert.Equal(1, secondTable.Rows[0].Cells[1].RowSpan);
+
+                DocToDocxConverter.SaveDocument(document, outputPath);
+
+                using var archive = new ZipArchive(File.OpenRead(outputPath), ZipArchiveMode.Read);
+                var documentXml = new StreamReader(archive.GetEntry("word/document.xml").Open()).ReadToEnd();
+                var xDocument = XDocument.Parse(documentXml);
+                XNamespace w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+                var xmlSecondTable = xDocument
+                    .Descendants(w + "tbl")
+                    .Where(tbl => !tbl.Ancestors(w + "tbl").Any())
+                    .Skip(1)
+                    .First();
+                var rows = xmlSecondTable.Elements(w + "tr").ToList();
+
+                Assert.Equal(2, rows.Count);
+
+                var firstRowCells = rows[0].Elements(w + "tc").ToList();
+                Assert.Equal(2, firstRowCells.Count);
+                Assert.True(firstRowCells[0].Descendants(w + "tbl").Any(), "Expected the nested table to stay in the first cell of the second top-level table.");
+                Assert.False(firstRowCells[1].Descendants(w + "gridSpan").Any(), "Expected the first-row second cell to remain a standalone cell without horizontal merge markup.");
+                Assert.False(firstRowCells[1].Descendants(w + "vMerge").Any(), "Expected the first-row second cell to remain a standalone cell without vertical merge markup.");
+            }
+            finally
+            {
+                if (File.Exists(outputPath))
+                    File.Delete(outputPath);
+            }
+        }
+
+        [Fact]
         public void SampleTableDoc_Conversion_PreservesNestedTablesAndCenteredHeading()
         {
             var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
