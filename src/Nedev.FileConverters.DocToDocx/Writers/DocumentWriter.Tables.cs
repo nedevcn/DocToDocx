@@ -14,6 +14,17 @@ public partial class DocumentWriter
     /// </summary>
     private void WriteTable(TableModel table)
     {
+        Logger.Info($"DocumentWriter.WriteTable START: startPara={table.StartParagraphIndex} endPara={table.EndParagraphIndex} columns={table.ColumnCount} rows={table.Rows.Count} IsNested={table.IsNested} ParentTableIndex={table.ParentTableIndex}");
+        
+        // Log first cell content for debugging
+        if (table.Rows.Count > 0 && table.Rows[0].Cells.Count > 0)
+        {
+            var firstCell = table.Rows[0].Cells[0];
+            var firstCellText = string.Join("; ", firstCell.Paragraphs.Select(p => p.Text));
+            var nestedTableCount = firstCell.Paragraphs.Count(p => p.Type == ParagraphType.NestedTable && p.NestedTable != null);
+            Logger.Info($"DocumentWriter.WriteTable: First cell has {firstCell.Paragraphs.Count} paragraphs, {nestedTableCount} nested tables. Text = '{firstCellText}'");
+        }
+        
         _writer.WriteStartElement("w", "tbl", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
         
         // Write table properties
@@ -23,15 +34,27 @@ public partial class DocumentWriter
         int columnCount = table.ColumnCount > 0
             ? table.ColumnCount
             : (table.Rows.Any() ? table.Rows.Max(r => r.Cells.Count) : 0);
+        
+        // Calculate column widths by finding the maximum width for each column across all rows
+        var columnWidths = new int[columnCount];
+        for (int colIdx = 0; colIdx < columnCount; colIdx++)
+        {
+            int maxWidth = 0;
+            foreach (var row in table.Rows)
+            {
+                if (colIdx < row.Cells.Count && row.Cells[colIdx].Properties?.Width > 0)
+                {
+                    maxWidth = Math.Max(maxWidth, row.Cells[colIdx].Properties!.Width);
+                }
+            }
+            columnWidths[colIdx] = maxWidth;
+        }
+        
         for (int i = 0; i < columnCount; i++)
         {
             _writer.WriteStartElement("w", "gridCol", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
             
-            int width = 0;
-            if (table.Rows.Count > 0 && i < table.Rows[0].Cells.Count && table.Rows[0].Cells[i].Properties?.Width > 0)
-            {
-                width = table.Rows[0].Cells[i].Properties!.Width;
-            }
+            int width = columnWidths[i];
             
             if (width > 0)
             {
@@ -55,13 +78,15 @@ public partial class DocumentWriter
     /// </summary>
     private void WriteTableProperties(TableModel table)
     {
+        var tableProperties = ResolveEffectiveTableProperties(table);
+
         _writer.WriteStartElement("w", "tblPr", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
         
         // Table style
-        if (table.Properties?.StyleIndex >= 0)
+        if (tableProperties?.StyleIndex >= 0)
         {
-            var style = _document?.Styles.Styles.FirstOrDefault(s => s.Type == StyleType.Table && s.StyleId == table.Properties.StyleIndex);
-            var styleId = StyleHelper.GetTableStyleId(table.Properties.StyleIndex, style?.Name);
+            var style = _document?.Styles.Styles.FirstOrDefault(s => s.Type == StyleType.Table && s.StyleId == tableProperties.StyleIndex);
+            var styleId = StyleHelper.GetTableStyleId(tableProperties.StyleIndex, style?.Name);
             
             _writer.WriteStartElement("w", "tblStyle", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
             _writer.WriteAttributeString("w", "val", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", styleId);
@@ -71,7 +96,7 @@ public partial class DocumentWriter
         // Table width: prefer an explicit width from TAP when available, otherwise
         // let Word auto-size based on content.
         _writer.WriteStartElement("w", "tblW", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
-        var preferredWidth = table.Properties?.PreferredWidth ?? 0;
+        var preferredWidth = tableProperties?.PreferredWidth ?? 0;
         if (preferredWidth > 0)
         {
             preferredWidth = Math.Clamp(preferredWidth, 1, 31680);
@@ -86,10 +111,10 @@ public partial class DocumentWriter
         _writer.WriteEndElement();
         
         // Table justification (alignment)
-        if (table.Properties != null && table.Properties.Alignment != TableAlignment.Left)
+        if (tableProperties != null && tableProperties.Alignment != TableAlignment.Left)
         {
             _writer.WriteStartElement("w", "jc", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
-            var alignment = table.Properties.Alignment switch
+            var alignment = tableProperties.Alignment switch
             {
                 TableAlignment.Center => "center",
                 TableAlignment.Right => "right",
@@ -101,9 +126,9 @@ public partial class DocumentWriter
         
         // Table indent from left margin, when specified. This mirrors sprmTDxaLeft
         // and helps nested or offset tables align closer to the original layout.
-        if (table.Properties != null && table.Properties.Indent != 0)
+        if (tableProperties != null && tableProperties.Indent != 0)
         {
-            var clampedIndent = Math.Clamp(table.Properties.Indent, -31680, 31680);
+            var clampedIndent = Math.Clamp(tableProperties.Indent, -31680, 31680);
             _writer.WriteStartElement("w", "tblInd", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
             _writer.WriteAttributeString("w", "w", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", clampedIndent.ToString());
             _writer.WriteAttributeString("w", "type", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", "dxa");
@@ -111,30 +136,30 @@ public partial class DocumentWriter
         }
         
         // Table borders
-        if (table.Properties?.BorderTop != null || table.Properties?.BorderBottom != null ||
-            table.Properties?.BorderLeft != null || table.Properties?.BorderRight != null ||
-            table.Properties?.BorderInsideH != null || table.Properties?.BorderInsideV != null)
+        if (tableProperties?.BorderTop != null || tableProperties?.BorderBottom != null ||
+            tableProperties?.BorderLeft != null || tableProperties?.BorderRight != null ||
+            tableProperties?.BorderInsideH != null || tableProperties?.BorderInsideV != null)
         {
             _writer.WriteStartElement("w", "tblBorders", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
-            if (table.Properties.BorderTop != null) WriteBorder("top", table.Properties.BorderTop);
-            if (table.Properties.BorderBottom != null) WriteBorder("bottom", table.Properties.BorderBottom);
-            if (table.Properties.BorderLeft != null) WriteBorder("left", table.Properties.BorderLeft);
-            if (table.Properties.BorderRight != null) WriteBorder("right", table.Properties.BorderRight);
-            if (table.Properties.BorderInsideH != null) WriteBorder("insideH", table.Properties.BorderInsideH);
-            if (table.Properties.BorderInsideV != null) WriteBorder("insideV", table.Properties.BorderInsideV);
+            if (tableProperties.BorderTop != null) WriteBorder("top", tableProperties.BorderTop);
+            if (tableProperties.BorderBottom != null) WriteBorder("bottom", tableProperties.BorderBottom);
+            if (tableProperties.BorderLeft != null) WriteBorder("left", tableProperties.BorderLeft);
+            if (tableProperties.BorderRight != null) WriteBorder("right", tableProperties.BorderRight);
+            if (tableProperties.BorderInsideH != null) WriteBorder("insideH", tableProperties.BorderInsideH);
+            if (tableProperties.BorderInsideV != null) WriteBorder("insideV", tableProperties.BorderInsideV);
             _writer.WriteEndElement();
         }
         
         // Table shading
-        if (table.Properties?.Shading != null)
+        if (tableProperties?.Shading != null)
         {
-            WriteShading(table.Properties.Shading);
+            WriteShading(tableProperties.Shading);
         }
         
         // Table cell margin: when the TAP exposes an inter-cell spacing we map it
         // to symmetric left/right padding; otherwise we fall back to a sensible
         // default that keeps existing documents visually similar.
-        var spacing = table.Properties?.CellSpacing ?? 0;
+        var spacing = tableProperties?.CellSpacing ?? 0;
         // Clamp to a small, non-negative range so extreme values from corrupted
         // documents do not explode layout.
         if (spacing < 0) spacing = 0;
@@ -164,11 +189,114 @@ public partial class DocumentWriter
         _writer.WriteEndElement(); // w:tblPr
     }
 
+    private TableProperties? ResolveEffectiveTableProperties(TableModel table)
+    {
+        TableProperties? resolved = null;
+
+        if (table.Properties != null)
+        {
+            resolved = CloneTableProperties(table.Properties);
+        }
+
+        if (resolved?.StyleIndex >= 0)
+        {
+            var styleProps = _document?.Styles.Styles
+                .FirstOrDefault(style => style.Type == StyleType.Table && style.StyleId == resolved.StyleIndex)?
+                .TableProperties;
+
+            if (styleProps != null)
+            {
+                resolved.MergeWith(styleProps);
+            }
+        }
+
+        if (resolved == null && !TableNeedsVisibleBorders(table))
+        {
+            return null;
+        }
+
+        resolved ??= new TableProperties();
+
+        if (!HasAnyTableBorders(resolved) && TableNeedsVisibleBorders(table))
+        {
+            var fallbackBorder = new BorderInfo
+            {
+                Style = BorderStyle.Single,
+                Width = 4,
+                Space = 0,
+                Color = 0
+            };
+
+            resolved.BorderTop = fallbackBorder;
+            resolved.BorderBottom = fallbackBorder;
+            resolved.BorderLeft = fallbackBorder;
+            resolved.BorderRight = fallbackBorder;
+            resolved.BorderInsideH = fallbackBorder;
+            resolved.BorderInsideV = fallbackBorder;
+        }
+
+        return resolved;
+    }
+
+    private static bool TableNeedsVisibleBorders(TableModel table)
+    {
+        foreach (var row in table.Rows)
+        {
+            foreach (var cell in row.Cells)
+            {
+                foreach (var paragraph in cell.Paragraphs)
+                {
+                    if (paragraph.Type == ParagraphType.NestedTable && paragraph.NestedTable != null)
+                    {
+                        return true;
+                    }
+
+                    if (paragraph.Runs.Any(HasRenderableContent))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static bool HasAnyTableBorders(TableProperties props)
+    {
+        return props.BorderTop != null ||
+               props.BorderBottom != null ||
+               props.BorderLeft != null ||
+               props.BorderRight != null ||
+               props.BorderInsideH != null ||
+               props.BorderInsideV != null;
+    }
+
+    private static TableProperties CloneTableProperties(TableProperties source)
+    {
+        return new TableProperties
+        {
+            StyleIndex = source.StyleIndex,
+            CellSpacing = source.CellSpacing,
+            Indent = source.Indent,
+            Alignment = source.Alignment,
+            PreferredWidth = source.PreferredWidth,
+            BorderTop = source.BorderTop,
+            BorderBottom = source.BorderBottom,
+            BorderLeft = source.BorderLeft,
+            BorderRight = source.BorderRight,
+            BorderInsideH = source.BorderInsideH,
+            BorderInsideV = source.BorderInsideV,
+            Shading = source.Shading
+        };
+    }
+
     /// <summary>
     /// Writes a table row.
     /// </summary>
     private void WriteTableRow(TableRowModel row, TableModel table)
     {
+        Logger.Info($"DocumentWriter.WriteTableRow START: tableStart={table.StartParagraphIndex} rowIndex={row.Index} cells={row.Cells.Count}");
         _writer.WriteStartElement("w", "tr", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
         
         // Row properties
@@ -322,8 +450,10 @@ public partial class DocumentWriter
         {
             if (cell.Paragraphs.Count > 0)
             {
+                Logger.Info($"WriteTableCell: Writing {cell.Paragraphs.Count} paragraphs in cell");
                 foreach (var para in cell.Paragraphs)
                 {
+                    Logger.Info($"WriteTableCell: Calling WriteParagraph, Type={para.Type}, Text='{para.Text}', NestedTable={para.NestedTable != null}");
                     WriteParagraph(para);
                 }
             }

@@ -1083,6 +1083,23 @@ namespace Nedev.FileConverters.DocToDocx.Tests
         }
 
         [Fact]
+        public void SampleTableDoc_LoadDocument_PreservesFirstTableDimensions()
+        {
+            var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+            var inputPath = Path.Combine(repoRoot, "samples", "table.doc");
+
+            var document = DocToDocxConverter.LoadDocument(inputPath);
+            var firstTable = Assert.Single(document.Tables.Where(table => table.ParentTableIndex == null && table.StartParagraphIndex == 0));
+
+            Assert.Equal(4, firstTable.RowCount);
+            Assert.Equal(3, firstTable.ColumnCount);
+            Assert.All(firstTable.Rows, row => Assert.Equal(3, row.Cells.Count));
+            Assert.Equal("a", firstTable.Rows[0].Cells[0].Paragraphs[0].Text);
+            Assert.Equal("b", firstTable.Rows[0].Cells[1].Paragraphs[0].Text);
+            Assert.Equal("c", firstTable.Rows[0].Cells[2].Paragraphs[0].Text);
+        }
+
+        [Fact]
         public void SampleTableDoc_Conversion_PreservesNestedTablesAndCenteredHeading()
         {
             var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));

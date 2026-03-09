@@ -874,6 +874,33 @@ public class TapBase
     /// Table-level shading (background) for the whole table, when present.
     /// </summary>
     public ShadingInfo? Shading { get; set; }
+
+    /// <summary>
+    /// Per-cell border information decoded from TC structures.
+    /// </summary>
+    public CellBorderInfo?[]? CellBorders { get; set; }
+
+    /// <summary>
+    /// Per-cell shading information decoded from TC structures.
+    /// </summary>
+    public ShadingInfo?[]? CellShadings { get; set; }
+
+    /// <summary>
+    /// Per-cell vertical alignment values decoded from TC structures.
+    /// 0 = Top, 1 = Center, 2 = Bottom.
+    /// </summary>
+    public byte[]? CellVerticalAlignments { get; set; }
+}
+
+/// <summary>
+/// Per-cell border information with four sides.
+/// </summary>
+public class CellBorderInfo
+{
+    public BorderInfo? Top { get; set; }
+    public BorderInfo? Bottom { get; set; }
+    public BorderInfo? Left { get; set; }
+    public BorderInfo? Right { get; set; }
 }
 
 /// <summary>

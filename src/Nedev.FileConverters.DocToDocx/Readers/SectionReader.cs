@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using Nedev.FileConverters.DocToDocx.Models;
 
 namespace Nedev.FileConverters.DocToDocx.Readers;
@@ -83,7 +84,7 @@ public class SectionReader
                 }
                 catch (Exception ex)
                 {
-                    Console.WriteLine($"Warning: Failed to read SEPX at 0x{fcSepx:X}: {ex.Message}");
+                    Debug.WriteLine($"Warning: Failed to read SEPX at 0x{fcSepx:X}: {ex.Message}");
                 }
                 finally
                 {

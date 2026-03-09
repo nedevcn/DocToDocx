@@ -280,22 +280,43 @@ public class TextReader
 
             if (clxt == 0x01)
             {
-                // Prc — contains a GrpPrl
-                var offsetBeforeSize = (ushort)(TableReader.BaseStream.Position - _fib.FcClx);
+                // Prc — structure containing an array of PrcData elements.
+                // clxt (1 byte) + cbGrpprl (2 bytes) + PrcData[]. 
+                // The MS-DOC spec (2.9.212) indicates cbGrpprl is the size of the array data.
                 var cbGrpprl = TableReader.ReadInt16();
                 if (cbGrpprl > 0)
                 {
-                    var grpprlOffset = (ushort)(TableReader.BaseStream.Position - _fib.FcClx);
-                    var grpprl = TableReader.ReadBytes(cbGrpprl);
-                    _piecePropertyModifiers[offsetBeforeSize] = grpprl;
-                    _piecePropertyModifiers[grpprlOffset] = grpprl;
-                    _piecePropertyModifiers[(ushort)(offsetBeforeSize >> 1)] = grpprl;
-                    _piecePropertyModifiers[(ushort)(grpprlOffset >> 1)] = grpprl;
-                    _piecePropertyModifiers[grpprlPoolOffset] = grpprl;
-                    _piecePropertyModifiers[(ushort)(grpprlPoolOffset >> 1)] = grpprl;
-                    _piecePropertyModifiers[(ushort)(grpprlPoolOffset + 2)] = grpprl;
-                    _piecePropertyModifiers[(ushort)((grpprlPoolOffset + 2) >> 1)] = grpprl;
-                    grpprlPoolOffset = (ushort)(grpprlPoolOffset + cbGrpprl + 2);
+                    // Ensure we don't read beyond the available stream bounds
+                    var available = endPosition - TableReader.BaseStream.Position;
+                    var readSize = Math.Min(cbGrpprl, available);
+                    var prcEndPosition = TableReader.BaseStream.Position + readSize;
+
+                    while (TableReader.BaseStream.Position < prcEndPosition)
+                    {
+                        var offsetBeforeSize = (ushort)(TableReader.BaseStream.Position - _fib.FcClx);
+                        // Each PrcData element starts with its length (cb, 2 bytes)
+                        var cbData = TableReader.ReadInt16();
+
+                        if (cbData <= 0) break;
+
+                        var grpprlOffset = (ushort)(TableReader.BaseStream.Position - _fib.FcClx);
+                        var grpprl = TableReader.ReadBytes(cbData);
+
+                        // Map the offsets to the grpprl for later lookup using GetPieceRunPropertiesAtCp
+                        _piecePropertyModifiers[offsetBeforeSize] = grpprl;
+                        _piecePropertyModifiers[grpprlOffset] = grpprl;
+                        _piecePropertyModifiers[(ushort)(offsetBeforeSize >> 1)] = grpprl;
+                        _piecePropertyModifiers[(ushort)(grpprlOffset >> 1)] = grpprl;
+                        _piecePropertyModifiers[grpprlPoolOffset] = grpprl;
+                        _piecePropertyModifiers[(ushort)(grpprlPoolOffset >> 1)] = grpprl;
+                        _piecePropertyModifiers[(ushort)(grpprlPoolOffset + 2)] = grpprl;
+                        _piecePropertyModifiers[(ushort)((grpprlPoolOffset + 2) >> 1)] = grpprl;
+
+                        grpprlPoolOffset = (ushort)(grpprlPoolOffset + cbData + 2);
+                    }
+                    
+                    // Recover stream position in case the PrcData logic got off-track
+                    TableReader.BaseStream.Seek(prcEndPosition, SeekOrigin.Begin);
                 }
             }
             else if (clxt == 0x02)

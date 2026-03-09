@@ -8,6 +8,15 @@ using Nedev.FileConverters.DocToDocx.Models;
 namespace Nedev.FileConverters.DocToDocx.Readers;
 
 /// <summary>
+/// Reference equality comparer for HashSet since ReferenceEqualityComparer is not available in netstandard2.1
+/// </summary>
+internal class ReferenceEqualityComparer<T> : IEqualityComparer<T> where T : class
+{
+    public bool Equals(T? x, T? y) => ReferenceEquals(x, y);
+    public int GetHashCode(T obj) => System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(obj);
+}
+
+/// <summary>
 /// A state context for an actively parsed table level.
 /// </summary>
 internal class TableParseContext
@@ -28,6 +37,9 @@ internal class TableParseContext
 /// </summary>
 public class TableReader
 {
+    private const int MaxNestingDepth = 20;
+    private const int MaxRowsPerTable = 10000;
+    private static readonly string _debugLogPath = Path.Combine(Path.GetTempPath(), "table_reader_debug.log");
     private sealed class RecoveredCell
     {
         public string Text { get; set; } = string.Empty;
@@ -49,12 +61,22 @@ public class TableReader
 
     public void ParseTables(DocumentModel document)
     {
+        try { File.Delete(_debugLogPath); } catch { }
+        Log("ParseTables START");
         var topLevelTables = new List<TableModel>();
+        // Track all tables (including nested) to prevent duplicate additions
+        // Use object.GetHashCode for reference equality since ReferenceEqualityComparer is not available in netstandard2.1
+        var allTables = new HashSet<TableModel>(new ReferenceEqualityComparer<TableModel>());
         var stack = new List<TableContext>(); // index 0 = level 1, index 1 = level 2, etc.
 
         foreach (var para in document.Paragraphs.OrderBy(p => p.Index))
         {
-            int level = para.NestingLevel > 0 ? para.NestingLevel : 0;
+            int level = para.NestingLevel <= 0 ? 0 : Math.Max(1, para.NestingLevel - 1);
+            if (level > MaxNestingDepth) level = MaxNestingDepth;
+            if (para.Index % 10 == 0 || level > 0)
+            {
+                Log($"Paragraph {para.Index} nesting={para.NestingLevel} adjustedLevel={level}");
+            }
             if (para.Type != ParagraphType.TableCell && level == 0)
             {
                 // Not in a table
@@ -66,19 +88,23 @@ public class TableReader
             {
                 var popped = stack.Last();
                 stack.RemoveAt(stack.Count - 1);
+                Log($"Popped TableContext level={popped.Level} at para={para.Index}");
                 
                 FlushCurrentCell(popped);
                 FlushCurrentRow(popped);
                 FinalizeTable(popped);
 
                 // If the popped table actually has content, attach it
-                if (popped.Table.Rows.Count > 0)
+                // Note: We check allTables to prevent duplicate additions, but nested tables should always be attached to parent
+                bool isNestedTable = stack.Count > 0;
+                if (popped.Table.Rows.Count > 0 && (isNestedTable || !allTables.Contains(popped.Table)))
                 {
                     if (stack.Count > 0)
                     {
                         var parent = stack.Last();
                         // record parent index for easier navigation later
                         popped.Table.ParentTableIndex = parent.Table.Index;
+                        Log($"Set ParentTableIndex={parent.Table.Index} for table at para={popped.Table.StartParagraphIndex}");
                         
                         // Attach to current cell of parent
                         var nestedPara = new ParagraphModel
@@ -87,13 +113,20 @@ public class TableReader
                             NestedTable = popped.Table,
                             NestingLevel = parent.Level
                         };
+                        var firstText = popped.Table.Rows.Count > 0 && popped.Table.Rows[0].Cells.Count > 0 && popped.Table.Rows[0].Cells[0].Paragraphs.Count > 0 
+                            ? popped.Table.Rows[0].Cells[0].Paragraphs[0].Text : "(empty)";
+                        Log($"Created NestedTable paragraph, nested table has {popped.Table.Rows.Count} rows, first cell text: '{firstText}'");
                         parent.CurrentCellParagraphs.Add(nestedPara);
+                        allTables.Add(popped.Table);
                     }
                     else
                     {
-                        // top-level table has no parent
+                        // top-level table has no parent - ensure ParentTableIndex is null
                         popped.Table.ParentTableIndex = null;
+                        var tableId = System.Runtime.CompilerServices.RuntimeHelpers.GetHashCode(popped.Table);
+                        Log($"Adding to topLevelTables (1st): table id={tableId} index={popped.Table.Index} startPara={popped.Table.StartParagraphIndex} ParentTableIndex={popped.Table.ParentTableIndex}");
                         topLevelTables.Add(popped.Table);
+                        allTables.Add(popped.Table);
                     }
                 }
             }
@@ -103,16 +136,27 @@ public class TableReader
             // Ensure we have active contexts up to the current level
             while (stack.Count < level)
             {
+                // Protect against pathological documents that claim absurd nesting levels.
+                if (stack.Count >= MaxNestingDepth)
+                {
+                    break;
+                }
+
                 var newCtx = new TableContext
                 {
                     Level = stack.Count + 1,
-                    Table = new TableModel { Index = topLevelTables.Count, StartParagraphIndex = para.Index }
+                    Table = new TableModel { Index = topLevelTables.Count + stack.Count, StartParagraphIndex = para.Index }
                 };
+                Log($"Pushing new TableContext level={newCtx.Level} startPara={para.Index}");
                 stack.Add(newCtx);
             }
 
+            foreach (var context in stack)
+            {
+                context.LastTableParagraphIndex = para.Index;
+            }
+
             var activeCtx = stack.Last();
-            activeCtx.LastTableParagraphIndex = para.Index;
 
             // Extract TAP properties for table alignment and cell widths
             TapBase? tapForParagraph = null;
@@ -122,35 +166,63 @@ public class TableReader
                 var pap = _fkpParser.GetPapAtCp(firstRun.CharacterPosition);
                 tapForParagraph = pap?.Tap;
 
-                if (tapForParagraph != null && activeCtx.Table.Properties == null)
+                if (tapForParagraph != null)
                 {
-                    activeCtx.Table.Properties = new TableProperties
+                    // Merge TAP properties from all paragraphs, not just the first one
+                    if (activeCtx.Table.Properties == null)
                     {
-                        Alignment = tapForParagraph.Justification switch
+                        activeCtx.Table.Properties = new TableProperties();
+                    }
+                    
+                    var props = activeCtx.Table.Properties;
+                    
+                    // Only set values if not already set (first valid value wins)
+                    if (props.Alignment == TableAlignment.Left && tapForParagraph.Justification != 0)
+                    {
+                        props.Alignment = tapForParagraph.Justification switch
                         {
                             1 => TableAlignment.Center,
                             2 => TableAlignment.Right,
                             _ => TableAlignment.Left
-                        },
-                        CellSpacing = tapForParagraph.CellSpacing != 0
+                        };
+                    }
+                    
+                    if (props.CellSpacing == 0)
+                    {
+                        props.CellSpacing = tapForParagraph.CellSpacing != 0
                             ? tapForParagraph.CellSpacing
-                            : (tapForParagraph.GapHalf != 0 ? tapForParagraph.GapHalf * 2 : 0),
-                        Indent = tapForParagraph.IndentLeft,
-                        PreferredWidth = tapForParagraph.TableWidth,
-                        BorderTop = tapForParagraph.BorderTop,
-                        BorderBottom = tapForParagraph.BorderBottom,
-                        BorderLeft = tapForParagraph.BorderLeft,
-                        BorderRight = tapForParagraph.BorderRight,
-                        BorderInsideH = tapForParagraph.BorderInsideH,
-                        BorderInsideV = tapForParagraph.BorderInsideV,
-                        Shading = tapForParagraph.Shading
-                    };
+                            : (tapForParagraph.GapHalf != 0 ? tapForParagraph.GapHalf * 2 : 0);
+                    }
+                    
+                    if (props.Indent == 0 && tapForParagraph.IndentLeft != 0)
+                    {
+                        props.Indent = tapForParagraph.IndentLeft;
+                    }
+                    
+                    if (props.PreferredWidth == 0 && tapForParagraph.TableWidth != 0)
+                    {
+                        props.PreferredWidth = tapForParagraph.TableWidth;
+                    }
+                    
+                    // Borders - only set if not already present
+                    props.BorderTop ??= tapForParagraph.BorderTop;
+                    props.BorderBottom ??= tapForParagraph.BorderBottom;
+                    props.BorderLeft ??= tapForParagraph.BorderLeft;
+                    props.BorderRight ??= tapForParagraph.BorderRight;
+                    props.BorderInsideH ??= tapForParagraph.BorderInsideH;
+                    props.BorderInsideV ??= tapForParagraph.BorderInsideV;
+                    props.Shading ??= tapForParagraph.Shading;
                 }
 
                 if (activeCtx.CurrentRowTap == null && tapForParagraph != null)
                 {
                     activeCtx.CurrentRowTap = tapForParagraph;
                 }
+            }
+
+            if (TryConsumeCompactTableParagraph(para, activeCtx, tapForParagraph))
+            {
+                continue;
             }
 
             // Cell boundary detection. Row end is a cell with ONLY \x07.
@@ -221,33 +293,43 @@ public class TableReader
             FlushCurrentCell(popped);
             FlushCurrentRow(popped);
             FinalizeTable(popped);
-            if (popped.Table.Rows.Count > 0)
+            // Only process tables that haven't been added yet
+            // and only add to top-level (nested tables are already attached to parents in the main loop)
+            if (popped.Table.Rows.Count > 0 && !allTables.Contains(popped.Table))
             {
-                if (stack.Count > 0)
-                {
-                    var parent = stack.Last();
-                    popped.Table.ParentTableIndex = parent.Table.Index;
-                    parent.CurrentCellParagraphs.Add(new ParagraphModel
-                    {
-                        Type = ParagraphType.NestedTable,
-                        NestedTable = popped.Table,
-                        NestingLevel = parent.Level
-                    });
-                }
-                else
-                {
-                    popped.Table.ParentTableIndex = null;
-                    topLevelTables.Add(popped.Table);
-                }
+                // This is a top-level table (no parent in stack)
+                popped.Table.ParentTableIndex = null;
+                Log($"Adding to topLevelTables (final): table index={popped.Table.Index} startPara={popped.Table.StartParagraphIndex} ParentTableIndex={popped.Table.ParentTableIndex}");
+                topLevelTables.Add(popped.Table);
+                allTables.Add(popped.Table);
             }
         }
 
+        Log($"TopLevelTables={topLevelTables.Count}");
         document.Tables = topLevelTables;
+        Log($"Assigned document.Tables count={document.Tables?.Count ?? 0}");
 
-        if (!ContainsNestedTables(document.Tables) && NeedsFlatTableRecovery(document))
+        if (!ContainsNestedTables(document.Tables ?? Enumerable.Empty<TableModel>()))
         {
-            RecoverFlatTables(document);
+            Log("ContainsNestedTables: false");
+            if (NeedsFlatTableRecovery(document))
+            {
+                Log("RecoverFlatTables START");
+                RecoverFlatTables(document);
+                Log("RecoverFlatTables DONE");
+            }
+
+            if (!ContainsNestedTables(document.Tables ?? Enumerable.Empty<TableModel>()))
+            {
+                RecoverNestedTableSections(document);
+            }
         }
+        else
+        {
+            Log("ContainsNestedTables: true");
+        }
+
+        Log("ParseTables END");
     }
 
     private static bool ContainsNestedTables(IEnumerable<TableModel> tables)
@@ -296,6 +378,7 @@ public class TableReader
 
     private void RecoverFlatTables(DocumentModel document)
     {
+        Log("RecoverFlatTables(method) START");
         var recoveredTables = new List<TableModel>();
 
         for (int i = 0; i < document.Paragraphs.Count; i++)
@@ -324,7 +407,12 @@ public class TableReader
         }
 
         if (recoveredTables.Count == 0)
+        {
+            Log("RecoverFlatTables(method) no recovered tables");
+            Log("RecoverFlatTables(method) DONE");
             return;
+        }
+        
 
         foreach (var table in recoveredTables)
         {
@@ -344,12 +432,11 @@ public class TableReader
 
         document.Tables = recoveredTables;
 
-        RecoverNestedTableSections(document);
-
         foreach (var paragraph in document.Paragraphs)
         {
             ApplyRecoveredParagraphFormatting(paragraph, paragraph.Text);
         }
+        Log("RecoverFlatTables(method) DONE");
     }
 
     private static void RecoverNestedTableSections(DocumentModel document)
@@ -367,10 +454,17 @@ public class TableReader
 
         for (int paragraphIndex = 0; paragraphIndex < document.Paragraphs.Count; paragraphIndex++)
         {
-            if (!LooksLikeNestedSectionTitle(document.Paragraphs[paragraphIndex].Text))
+            var currentParagraph = document.Paragraphs[paragraphIndex];
+            if (currentParagraph.Type == ParagraphType.TableCell || string.IsNullOrWhiteSpace(currentParagraph.Text))
                 continue;
 
             int nextSectionTitleIndex = FindNextStandaloneParagraphIndex(document, paragraphIndex + 1);
+            bool looksLikeNestedSectionTitle = LooksLikeNestedSectionTitle(currentParagraph.Text);
+            var placeholderChild = TryBuildNestedPlaceholderTable(document, paragraphIndex, nextSectionTitleIndex);
+
+            if (!looksLikeNestedSectionTitle && placeholderChild == null)
+                continue;
+
             var nestedTable = topLevelTables.FirstOrDefault(table =>
                 !consumedTables.Contains(table) &&
                 table.StartParagraphIndex > paragraphIndex &&
@@ -383,7 +477,6 @@ public class TableReader
                 continue;
             }
 
-            var placeholderChild = TryBuildNestedPlaceholderTable(document, paragraphIndex, nextSectionTitleIndex);
             if (placeholderChild != null)
             {
                 rebuiltTables.Add(BuildNestedSectionTable(placeholderChild));
@@ -555,26 +648,6 @@ public class TableReader
         }
 
         return parentTable;
-    }
-
-    private static int FindSectionTitleIndex(DocumentModel document, int beforeIndex)
-    {
-        if (beforeIndex <= 0)
-            return -1;
-
-        for (int index = beforeIndex - 1; index >= 0; index--)
-        {
-            var text = document.Paragraphs[index].Text?.Trim() ?? string.Empty;
-            if (string.IsNullOrWhiteSpace(text))
-                continue;
-
-            if (document.Paragraphs[index].Type == ParagraphType.TableCell)
-                return -1;
-
-            return index;
-        }
-
-        return -1;
     }
 
     private static bool LooksLikeNestedSectionTitle(string text)
@@ -834,6 +907,66 @@ public class TableReader
         }
 
         return row;
+    }
+
+    private bool TryConsumeCompactTableParagraph(ParagraphModel paragraph, TableContext ctx, TapBase? tapForParagraph)
+    {
+        if (!LooksLikeFlatTableParagraph(paragraph))
+            return false;
+
+        if (ctx.CurrentCellParagraphs.Count > 0 || ctx.CellsInCurrentRow.Count > 0)
+            return false;
+
+        var rowCandidates = GetRowCandidates(paragraph)
+            .Select(cells => cells.Select(text => new RecoveredCell { Text = text, SourceParagraph = paragraph }).ToList())
+            .ToList();
+
+        if (rowCandidates.Count == 0)
+            return false;
+
+        bool encodesMultipleCells = rowCandidates.Count > 1 || rowCandidates.Any(cells => cells.Count > 1);
+        if (!encodesMultipleCells)
+            return false;
+
+        foreach (var recoveredCells in rowCandidates)
+        {
+            ctx.CurrentRowTap = tapForParagraph;
+
+            foreach (var recoveredCell in recoveredCells)
+            {
+                ctx.CurrentCellParagraphs.Add(BuildRecoveredParagraph(recoveredCell));
+                FlushCurrentCell(ctx);
+            }
+
+            FlushCurrentRow(ctx);
+        }
+
+        return true;
+    }
+
+    private static ParagraphModel BuildRecoveredParagraph(RecoveredCell recoveredCell)
+    {
+        string cellText = recoveredCell.Text.Trim();
+        var sourceParagraph = recoveredCell.SourceParagraph;
+        var paragraph = new ParagraphModel
+        {
+            Type = ParagraphType.Normal,
+            Properties = CloneParagraphProperties(sourceParagraph?.Properties),
+            Runs = new List<RunModel>()
+        };
+
+        if (paragraph.Properties != null)
+        {
+            paragraph.Properties.KeepWithNext = false;
+        }
+
+        if (!string.IsNullOrEmpty(cellText))
+        {
+            AddRecoveredRuns(paragraph, cellText, sourceParagraph?.Runs.FirstOrDefault()?.Properties);
+        }
+
+        ApplyRecoveredParagraphFormatting(paragraph, cellText);
+        return paragraph;
     }
 
     private static IEnumerable<List<string>> GetRowCandidates(ParagraphModel paragraph)
@@ -1161,6 +1294,13 @@ public class TableReader
 
     private void FlushCurrentCell(TableContext ctx)
     {
+        Log($"FlushCurrentCell START level={ctx.Level} cellsInRow={ctx.CellsInCurrentRow.Count} currentCellParas={ctx.CurrentCellParagraphs.Count}");
+        if (ctx.CurrentCellParagraphs.Count == 0 && ctx.CellsInCurrentRow.Count == 0)
+        {
+            Log($"FlushCurrentCell SKIP level={ctx.Level} reason=empty-context");
+            return;
+        }
+
         if (ctx.CurrentCellParagraphs.Count == 0 && ctx.CellsInCurrentRow.Count > 0)
         {
             // Empty cell? placeholder for future logic
@@ -1174,18 +1314,59 @@ public class TableReader
             Paragraphs = new List<ParagraphModel>(ctx.CurrentCellParagraphs)
         };
 
-        if (ctx.CurrentRowTap?.CellWidths != null && ctx.CurrentRowTap.CellWidths.Length > cellModel.ColumnIndex)
+        // Apply cell properties from TAP
+        if (ctx.CurrentRowTap != null)
         {
-            cellModel.Properties ??= new TableCellProperties();
-            cellModel.Properties.Width = ctx.CurrentRowTap.CellWidths[cellModel.ColumnIndex];
+            var colIdx = cellModel.ColumnIndex;
+            
+            // Cell width
+            if (ctx.CurrentRowTap.CellWidths != null && ctx.CurrentRowTap.CellWidths.Length > colIdx)
+            {
+                cellModel.Properties ??= new TableCellProperties();
+                cellModel.Properties.Width = ctx.CurrentRowTap.CellWidths[colIdx];
+            }
+            
+            // Cell borders from TAP's cell borders if available
+            if (ctx.CurrentRowTap.CellBorders != null && ctx.CurrentRowTap.CellBorders.Length > colIdx)
+            {
+                var cellBorders = ctx.CurrentRowTap.CellBorders[colIdx];
+                if (cellBorders != null)
+                {
+                    cellModel.Properties ??= new TableCellProperties();
+                    cellModel.Properties.BorderTop = cellBorders.Top;
+                    cellModel.Properties.BorderBottom = cellBorders.Bottom;
+                    cellModel.Properties.BorderLeft = cellBorders.Left;
+                    cellModel.Properties.BorderRight = cellBorders.Right;
+                }
+            }
+            
+            // Cell shading from TAP if available
+            if (ctx.CurrentRowTap.CellShadings != null && ctx.CurrentRowTap.CellShadings.Length > colIdx)
+            {
+                var shading = ctx.CurrentRowTap.CellShadings[colIdx];
+                if (shading != null)
+                {
+                    cellModel.Properties ??= new TableCellProperties();
+                    cellModel.Properties.Shading = shading;
+                }
+            }
+            
+            // Cell vertical alignment from TAP if available
+            if (ctx.CurrentRowTap.CellVerticalAlignments != null && ctx.CurrentRowTap.CellVerticalAlignments.Length > colIdx)
+            {
+                cellModel.Properties ??= new TableCellProperties();
+                cellModel.Properties.VerticalAlignment = (VerticalAlignment)ctx.CurrentRowTap.CellVerticalAlignments[colIdx];
+            }
         }
 
         ctx.CellsInCurrentRow.Add(cellModel);
         ctx.CurrentCellParagraphs.Clear();
+        Log($"FlushCurrentCell DONE level={ctx.Level} nowCellsInRow={ctx.CellsInCurrentRow.Count}");
     }
 
     private void FlushCurrentRow(TableContext ctx)
     {
+        Log($"FlushCurrentRow START level={ctx.Level} cellsInRow={ctx.CellsInCurrentRow.Count}");
         if (ctx.CellsInCurrentRow.Count == 0) return;
 
         var row = new TableRowModel
@@ -1213,16 +1394,43 @@ public class TableReader
         ctx.RowTaps.Add(ctx.CurrentRowTap);
         ctx.CellsInCurrentRow.Clear();
         ctx.CurrentRowTap = null;
+        Log($"FlushCurrentRow DONE level={ctx.Level} tableRows={ctx.Table.Rows.Count}");
     }
 
     private void FinalizeTable(TableContext ctx)
     {
+        Log($"FinalizeTable START level={ctx.Level} rows={ctx.Table.Rows.Count}");
         var table = ctx.Table;
         if (table.Rows.Count == 0) return;
 
         table.EndParagraphIndex = ctx.LastTableParagraphIndex;
+        if (table.EndParagraphIndex < table.StartParagraphIndex)
+        {
+            table.EndParagraphIndex = Math.Max(table.StartParagraphIndex + 1, 1);
+            Log($"FinalizeTable: Corrected EndParagraphIndex to {table.EndParagraphIndex}");
+        }
+        
         table.RowCount = table.Rows.Count;
+        if (table.RowCount > MaxRowsPerTable)
+        {
+            table.Rows = table.Rows.Take(MaxRowsPerTable).ToList();
+            table.RowCount = table.Rows.Count;
+        }
         table.ColumnCount = table.Rows.Max(r => r.Cells.Count);
+
+        // Fix cell indices - ensure RowIndex and ColumnIndex are correct
+        for (int rowIdx = 0; rowIdx < table.Rows.Count; rowIdx++)
+        {
+            var row = table.Rows[rowIdx];
+            row.Index = rowIdx;
+            for (int colIdx = 0; colIdx < row.Cells.Count; colIdx++)
+            {
+                var cell = row.Cells[colIdx];
+                cell.RowIndex = rowIdx;
+                cell.ColumnIndex = colIdx;
+                cell.Index = colIdx;
+            }
+        }
 
         // Only set header row when the TAP data explicitly flags it.
         // Do NOT force all first rows to be headers — that's wrong for most tables.
@@ -1322,6 +1530,7 @@ public class TableReader
                 }
             }
         }
+        Log($"FinalizeTable DONE level={ctx.Level} rows={table.RowCount} cols={table.ColumnCount}");
     }
 
     private static TableCellModel? GetCell(TableModel table, int rowIndex, int columnIndex)
@@ -1340,6 +1549,25 @@ public class TableReader
         }
         return false;
     }
+
+    
+
+    private static void Log(string message)
+    {
+        try
+        {
+            var line = $"{DateTime.UtcNow:O} {message}{Environment.NewLine}";
+            File.AppendAllText(_debugLogPath, line);
+        }
+        catch
+        {
+            // Swallow logging errors to avoid affecting parsing.
+        }
+    }
+
+    // Mark end of ParseTables explicitly to help trace long runs
+    // (a separate statement rather than inline so it's easy to find in the log).
+    // Note: this will be written by ParseTables before returning.
 
     private class TableContext
     {

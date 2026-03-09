@@ -5,6 +5,7 @@ using System.Xml.Linq;
 using Nedev.FileConverters.DocToDocx.Models;
 using Nedev.FileConverters.DocToDocx.Readers;
 using Nedev.FileConverters.DocToDocx.Writers;
+using Nedev.FileConverters.DocToDocx.Utils;
 
 namespace Nedev.FileConverters.DocToDocx;
 
@@ -225,7 +226,9 @@ public static class DocToDocxConverter
         {
             using var zipWriter = new ZipWriter(stream);
             var options = new Writers.DocumentWriterOptions { EnableHyperlinks = enableHyperlinks };
+            Logger.Info($"DocToDocxConverter.WriteDocumentPackage START: output={outputPath} paragraphs={document.Paragraphs.Count} tables={document.Tables.Count}");
             zipWriter.WriteDocument(document, options);
+            Logger.Info($"DocToDocxConverter.WriteDocumentPackage AFTER WriteDocument: output={outputPath}");
         }
 
         cancellationToken.ThrowIfCancellationRequested();
