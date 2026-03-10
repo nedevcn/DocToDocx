@@ -49,7 +49,7 @@ public class BookmarkReader
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Warning: Failed to read bookmarks: {ex.Message}");
+            Logger.Warning("Failed to read bookmarks", ex);
         }
     }
 

@@ -33,7 +33,7 @@ public class ListReader
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Warning: Failed to read list formats: {ex.Message}");
+            Logger.Warning("Failed to read list formats", ex);
         }
     }
 

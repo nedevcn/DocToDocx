@@ -13,7 +13,7 @@ This backlog turns the current audit findings into a practical implementation or
    - Goal: replace silent best-effort catches in high-value parsing paths with structured warnings.
    - Deliverables: consistent logging for OLE extraction, OfficeArt/image scanning, chart scanning, and optional stream recovery.
    - Exit criteria: partial conversion failures are visible in logs without aborting the full conversion.
-   - Status: partially completed. High-value parsing paths now emit structured warnings, and conversion APIs can return captured diagnostics. Remaining work is deeper coverage across the remaining silent/console-only paths.
+   - Status: partially completed. High-value parsing paths now emit structured warnings, conversion APIs can return captured diagnostics, and the remaining direct reader-side `Console.WriteLine` warnings have been unified behind `Logger`. Remaining work is deeper classification across the remaining best-effort fallback branches.
 
 ## P1
 
@@ -21,13 +21,26 @@ This backlog turns the current audit findings into a practical implementation or
    - Goal: move from editable placeholder charts toward better source reconstruction.
    - Deliverables: chart titles, legend presence, axis labels, more series metadata, and broader BIFF record handling.
    - Exit criteria: common embedded Office charts preserve more than category/value grids.
-   - Status: partially completed. Chart XML now emits chart titles, axis titles, legend visibility, doughnut/bar/radar/scatter-specific options, and the BIFF scanner recovers sheet-name/title hints plus additional record types.
+   - Status: partially completed. Chart XML now emits chart titles, axis titles, legend visibility, doughnut/bar/radar/scatter-specific options, and the BIFF scanner recovers sheet-name/title hints, additional record types, simple `FORMULA` numeric results, and follow-up `STRING` values.
 
 4. Theme interpretation beyond raw extraction
    - Goal: use extracted theme XML to influence generated formatting instead of only preserving the payload.
    - Deliverables: parsed color scheme, font scheme, and theme-aware color resolution.
    - Exit criteria: theme-backed formatting in converted DOCX matches source documents more closely.
-   - Status: partially completed. Theme XML is now parsed into color/font metadata, default DOCX fonts prefer the extracted body theme fonts, and theme-referenced run colors can be resolved to concrete RGB values in generated OOXML.
+   - Status: partially completed. Theme XML is now parsed into color/font metadata, default DOCX fonts prefer the extracted body theme fonts, and theme-referenced colors are emitted across runs, borders, shading, shapes, comments, footnotes, and endnotes with concrete RGB fallbacks where possible.
+
+## This Round
+
+1. Switched comment run output to the shared `RunPropertiesHelper` pipeline.
+2. Added XML sanitization for comment text runs.
+3. Switched footnote and endnote run output to the shared `RunPropertiesHelper` pipeline.
+4. Extended theme-aware formatting to comments, footnotes, and endnotes.
+5. Added BIFF `FORMULA` numeric result recovery.
+6. Added BIFF follow-up `STRING` recovery for formula-backed labels.
+7. Added doughnut/donut source-name chart type detection.
+8. Added radar source-name chart type detection.
+9. Replaced the remaining direct reader-side console warnings with structured logger warnings.
+10. Downgraded noisy package/table trace logs from `Info` to `Debug` so normal library calls stay quiet.
 
 ## P2
 

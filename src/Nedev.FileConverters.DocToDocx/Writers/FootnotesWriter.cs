@@ -143,32 +143,10 @@ public class FootnotesWriter
 
         _writer.WriteStartElement("w", "r", wNs);
 
-        if (run.Properties != null)
+        if (run.Properties != null && RunPropertiesHelper.HasRunProperties(run.Properties))
         {
             _writer.WriteStartElement("w", "rPr", wNs);
-            if (!string.IsNullOrEmpty(run.Properties.FontName))
-            {
-                _writer.WriteStartElement("w", "rFonts", wNs);
-                _writer.WriteAttributeString("w", "ascii", null, run.Properties.FontName);
-                _writer.WriteAttributeString("w", "eastAsia", null, run.Properties.FontName);
-                _writer.WriteAttributeString("w", "hAnsi", null, run.Properties.FontName);
-                _writer.WriteEndElement();
-            }
-            if (run.Properties.FontSize > 0)
-            {
-                _writer.WriteStartElement("w", "sz", wNs);
-                _writer.WriteAttributeString("w", "val", null, run.Properties.FontSize.ToString());
-                _writer.WriteEndElement();
-            }
-            if (run.Properties.IsBold) { _writer.WriteStartElement("w", "b", wNs); _writer.WriteEndElement(); }
-            if (run.Properties.IsItalic) { _writer.WriteStartElement("w", "i", wNs); _writer.WriteEndElement(); }
-            var colorHex = ColorHelper.ColorToHex(run.Properties.Color);
-            if (colorHex != "auto")
-            {
-                _writer.WriteStartElement("w", "color", wNs);
-                _writer.WriteAttributeString("w", "val", null, colorHex);
-                _writer.WriteEndElement();
-            }
+            RunPropertiesHelper.WriteRunPropertiesContent(_writer, run.Properties, includeExtended: true, _document?.Theme);
             _writer.WriteEndElement();
         }
 

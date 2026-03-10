@@ -1,5 +1,6 @@
 using System.Text;
 using Nedev.FileConverters.DocToDocx.Models;
+using Nedev.FileConverters.DocToDocx.Utils;
 
 namespace Nedev.FileConverters.DocToDocx.Readers;
 
@@ -40,7 +41,7 @@ public class FontReader
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Warning: Error extracting embedded fonts: {ex.Message}");
+            Logger.Warning("Error extracting embedded fonts", ex);
         }
     }
 

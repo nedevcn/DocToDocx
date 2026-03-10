@@ -264,9 +264,9 @@ public static class DocToDocxConverter
         {
             using var zipWriter = new ZipWriter(stream);
             var options = new Writers.DocumentWriterOptions { EnableHyperlinks = enableHyperlinks };
-            Logger.Info($"DocToDocxConverter.WriteDocumentPackage START: output={outputPath} paragraphs={document.Paragraphs.Count} tables={document.Tables.Count}");
+            Logger.Debug($"DocToDocxConverter.WriteDocumentPackage START: output={outputPath} paragraphs={document.Paragraphs.Count} tables={document.Tables.Count}");
             zipWriter.WriteDocument(document, options);
-            Logger.Info($"DocToDocxConverter.WriteDocumentPackage AFTER WriteDocument: output={outputPath}");
+            Logger.Debug($"DocToDocxConverter.WriteDocumentPackage AFTER WriteDocument: output={outputPath}");
         }
 
         cancellationToken.ThrowIfCancellationRequested();

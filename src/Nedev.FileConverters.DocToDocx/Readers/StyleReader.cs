@@ -216,7 +216,7 @@ public class StyleReader
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Warning: Failed to read style sheet: {ex.Message}");
+            Logger.Warning("Failed to read style sheet", ex);
         }
     }
 

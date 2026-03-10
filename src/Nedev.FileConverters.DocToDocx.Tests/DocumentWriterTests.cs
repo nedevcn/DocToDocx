@@ -230,6 +230,136 @@ namespace Nedev.FileConverters.DocToDocx.Tests
         }
 
         [Fact]
+        public void WriteDocument_Annotations_UseThemeAwareRunProperties()
+        {
+            var doc = new DocumentModel
+            {
+                Theme = new ThemeModel()
+            };
+            doc.Theme.ColorMap["accent1"] = "4472C4";
+
+            var annotation = new AnnotationModel { Id = "1", Author = "Joe" };
+            annotation.Paragraphs.Add(new ParagraphModel
+            {
+                Runs =
+                {
+                    new RunModel
+                    {
+                        Text = "note",
+                        Properties = new RunProperties
+                        {
+                            Color = 0x01000000 | 4,
+                            HighlightColor = 7,
+                            IsUnderline = true,
+                            UnderlineType = UnderlineType.Double,
+                            IsSuperscript = true,
+                            Border = new BorderInfo { Style = BorderStyle.Single, Width = 4, Space = 0, Color = 0x01000000 | 4 }
+                        }
+                    }
+                }
+            });
+            doc.Annotations.Add(annotation);
+
+            byte[] package;
+            using (var ms = new MemoryStream())
+            {
+                var zw = new ZipWriter(ms);
+                zw.WriteDocument(doc);
+                zw.Dispose();
+                package = ms.ToArray();
+            }
+
+            using var zip = new System.IO.Compression.ZipArchive(new MemoryStream(package), System.IO.Compression.ZipArchiveMode.Read);
+            var xml = new StreamReader(zip.GetEntry("word/comments.xml").Open()).ReadToEnd();
+
+            Assert.Contains("themeColor=\"accent1\"", xml);
+            Assert.Contains("val=\"4472C4\"", xml);
+            Assert.Contains("<w:highlight", xml);
+            Assert.Contains("double", xml);
+            Assert.Contains("superscript", xml);
+            Assert.Contains("<w:bdr", xml);
+        }
+
+        [Fact]
+        public void WriteDocument_FootnotesAndEndnotes_UseThemeAwareRunProperties()
+        {
+            var doc = new DocumentModel
+            {
+                Theme = new ThemeModel()
+            };
+            doc.Theme.ColorMap["accent1"] = "4472C4";
+
+            doc.Footnotes.Add(new FootnoteModel
+            {
+                Index = 1,
+                Paragraphs =
+                {
+                    new ParagraphModel
+                    {
+                        Runs =
+                        {
+                            new RunModel
+                            {
+                                Text = "footnote",
+                                Properties = new RunProperties
+                                {
+                                    Color = 0x01000000 | 4,
+                                    HighlightColor = 7,
+                                    IsUnderline = true,
+                                    UnderlineType = UnderlineType.Wave
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
+            doc.Endnotes.Add(new EndnoteModel
+            {
+                Index = 2,
+                Paragraphs =
+                {
+                    new ParagraphModel
+                    {
+                        Runs =
+                        {
+                            new RunModel
+                            {
+                                Text = "endnote",
+                                Properties = new RunProperties
+                                {
+                                    Color = 0x01000000 | 4,
+                                    IsSubscript = true,
+                                    Border = new BorderInfo { Style = BorderStyle.Single, Width = 4, Space = 0, Color = 0x01000000 | 4 }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
+
+            byte[] package;
+            using (var ms = new MemoryStream())
+            {
+                var zw = new ZipWriter(ms);
+                zw.WriteDocument(doc);
+                zw.Dispose();
+                package = ms.ToArray();
+            }
+
+            using var zip = new System.IO.Compression.ZipArchive(new MemoryStream(package), System.IO.Compression.ZipArchiveMode.Read);
+            var footnotesXml = new StreamReader(zip.GetEntry("word/footnotes.xml").Open()).ReadToEnd();
+            var endnotesXml = new StreamReader(zip.GetEntry("word/endnotes.xml").Open()).ReadToEnd();
+
+            Assert.Contains("themeColor=\"accent1\"", footnotesXml);
+            Assert.Contains("wave", footnotesXml);
+            Assert.Contains("<w:highlight", footnotesXml);
+            Assert.Contains("themeColor=\"accent1\"", endnotesXml);
+            Assert.Contains("subscript", endnotesXml);
+            Assert.Contains("<w:bdr", endnotesXml);
+        }
+
+        [Fact]
         public void GeneratedPackage_IsWellFormedXml()
         {
             var doc = new DocumentModel();

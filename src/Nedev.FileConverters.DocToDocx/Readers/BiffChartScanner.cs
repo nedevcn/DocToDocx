@@ -58,6 +58,7 @@ public static class BiffChartScanner
         var strings = new Dictionary<(int r, int c), string>();
         var sst = new List<string>();
         string? firstSheetName = null;
+        (int r, int c)? pendingStringCell = null;
         
         using var ms = new MemoryStream(biffBytes);
         using var reader = new BinaryReader(ms);
@@ -72,6 +73,11 @@ public static class BiffChartScanner
                 if (ms.Position + length > ms.Length) break;
                 
                 long nextPos = ms.Position + length;
+
+                if (pendingStringCell.HasValue && id != 0x0207 && id != 0x003C)
+                {
+                    pendingStringCell = null;
+                }
 
                 if (id == 0x00FC) // SST
                 {
@@ -107,6 +113,25 @@ public static class BiffChartScanner
                         cells[(row, col)] = val;
                     }
                 }
+                else if (id == 0x0006) // FORMULA
+                {
+                    if (length >= 20)
+                    {
+                        int row = reader.ReadUInt16();
+                        int col = reader.ReadUInt16();
+                        reader.ReadUInt16(); // xf
+                        var resultBytes = reader.ReadBytes(8);
+                        bool isStringResult = resultBytes.Length == 8 && BitConverter.ToUInt16(resultBytes, 6) == 0xFFFF;
+                        if (isStringResult)
+                        {
+                            pendingStringCell = (row, col);
+                        }
+                        else if (resultBytes.Length == 8)
+                        {
+                            cells[(row, col)] = BitConverter.ToDouble(resultBytes, 0);
+                        }
+                    }
+                }
                 else if (id == 0x027E) // RK
                 {
                     if (length >= 10)
@@ -121,6 +146,18 @@ public static class BiffChartScanner
                 else if (id == 0x00BD) // MULRK
                 {
                     ParseMulRk(reader, length, cells);
+                }
+                else if (id == 0x0207) // STRING
+                {
+                    if (pendingStringCell.HasValue)
+                    {
+                        var value = ParseShortBiffString(reader, length);
+                        if (!string.IsNullOrWhiteSpace(value))
+                        {
+                            strings[pendingStringCell.Value] = value;
+                        }
+                        pendingStringCell = null;
+                    }
                 }
                 else if (id == 0x0204) // LABEL
                 {
@@ -295,12 +332,33 @@ public static class BiffChartScanner
             {
                 var name = model.SourceStreamName.ToLowerInvariant();
                 if (name.Contains("pie")) model.Type = ChartType.Pie;
+                else if (name.Contains("doughnut") || name.Contains("donut")) model.Type = ChartType.Doughnut;
                 else if (name.Contains("line")) model.Type = ChartType.Line;
                 else if (name.Contains("bar")) model.Type = ChartType.Bar;
                 else if (name.Contains("area")) model.Type = ChartType.Area;
+                else if (name.Contains("radar")) model.Type = ChartType.Radar;
                 else if (name.Contains("scatter")) model.Type = ChartType.Scatter;
             }
         }
+    }
+
+    private static string? ParseShortBiffString(BinaryReader reader, int length)
+    {
+        if (length < 3)
+            return null;
+
+        ushort charLen = reader.ReadUInt16();
+        byte flags = reader.ReadByte();
+        bool isUnicode = (flags & 0x01) != 0;
+        int bytesRemaining = length - 3;
+        int byteCount = Math.Min(bytesRemaining, isUnicode ? charLen * 2 : charLen);
+
+        if (byteCount <= 0)
+            return string.Empty;
+
+        return isUnicode
+            ? Encoding.Unicode.GetString(reader.ReadBytes(byteCount))
+            : Encoding.Default.GetString(reader.ReadBytes(byteCount));
     }
 
     private static void ParseMulRk(BinaryReader reader, int length, Dictionary<(int r, int c), double> cells)

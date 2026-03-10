@@ -14,7 +14,7 @@ public partial class DocumentWriter
     /// </summary>
     private void WriteTable(TableModel table)
     {
-        Logger.Info($"DocumentWriter.WriteTable START: startPara={table.StartParagraphIndex} endPara={table.EndParagraphIndex} columns={table.ColumnCount} rows={table.Rows.Count} IsNested={table.IsNested} ParentTableIndex={table.ParentTableIndex}");
+        Logger.Debug($"DocumentWriter.WriteTable START: startPara={table.StartParagraphIndex} endPara={table.EndParagraphIndex} columns={table.ColumnCount} rows={table.Rows.Count} IsNested={table.IsNested} ParentTableIndex={table.ParentTableIndex}");
         
         // Log first cell content for debugging
         if (table.Rows.Count > 0 && table.Rows[0].Cells.Count > 0)
@@ -22,7 +22,7 @@ public partial class DocumentWriter
             var firstCell = table.Rows[0].Cells[0];
             var firstCellText = string.Join("; ", firstCell.Paragraphs.Select(p => p.Text));
             var nestedTableCount = firstCell.Paragraphs.Count(p => p.Type == ParagraphType.NestedTable && p.NestedTable != null);
-            Logger.Info($"DocumentWriter.WriteTable: First cell has {firstCell.Paragraphs.Count} paragraphs, {nestedTableCount} nested tables. Text = '{firstCellText}'");
+            Logger.Debug($"DocumentWriter.WriteTable: First cell has {firstCell.Paragraphs.Count} paragraphs, {nestedTableCount} nested tables. Text = '{firstCellText}'");
         }
         
         _writer.WriteStartElement("w", "tbl", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
@@ -296,7 +296,7 @@ public partial class DocumentWriter
     /// </summary>
     private void WriteTableRow(TableRowModel row, TableModel table)
     {
-        Logger.Info($"DocumentWriter.WriteTableRow START: tableStart={table.StartParagraphIndex} rowIndex={row.Index} cells={row.Cells.Count}");
+        Logger.Debug($"DocumentWriter.WriteTableRow START: tableStart={table.StartParagraphIndex} rowIndex={row.Index} cells={row.Cells.Count}");
         _writer.WriteStartElement("w", "tr", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
         
         // Row properties
@@ -450,10 +450,10 @@ public partial class DocumentWriter
         {
             if (cell.Paragraphs.Count > 0)
             {
-                Logger.Info($"WriteTableCell: Writing {cell.Paragraphs.Count} paragraphs in cell");
+                Logger.Debug($"WriteTableCell: Writing {cell.Paragraphs.Count} paragraphs in cell");
                 foreach (var para in cell.Paragraphs)
                 {
-                    Logger.Info($"WriteTableCell: Calling WriteParagraph, Type={para.Type}, Text='{para.Text}', NestedTable={para.NestedTable != null}");
+                    Logger.Debug($"WriteTableCell: Calling WriteParagraph, Type={para.Type}, Text='{para.Text}', NestedTable={para.NestedTable != null}");
                     WriteParagraph(para);
                 }
             }

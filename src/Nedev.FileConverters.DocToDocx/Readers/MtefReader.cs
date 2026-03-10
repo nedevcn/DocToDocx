@@ -3,6 +3,7 @@ using System.IO;
 using System.Text;
 using System.Xml;
 using System.Collections.Generic;
+using Nedev.FileConverters.DocToDocx.Utils;
 
 namespace Nedev.FileConverters.DocToDocx.Readers;
 
@@ -62,7 +63,7 @@ public class MtefReader
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Error parsing MTEF: {ex.Message}");
+            Logger.Warning("Failed to parse MTEF equation data", ex);
             return null;
         }
     }

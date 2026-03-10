@@ -208,5 +208,96 @@ namespace Nedev.FileConverters.DocToDocx.Tests
             Assert.Equal("Month", model.CategoryAxisTitle);
             Assert.False(model.ShowLegend);
         }
+
+        [Fact]
+        public void ParsesFormulaNumbersAndFormulaStrings_ForChartRecovery()
+        {
+            using var ms = new MemoryStream();
+            using (var w = new BinaryWriter(ms, Encoding.Default, leaveOpen: true))
+            {
+                w.Write((ushort)0x0809);
+                w.Write((ushort)0);
+
+                WriteLabel(w, 0, 1, "Jan");
+                WriteLabel(w, 0, 2, "Feb");
+                WriteLabel(w, 1, 0, "Revenue");
+
+                WriteFormulaString(w, 0, 0, "Month");
+                WriteFormulaNumber(w, 1, 1, 10d);
+                WriteFormulaNumber(w, 1, 2, 20d);
+            }
+
+            var model = new ChartModel { SourceBytes = ms.ToArray(), SourceStreamName = "Chart1" };
+            BiffChartScanner.TryPopulateChart(model);
+
+            Assert.Equal(new List<string> { "Jan", "Feb" }, model.Categories);
+            var series = Assert.Single(model.Series);
+            Assert.Equal("Revenue", series.Name);
+            Assert.Equal(new List<double> { 10d, 20d }, series.Values);
+            Assert.Equal("Month", model.CategoryAxisTitle);
+        }
+
+        [Theory]
+        [InlineData("Revenue Doughnut", ChartType.Doughnut)]
+        [InlineData("Revenue Radar", ChartType.Radar)]
+        public void DetectsAdditionalChartTypes_FromSourceStreamName(string sourceStreamName, ChartType expectedType)
+        {
+            double[,] data = {
+                { double.NaN, 5, 6 },
+                { 0, 10, 20 },
+                { 0, 11, 21 }
+            };
+
+            var bytes = BuildBiffMatrix(data, rowLabels: new[] { "North", "South" }, colLabels: new[] { "Jan", "Feb" });
+            var model = new ChartModel { SourceBytes = bytes, SourceStreamName = sourceStreamName };
+
+            BiffChartScanner.TryPopulateChart(model);
+
+            Assert.Equal(expectedType, model.Type);
+        }
+
+        private static void WriteLabel(BinaryWriter writer, int row, int col, string text)
+        {
+            var bytes = Encoding.Default.GetBytes(text);
+            writer.Write((ushort)0x0204);
+            writer.Write((ushort)(8 + 1 + bytes.Length));
+            writer.Write((ushort)row);
+            writer.Write((ushort)col);
+            writer.Write((ushort)0);
+            writer.Write((ushort)bytes.Length);
+            writer.Write((byte)0);
+            writer.Write(bytes);
+        }
+
+        private static void WriteFormulaNumber(BinaryWriter writer, int row, int col, double value)
+        {
+            writer.Write((ushort)0x0006);
+            writer.Write((ushort)20);
+            writer.Write((ushort)row);
+            writer.Write((ushort)col);
+            writer.Write((ushort)0);
+            writer.Write(value);
+            writer.Write((ushort)0);
+            writer.Write(0u);
+        }
+
+        private static void WriteFormulaString(BinaryWriter writer, int row, int col, string value)
+        {
+            writer.Write((ushort)0x0006);
+            writer.Write((ushort)20);
+            writer.Write((ushort)row);
+            writer.Write((ushort)col);
+            writer.Write((ushort)0);
+            writer.Write(new byte[] { 0, 0, 0, 0, 0, 0, 0xFF, 0xFF });
+            writer.Write((ushort)0);
+            writer.Write(0u);
+
+            var bytes = Encoding.Default.GetBytes(value);
+            writer.Write((ushort)0x0207);
+            writer.Write((ushort)(3 + bytes.Length));
+            writer.Write((ushort)bytes.Length);
+            writer.Write((byte)0);
+            writer.Write(bytes);
+        }
     }
 }

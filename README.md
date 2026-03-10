@@ -9,7 +9,7 @@ A DOC to DOCX converter for .NET 8.0 and .NET Standard 2.1 with no third-party r
 - **Tables**: Writes table width, indentation, spacing, borders, shading, header rows, cantSplit, vertical merges, horizontal merges, and nested table structures recovered from TAP/PAP data.
 - **Sections and page setup**: Emits page size, orientation, margins, page numbering, and first/odd/even header and footer parts.
 - **Images and floating pictures**: Extracts embedded images and OfficeArt picture data, writes media parts, and emits inline or anchored drawings depending on available FSPA anchor information.
-- **Footnotes, endnotes, comments, textboxes, and equations**: Writes common annotation parts, textbox content, and Equation Editor content converted to OMML where recognized.
+- **Footnotes, endnotes, comments, textboxes, and equations**: Writes common annotation parts, textbox content, and Equation Editor content converted to OMML where recognized, now reusing the same run-property pipeline for theme-backed colors, highlight, underline, borders, and vertical alignment.
 - **Encrypted DOC support**: Supports XOR-obfuscated streams and Office 97-2003 RC4-encrypted DOC files when the correct password is supplied.
 - **Package validation helpers**: Exposes helpers to load, save, convert, and validate generated DOCX packages.
 - **CLI and library APIs**: Includes synchronous conversion, asynchronous conversion, progress reporting, and a command-line tool for file and directory conversion.
@@ -19,9 +19,9 @@ A DOC to DOCX converter for .NET 8.0 and .NET Standard 2.1 with no third-party r
 The converter is intentionally pragmatic: it aims to produce valid, readable DOCX output from a wide range of legacy DOC files, but it does not implement the full MS-DOC / OfficeArt feature surface.
 
 - **Complex vector shapes are downgraded**: Non-picture OfficeArt content and SmartArt-like shapes are currently written through simplified DrawingML fallback paths rather than full-fidelity shape reconstruction.
-- **Chart support is partial**: Embedded BIFF/OLE chart data is scanned on a best-effort basis. Category and value series can often be recovered, but chart formatting, axis details, legends, and some chart types are regenerated with minimal defaults.
-- **Theme parsing is basic**: Theme XML can be extracted from legacy storage, but theme color/style interpretation is not fully implemented.
-- **Best-effort parsing may skip malformed content**: Some OLE, chart, image, and binary parsing paths intentionally catch truncated or malformed input and continue conversion instead of failing the entire document.
+- **Chart support is partial**: Embedded BIFF/OLE chart data is scanned on a best-effort basis. Category and value series can often be recovered, including simple `FORMULA`/`STRING` cells and stream-name hints for doughnut/radar charts, but chart formatting, axis details, legends, and many chart-specific options are still regenerated with minimal defaults.
+- **Theme interpretation is broader but still incomplete**: Theme colors and fonts now influence document defaults, runs, borders, shading, shapes, comments, footnotes, and endnotes, but not every output surface is fully theme-aware yet.
+- **Best-effort parsing still prefers partial output over hard failure**: Many OLE, chart, image, math, and binary parsing paths continue conversion after malformed or truncated input. Those paths now surface more structured warnings, but not every degraded recovery path is fully classified yet.
 - **Layout heuristics remain in a few areas**: Deeply nested tables, unusual merge layouts, and some header/footer or drawing placement cases may be approximated rather than reproduced exactly.
 - **Not a round-trip converter**: The goal is compatible DOCX output, not byte-for-byte structural equivalence with the source DOC.
 
@@ -30,15 +30,15 @@ The converter is intentionally pragmatic: it aims to produce valid, readable DOC
 The following areas are the main remaining implementation and maintenance hotspots identified from the current codebase.
 
 1. **RC4 stream boundary handling needs a dedicated end-to-end audit**: The RC4 setup in the DOC reader includes explicit uncertainty around where encrypted content begins in WordDocument and related streams. The current code works for covered cases, but this area should be treated as fragile until it is backed by encrypted real-world regression samples.
-2. **Silent best-effort recovery can hide data loss**: Several parsing paths intentionally swallow malformed or truncated content and continue conversion. That keeps output generation resilient, but it also means missing charts, images, anchors, or OLE payloads can fail quietly instead of producing structured diagnostics.
-3. **Chart reconstruction remains intentionally minimal**: The BIFF scanner can recover simple category/value grids, but chart metadata and formatting are still regenerated from defaults. This is sufficient for editable fallback charts, not faithful reproduction of complex embedded Excel chart state.
-4. **Theme support stops at extraction**: Theme XML is stored and preserved when found, but theme color/style interpretation is still placeholder-level and does not drive broader formatting reconstruction.
+2. **Structured diagnostics are better, but not exhaustive**: High-value parsing paths now emit structured warnings and the obvious `Console.WriteLine` readers have been unified behind `Logger`, but there are still best-effort recovery branches where degradation is only loosely classified.
+3. **Chart reconstruction remains intentionally minimal**: The BIFF scanner now understands simple `FORMULA` numeric/string results in addition to plain numeric grids, but chart metadata and formatting are still largely regenerated from defaults. This is sufficient for editable fallback charts, not faithful reproduction of complex embedded Excel chart state.
+4. **Theme support is now cross-cutting, not complete**: Theme XML no longer stops at extraction. Parsed theme data already influences defaults, runs, borders, shading, shapes, comments, footnotes, and endnotes, but a full pass over every generated part is still pending.
 5. **Nested table parsing is still a high-complexity area**: Table recovery relies on paragraph nesting levels, cell boundary markers, and stack-based state. The implementation is robust for common cases, but exotic nesting and malformed cell boundaries remain one of the more failure-prone parts of the reader.
 6. **Binary property decoding still needs broader hostile-input coverage**: SPRM/FKP parsing has targeted regression tests, but there is still no broad malformed-input or fuzz-style test coverage for truncated operands, corrupt piece tables, or extreme legacy edge cases.
 
 ## Test coverage notes
 
-- **Covered today**: Package validation, sample conversion flows, selected chart heuristics, OMML namespace generation, FIB regression cases, bookmark decoding, and some encryption helper behavior.
+- **Covered today**: Package validation, sample conversion flows, selected chart heuristics, BIFF `FORMULA`/`STRING` recovery, OMML namespace generation, FIB regression cases, bookmark decoding, annotation/note writer formatting, and some encryption helper behavior.
 - **Still missing**: End-to-end encrypted DOC regression files, malformed document fuzzing, broad OLE/object-pool failure cases, and systematic compatibility suites for complex layout documents.
 
 ## Usage
