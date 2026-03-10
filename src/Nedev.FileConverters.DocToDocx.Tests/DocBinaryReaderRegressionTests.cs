@@ -1,4 +1,5 @@
 using System;
+using System.Collections.Generic;
 using System.IO;
 using System.Reflection;
 using System.Runtime.Serialization;
@@ -6,6 +7,7 @@ using System.Text;
 using Nedev.FileConverters.DocToDocx.Readers;
 using Nedev.FileConverters.DocToDocx.Utils;
 using Xunit;
+using Nedev.FileConverters.DocToDocx.Models;
 
 namespace Nedev.FileConverters.DocToDocx.Tests;
 
@@ -177,6 +179,189 @@ public class DocBinaryReaderRegressionTests
         Assert.Equal("书签A", bookmark.Name);
         Assert.Equal(5, bookmark.StartCp);
         Assert.Equal(15, bookmark.EndCp);
+    }
+
+    [Fact]
+    public void BookmarkReader_InvalidPlcfBklRange_EmitsWarningInsteadOfThrowing()
+    {
+        using var tableStream = new MemoryStream(new byte[32]);
+        var fib = CreateSyntheticFibReader(fibReader =>
+        {
+            SetAutoProperty(fibReader, nameof(FibReader.FcPlcfBkf), 4u);
+            SetAutoProperty(fibReader, nameof(FibReader.LcbPlcfBkf), 12u);
+            SetAutoProperty(fibReader, nameof(FibReader.FcPlcfBkl), 24u);
+            SetAutoProperty(fibReader, nameof(FibReader.LcbPlcfBkl), 2u);
+        });
+
+        var diagnostics = new List<ConversionDiagnostic>();
+
+        using var reader = new BinaryReader(tableStream, Encoding.Unicode, leaveOpen: true);
+        using var wordReader = new BinaryReader(new MemoryStream(Array.Empty<byte>()));
+        var bookmarkReader = new BookmarkReader(reader, wordReader, fib);
+
+        using (Logger.BeginDiagnosticCapture(diagnostics))
+        {
+            bookmarkReader.Read();
+        }
+
+        var bookmark = Assert.Single(bookmarkReader.Bookmarks);
+        Assert.Equal(0, bookmark.StartCp);
+        Assert.Equal(0, bookmark.EndCp);
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Message.Contains("PlcfBkl range", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void AnnotationReader_InvalidPlcfandTxtRange_EmitsWarningAndReturnsEmpty()
+    {
+        using var tableStream = new MemoryStream(new byte[32]);
+        var fib = CreateSyntheticFibReader(fibReader =>
+        {
+            SetAutoProperty(fibReader, nameof(FibReader.FcPlcfandRef), 4u);
+            SetAutoProperty(fibReader, nameof(FibReader.LcbPlcfandRef), 12u);
+            SetAutoProperty(fibReader, nameof(FibReader.FcPlcfandTxt), 40u);
+            SetAutoProperty(fibReader, nameof(FibReader.LcbPlcfandTxt), 12u);
+        });
+
+        var textReader = (Nedev.FileConverters.DocToDocx.Readers.TextReader)FormatterServices.GetUninitializedObject(typeof(Nedev.FileConverters.DocToDocx.Readers.TextReader));
+        using var reader = new BinaryReader(tableStream, Encoding.Default, leaveOpen: true);
+        var annotationReader = new AnnotationReader(reader, fib, textReader);
+        var diagnostics = new List<ConversionDiagnostic>();
+
+        using (Logger.BeginDiagnosticCapture(diagnostics))
+        {
+            var annotations = annotationReader.ReadAnnotations();
+            Assert.Empty(annotations);
+        }
+
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Message.Contains("PlcfandTxt range", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void TextboxReader_InvalidTableRange_EmitsWarningAndReturnsEmpty()
+    {
+        using var tableStream = new MemoryStream(new byte[16]);
+        var fib = CreateSyntheticFibReader(fibReader =>
+        {
+            SetAutoProperty(fibReader, nameof(FibReader.FcTxbx), 20u);
+            SetAutoProperty(fibReader, nameof(FibReader.LcbTxbx), 16u);
+        });
+
+        var textReader = (Nedev.FileConverters.DocToDocx.Readers.TextReader)FormatterServices.GetUninitializedObject(typeof(Nedev.FileConverters.DocToDocx.Readers.TextReader));
+        SetPrivateField(textReader, "_text", "sample textbox content");
+
+        using var tableReader = new BinaryReader(tableStream, Encoding.Default, leaveOpen: true);
+        var textboxReader = new TextboxReader(tableReader, fib, textReader);
+        var diagnostics = new List<ConversionDiagnostic>();
+
+        using (Logger.BeginDiagnosticCapture(diagnostics))
+        {
+            var textboxes = textboxReader.ReadTextboxes();
+            Assert.Empty(textboxes);
+        }
+
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Message.Contains("PLCFTxbxBkd range", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void StyleReader_InvalidFontTableRange_FallsBackToDefaultsAndEmitsWarning()
+    {
+        using var stream = new MemoryStream(new byte[16]);
+        var fib = CreateSyntheticFibReader(fibReader =>
+        {
+            SetAutoProperty(fibReader, nameof(FibReader.FcSttbfFfn), 20u);
+            SetAutoProperty(fibReader, nameof(FibReader.LcbSttbfFfn), 12u);
+        });
+
+        using var reader = new BinaryReader(stream, Encoding.Default, leaveOpen: true);
+        var styleReader = new StyleReader(reader, fib);
+        var diagnostics = new List<ConversionDiagnostic>();
+
+        using (Logger.BeginDiagnosticCapture(diagnostics))
+        {
+            styleReader.Read();
+        }
+
+        Assert.NotEmpty(styleReader.Styles.Fonts);
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Message.Contains("Skipped font table", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void StyleReader_InvalidStshRange_EmitsWarningAndKeepsDefaultStyles()
+    {
+        using var stream = new MemoryStream(new byte[16]);
+        var fib = CreateSyntheticFibReader(fibReader =>
+        {
+            SetAutoProperty(fibReader, nameof(FibReader.FcStshf), 24u);
+            SetAutoProperty(fibReader, nameof(FibReader.LcbStshf), 16u);
+        });
+
+        using var reader = new BinaryReader(stream, Encoding.Default, leaveOpen: true);
+        var styleReader = new StyleReader(reader, fib);
+        var diagnostics = new List<ConversionDiagnostic>();
+
+        using (Logger.BeginDiagnosticCapture(diagnostics))
+        {
+            styleReader.Read();
+        }
+
+        Assert.NotEmpty(styleReader.Styles.Styles);
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Message.Contains("Skipped STSH parsing", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void SttbfHelper_TruncatedEntry_EmitsWarningAndReturnsPartialStrings()
+    {
+        using var stream = new MemoryStream();
+        using (var writer = new BinaryWriter(stream, Encoding.Unicode, leaveOpen: true))
+        {
+            writer.Write(0u);
+            writer.Write((ushort)0xFFFF);
+            writer.Write((ushort)2);
+            writer.Write((ushort)0);
+            writer.Write((ushort)1);
+            writer.Write(Encoding.Unicode.GetBytes("A"));
+            writer.Write((ushort)4);
+            writer.Write(Encoding.Unicode.GetBytes("B"));
+        }
+
+        stream.Position = 0;
+        using var reader = new BinaryReader(stream, Encoding.Unicode, leaveOpen: true);
+        var diagnostics = new List<ConversionDiagnostic>();
+
+        List<string> strings;
+        using (Logger.BeginDiagnosticCapture(diagnostics))
+        {
+            strings = SttbfHelper.ReadSttbf(reader, 4, (uint)(stream.Length - 4));
+        }
+
+        Assert.Single(strings);
+        Assert.Equal("A", strings[0]);
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Message.Contains("declares 8 bytes of text", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void SectionReader_InvalidPlcfSedRange_EmitsWarningAndReturnsEmpty()
+    {
+        using var tableStream = new MemoryStream(new byte[16]);
+        using var wordStream = new MemoryStream(new byte[16]);
+        var fib = CreateSyntheticFibReader(fibReader =>
+        {
+            SetAutoProperty(fibReader, nameof(FibReader.FcPlcfSed), 20u);
+            SetAutoProperty(fibReader, nameof(FibReader.LcbPlcfSed), 20u);
+        });
+
+        using var tableReader = new BinaryReader(tableStream, Encoding.Default, leaveOpen: true);
+        using var wordReader = new BinaryReader(wordStream, Encoding.Default, leaveOpen: true);
+        var sectionReader = new SectionReader(tableReader, wordReader, fib);
+        var diagnostics = new List<ConversionDiagnostic>();
+
+        using (Logger.BeginDiagnosticCapture(diagnostics))
+        {
+            var sections = sectionReader.ReadSections();
+            Assert.Empty(sections);
+        }
+
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Message.Contains("PlcfSed range", StringComparison.Ordinal));
     }
 
     private static byte[] BuildFontTable(byte[] ffn)

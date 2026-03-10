@@ -28,6 +28,12 @@ public class SectionReader
         var sections = new List<SectionInfo>();
         if (_fib.FcPlcfSed == 0 || _fib.LcbPlcfSed == 0) return sections;
 
+        if (!_tableReader.CanReadRange(_fib.FcPlcfSed, _fib.LcbPlcfSed) || _fib.LcbPlcfSed < 20)
+        {
+            Logger.Warning($"Skipped section PLC parsing because PlcfSed range 0x{_fib.FcPlcfSed:X}/0x{_fib.LcbPlcfSed:X} is invalid.");
+            return sections;
+        }
+
         _tableReader.BaseStream.Seek(_fib.FcPlcfSed, SeekOrigin.Begin);
         
         // n = number of SED structures

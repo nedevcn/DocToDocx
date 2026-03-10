@@ -27,6 +27,18 @@ public class AnnotationReader
         if (_fib.LcbPlcfandRef == 0 || _fib.LcbPlcfandTxt == 0 || _tableReader == null)
             return annotations;
 
+        if (!_tableReader.CanReadRange(_fib.FcPlcfandRef, _fib.LcbPlcfandRef))
+        {
+            Logger.Warning($"Skipped annotations because PlcfandRef range 0x{_fib.FcPlcfandRef:X}/0x{_fib.LcbPlcfandRef:X} exceeds the Table stream.");
+            return annotations;
+        }
+
+        if (!_tableReader.CanReadRange(_fib.FcPlcfandTxt, _fib.LcbPlcfandTxt))
+        {
+            Logger.Warning($"Skipped annotations because PlcfandTxt range 0x{_fib.FcPlcfandTxt:X}/0x{_fib.LcbPlcfandTxt:X} exceeds the Table stream.");
+            return annotations;
+        }
+
         try
         {
             annotations = ReadAnnotationsInternal();
@@ -45,8 +57,21 @@ public class AnnotationReader
 
         // 1. Determine number of comments from PlcfandTxt (array of CPs, no data)
         // PLCF of size LcbPlcfandTxt contains (n + 1) * 4 bytes.
+        if ((_fib.LcbPlcfandTxt % 4) != 0 || _fib.LcbPlcfandTxt < 8)
+        {
+            Logger.Warning($"Skipped annotations because PlcfandTxt length 0x{_fib.LcbPlcfandTxt:X} is not a valid CP array.");
+            return annotations;
+        }
+
         int n = (int)(_fib.LcbPlcfandTxt / 4) - 1;
         if (n <= 0) return annotations;
+
+        long refCpBytes = (n + 1L) * sizeof(int);
+        if (_fib.LcbPlcfandRef < refCpBytes)
+        {
+            Logger.Warning($"Skipped annotations because PlcfandRef length 0x{_fib.LcbPlcfandRef:X} is too small for {n} anchor CP entries.");
+            return annotations;
+        }
 
         // 2. Read CPs from PlcfandRef (anchors in main document)
         _tableReader.BaseStream.Seek(_fib.FcPlcfandRef, SeekOrigin.Begin);
@@ -58,6 +83,11 @@ public class AnnotationReader
 
         // Calculate element size of ATRDPre10
         int atrdSize = (int)((_fib.LcbPlcfandRef - (n + 1) * 4) / n);
+        if (atrdSize < 10)
+        {
+            Logger.Warning($"Skipped annotations because ATRD element size {atrdSize} in PlcfandRef is smaller than the minimum supported size.");
+            return annotations;
+        }
 
         // Read ATRD structs
         var dttms = new uint[n];
@@ -143,7 +173,7 @@ public class AnnotationReader
         // PlcfAtnbkf: Array of CPs (starts) + Array of short (index)
         // PLCF element size = 2 bytes.
         int nStarts = (int)((_fib.LcbPlcfAtnbkf - 4) / 6);
-        if (nStarts > 0)
+        if (nStarts > 0 && _tableReader.CanReadRange(_fib.FcPlcfAtnbkf, _fib.LcbPlcfAtnbkf))
         {
             _tableReader.BaseStream.Seek(_fib.FcPlcfAtnbkf, SeekOrigin.Begin);
             int[] startCps = new int[nStarts + 1];
@@ -158,9 +188,13 @@ public class AnnotationReader
                 }
             }
         }
+        else if (nStarts > 0)
+        {
+            Logger.Warning($"Skipped annotation start range refinement because PlcfAtnbkf range 0x{_fib.FcPlcfAtnbkf:X}/0x{_fib.LcbPlcfAtnbkf:X} exceeds the Table stream.");
+        }
 
         int nEnds = (int)((_fib.LcbPlcfAtnbkl - 4) / 6);
-        if (nEnds > 0)
+        if (nEnds > 0 && _tableReader.CanReadRange(_fib.FcPlcfAtnbkl, _fib.LcbPlcfAtnbkl))
         {
             _tableReader.BaseStream.Seek(_fib.FcPlcfAtnbkl, SeekOrigin.Begin);
             int[] endCps = new int[nEnds + 1];
@@ -174,6 +208,10 @@ public class AnnotationReader
                     annotations[annotIdx].EndCharacterPosition = endCps[i];
                 }
             }
+        }
+        else if (nEnds > 0)
+        {
+            Logger.Warning($"Skipped annotation end range refinement because PlcfAtnbkl range 0x{_fib.FcPlcfAtnbkl:X}/0x{_fib.LcbPlcfAtnbkl:X} exceeds the Table stream.");
         }
     }
 

@@ -224,6 +224,21 @@ public static class BinaryReaderExt
     }
 
     /// <summary>
+    /// Returns true when the requested absolute byte range can be read from the stream.
+    /// </summary>
+    public static bool CanReadRange(this BinaryReader reader, long offset, long length)
+    {
+        if (offset < 0 || length < 0)
+            return false;
+
+        long streamLength = reader.BaseStream.Length;
+        if (offset > streamLength)
+            return false;
+
+        return length <= streamLength - offset;
+    }
+
+    /// <summary>
     /// Reads 24-bit integer (3 bytes)
     /// </summary>
     public static int ReadInt24(this BinaryReader reader)

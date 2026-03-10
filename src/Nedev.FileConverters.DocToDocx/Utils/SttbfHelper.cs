@@ -19,6 +19,12 @@ public static class SttbfHelper
         long originalPos = reader.BaseStream.Position;
         try
         {
+            if (!reader.CanReadRange(fc, lcb))
+            {
+                Logger.Warning($"Skipped STTBF at 0x{fc:X} because range 0x{lcb:X} exceeds the available stream length.");
+                return strings;
+            }
+
             reader.BaseStream.Seek(fc, SeekOrigin.Begin);
             
             // Read fExtend (2 bytes)
@@ -40,15 +46,39 @@ public static class SttbfHelper
             {
                 if (reader.BaseStream.Position >= fc + lcb) break;
 
+                int lengthBytes = isUnicode ? 2 : 1;
+                if (!reader.CanReadRange(reader.BaseStream.Position, lengthBytes))
+                {
+                    Logger.Warning($"Stopped reading STTBF at 0x{fc:X} because entry {i} is missing its length prefix.");
+                    break;
+                }
+
                 int cch = isUnicode ? reader.ReadUInt16() : reader.ReadByte();
                 if (cch == 0)
                 {
                     strings.Add(string.Empty);
-                    if (cbExtra > 0) reader.BaseStream.Seek(cbExtra, SeekOrigin.Current);
+                    if (cbExtra > 0)
+                    {
+                        if (!reader.CanReadRange(reader.BaseStream.Position, cbExtra))
+                        {
+                            Logger.Warning($"Stopped reading STTBF at 0x{fc:X} because entry {i} is missing {cbExtra} bytes of extra data.");
+                            break;
+                        }
+
+                        reader.BaseStream.Seek(cbExtra, SeekOrigin.Current);
+                    }
+
                     continue;
                 }
 
-                byte[] bytes = reader.ReadBytes(isUnicode ? cch * 2 : cch);
+                int byteCount = isUnicode ? cch * 2 : cch;
+                if (!reader.CanReadRange(reader.BaseStream.Position, byteCount))
+                {
+                    Logger.Warning($"Stopped reading STTBF at 0x{fc:X} because entry {i} declares {byteCount} bytes of text beyond the available range.");
+                    break;
+                }
+
+                byte[] bytes = reader.ReadBytes(byteCount);
                 string str = isUnicode 
                     ? Encoding.Unicode.GetString(bytes) 
                     : Encoding.GetEncoding(1252).GetString(bytes); // Fallback to Western European
@@ -57,6 +87,12 @@ public static class SttbfHelper
 
                 if (cbExtra > 0)
                 {
+                    if (!reader.CanReadRange(reader.BaseStream.Position, cbExtra))
+                    {
+                        Logger.Warning($"Stopped reading STTBF at 0x{fc:X} because entry {i} is missing {cbExtra} bytes of extra data.");
+                        break;
+                    }
+
                     reader.BaseStream.Seek(cbExtra, SeekOrigin.Current);
                 }
             }

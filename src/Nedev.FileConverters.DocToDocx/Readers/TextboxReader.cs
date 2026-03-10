@@ -29,6 +29,12 @@ public class TextboxReader
         if (_fib.FcTxbx == 0 || _fib.LcbTxbx == 0 || _tableReader == null)
             return textboxes;
 
+        if (!_tableReader.CanReadRange(_fib.FcTxbx, _fib.LcbTxbx))
+        {
+            Logger.Warning($"Skipped textboxes because PLCFTxbxBkd range 0x{_fib.FcTxbx:X}/0x{_fib.LcbTxbx:X} exceeds the Table stream.");
+            return textboxes;
+        }
+
         try
         {
             textboxes = ReadTextboxesInternal();
@@ -68,7 +74,25 @@ public class TextboxReader
             int relEnd = cpArray[i + 1];
             int length = relEnd - relStart;
 
-            if (length <= 0) continue;
+            if (length <= 0)
+            {
+                Logger.Warning($"Skipped textbox entry {i} because its CP range [{relStart}, {relEnd}) is empty or reversed.");
+                continue;
+            }
+
+            int absCp = textboxStoryStartCp + relStart;
+            if (absCp < 0 || absCp >= _textReader.Text.Length)
+            {
+                Logger.Warning($"Skipped textbox entry {i} because absolute CP {absCp} falls outside the reconstructed text buffer.");
+                continue;
+            }
+
+            length = Math.Min(length, _textReader.Text.Length - absCp);
+            if (length <= 0)
+            {
+                Logger.Warning($"Skipped textbox entry {i} because no textbox story text is available at absolute CP {absCp}.");
+                continue;
+            }
 
             var textbox = new TextboxModel
             {
@@ -80,7 +104,6 @@ public class TextboxReader
             };
 
             // Pull text from global TextReader using absolute CP
-            int absCp = textboxStoryStartCp + relStart;
             var textboxText = _textReader.GetText(absCp, length);
             textboxText = CleanTextboxText(textboxText);
 

@@ -19,7 +19,7 @@
 
 - 旧版 DOC 二进制解析链路已经搭起来，包括 CFB、FIB、CLX/Piece Table、FKP、SPRM、样式、段落与 run 解析。
 - 基础文本、常见 run/段落格式、超链接字段、书签、批注、脚注、页眉页脚、列表和部分主题色映射已有代码与测试支撑。
-- 表格、嵌套表格、图片、OfficeArt 形状、文本框、OLE 对象、图表、公式对象都已有 reader 或 writer，但不少场景仍是启发式恢复。
+- 表格、嵌套表格、图片、OfficeArt 形状、文本框、OLE 对象、图表、公式对象都已进入解析或写出链路，部分能力已有真实样本与回归测试支撑，但复杂场景下仍有不少地方依赖启发式恢复。
 - OfficeArt/FSPA 已能恢复更多浮动对象锚点信息、环绕模式，并在部分自定义几何场景下把 wrap polygon 保留到输出模型。
 - 文本框读取链路已开始把 textbox story 与 textbox shape 元数据合并，能保留更多位置、尺寸、环绕与基础对齐信息。
 - 文本框匹配已不再只依赖简单顺序，开始结合主文档中的 textbox 锚点字段位置和段落提示来关联 textbox story 与 OfficeArt textbox shape。
@@ -27,6 +27,7 @@
 - `samples/sample1.doc` 已纳入真实回归样本，当前覆盖加载、带 warning 的完整转换、标题/内联格式/表格/drawing 输出，以及 legacy field code 中非法 XML 控制字符的清洗。
 - BIFF 图表扫描除基础数据恢复外，已开始补充部分布局偏好，例如条形图轴位置和可推断的类目顺序方向。
 - 支持 XOR/RC4 相关加密读取路径，但还缺真实样本驱动的端到端回归验证。
+- 一批历史上容易静默降级的二进制结构现在已补上显式边界校验和 warning，包括 bookmark/annotation/textbox PLC、STTBF、字体表、样式表和 section PLC；对应的 malformed synthetic regression 测试也已补充。
 
 ### 目前不能承诺的能力
 

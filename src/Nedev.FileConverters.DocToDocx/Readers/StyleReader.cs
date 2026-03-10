@@ -53,6 +53,13 @@ public class StyleReader
             return;
         }
 
+        if (!_tableReader.CanReadRange(_fib.FcSttbfFfn, _fib.LcbSttbfFfn))
+        {
+            Logger.Warning($"Skipped font table because SttbfFfn range 0x{_fib.FcSttbfFfn:X}/0x{_fib.LcbSttbfFfn:X} exceeds the Table stream; using default fonts.");
+            AddDefaultFonts();
+            return;
+        }
+
         try
         {
             _tableReader.BaseStream.Seek(_fib.FcSttbfFfn, SeekOrigin.Begin);
@@ -79,8 +86,9 @@ public class StyleReader
                     Styles.Fonts.Add(font);
             }
         }
-        catch
+        catch (Exception ex)
         {
+            Logger.Warning("Failed to read font table; using default fonts.", ex);
             // If font table parsing fails, fall back to defaults
             if (Styles.Fonts.Count == 0)
                 AddDefaultFonts();
@@ -206,6 +214,12 @@ public class StyleReader
         // Try to parse real styles from STSH
         if (_fib.FcStshf == 0 || _fib.LcbStshf == 0)
         {
+            return;
+        }
+
+        if (!_tableReader.CanReadRange(_fib.FcStshf, _fib.LcbStshf) || _fib.LcbStshf < 12)
+        {
+            Logger.Warning($"Skipped STSH parsing because range 0x{_fib.FcStshf:X}/0x{_fib.LcbStshf:X} is invalid; keeping default styles.");
             return;
         }
 

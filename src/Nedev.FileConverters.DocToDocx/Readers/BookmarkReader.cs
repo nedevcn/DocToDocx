@@ -43,6 +43,12 @@ public class BookmarkReader
             return;
         }
 
+        if (!_tableReader.CanReadRange(_fib.FcPlcfBkf, _fib.LcbPlcfBkf))
+        {
+            Logger.Warning($"Skipped bookmarks because PlcfBkf range 0x{_fib.FcPlcfBkf:X}/0x{_fib.LcbPlcfBkf:X} exceeds the Table stream.");
+            return;
+        }
+
         try
         {
             ReadPlcfBkf();
@@ -70,6 +76,12 @@ public class BookmarkReader
     {
         if (_fib.FcPlcfBkf == 0 || _fib.LcbPlcfBkf == 0) return;
 
+        if (_fib.LcbPlcfBkf < 12)
+        {
+            Logger.Warning($"Skipped bookmarks because PlcfBkf length 0x{_fib.LcbPlcfBkf:X} is too small to contain bookmark data.");
+            return;
+        }
+
         _tableReader.BaseStream.Seek(_fib.FcPlcfBkf, SeekOrigin.Begin);
         var fcEndBkf = _fib.FcPlcfBkf + _fib.LcbPlcfBkf;
 
@@ -78,6 +90,13 @@ public class BookmarkReader
         // We'll assume 4 bytes (ibkl: 2, bkf: 2)
         int n = (int)((_fib.LcbPlcfBkf - 4) / 8); 
         if (n <= 0) return;
+
+        int expectedBkfBytes = (n + 1) * sizeof(int) + n * sizeof(uint);
+        if (expectedBkfBytes > _fib.LcbPlcfBkf)
+        {
+            Logger.Warning($"Skipped bookmarks because PlcfBkf length 0x{_fib.LcbPlcfBkf:X} is inconsistent with {n} bookmark entries.");
+            return;
+        }
 
         var startCps = new int[n];
         for (int i = 0; i < n; i++) startCps[i] = _tableReader.ReadInt32();
@@ -113,6 +132,13 @@ public class BookmarkReader
     {
         var endCps = new List<int>();
         if (_fib.FcPlcfBkl == 0 || _fib.LcbPlcfBkl == 0) return endCps;
+
+        long expectedBytes = (n + 1L) * sizeof(int);
+        if (!_tableReader.CanReadRange(_fib.FcPlcfBkl, _fib.LcbPlcfBkl) || _fib.LcbPlcfBkl < expectedBytes)
+        {
+            Logger.Warning($"Skipped bookmark end positions because PlcfBkl range 0x{_fib.FcPlcfBkl:X}/0x{_fib.LcbPlcfBkl:X} is inconsistent with {n} bookmark entries.");
+            return endCps;
+        }
 
         _tableReader.BaseStream.Seek(_fib.FcPlcfBkl, SeekOrigin.Begin);
         for (int i = 0; i <= n; i++)
