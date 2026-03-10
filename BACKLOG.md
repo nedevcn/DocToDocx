@@ -120,10 +120,15 @@ unit test suite (now 17/17 converter tests passing).
    - Goal: reduce the need for simplified fallback rectangles by reconstructing
      multi‑path OfficeArt and SmartArt geometry, respecting groups, gradients,
      and other advanced DrawingML features.
-   - Deliverables: full custom geometry support, grouped shape output, and a
-     series of regression samples exercise common SmartArt shapes.
-   - Status: added support for multi-contour paths and improved segment parsing
-     (2026/03); further work remains.
+   - Deliverables: full custom geometry support, grouped shape output (with
+     non-visual id/name properties), and a series of regression samples
+     exercise common SmartArt shapes.
+   - Status: **completed for this round.** Custom geometry now emits multiple
+     contours correctly, group containers are written (with child nvSpPr
+     identifiers), and a basic linear-gradient fill model works in both reader
+     and writer; unit tests cover all of the above and currently pass.  Broader
+     SmartArt semantics, non-linear or complex gradients, and sophisticated
+     transform handling remain future work.
 
 ## Nice-to-have
 

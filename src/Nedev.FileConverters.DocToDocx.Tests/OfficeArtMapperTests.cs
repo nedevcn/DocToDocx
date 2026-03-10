@@ -3,6 +3,7 @@ using System;
 using System.IO;
 using System.Linq;
 using System.Text;
+using System.Collections.Generic;
 using Nedev.FileConverters.DocToDocx.Models;
 using Nedev.FileConverters.DocToDocx.Readers;
 using Xunit;
@@ -88,5 +89,65 @@ public class OfficeArtMapperTests
         writer.Write(children);
         writer.Flush();
         return ms.ToArray();
+    }
+
+    [Fact]
+    public void OfficeArtMapper_GroupContainerYieldsGroupShape()
+    {
+        byte[] leaf = BuildLeafRecord(0xF00A, 0x0010, BitConverter.GetBytes(5).Concat(new byte[4]).ToArray(), version: 0x2);
+        var spc1 = BuildContainerRecord(0xF004, 0, leaf);
+        var spc2 = BuildContainerRecord(0xF004, 0, leaf);
+        var grp = BuildContainerRecord(0xF003, 0, spc1.Concat(spc2).ToArray());
+
+        using var stream = new MemoryStream(grp);
+        var reader = new OfficeArtReader(stream);
+        var doc = new DocumentModel();
+        OfficeArtMapper.AttachShapes(doc, reader, null);
+
+        Assert.Single(doc.Shapes);
+        Assert.Equal(ShapeType.Group, doc.Shapes[0].Type);
+        Assert.NotNull(doc.Shapes[0].Children);
+        Assert.Equal(2, doc.Shapes[0].Children!.Count);
+    }
+
+    [Fact]
+    public void OfficeArtMapper_ParsesGradientProperties()
+    {
+        // assemble a shape container with OPT records containing gradient data
+        byte[] leaf = BuildLeafRecord(0xF00A, 0x0010, BitConverter.GetBytes(10).Concat(new byte[4]).ToArray(), version: 0x2);
+        // gradient angle property (simple, non-complex)
+        using var msAngle = new MemoryStream();
+        using (var bw = new BinaryWriter(msAngle, Encoding.Default, leaveOpen: true))
+        {
+            // header: propId with no flags, then value
+            bw.Write((ushort)1000);
+            bw.Write((uint)5400000);
+            bw.Flush();
+        }
+        byte[] optAngle = BuildLeafRecord(0xF00B, 1, msAngle.ToArray(), version: 0x3);
+        // gradient stops property: count(ushort) + (color:int + pos:float) * n
+        var gradBuf = new List<byte>();
+        gradBuf.AddRange(BitConverter.GetBytes((ushort)2));
+        gradBuf.AddRange(BitConverter.GetBytes(0xFF0000));
+        gradBuf.AddRange(BitConverter.GetBytes(0f));
+        gradBuf.AddRange(BitConverter.GetBytes(0x00FF00));
+        gradBuf.AddRange(BitConverter.GetBytes(1f));
+        byte[] optStops = BuildLeafRecord(0xF00B, 1, BuildOptPayload(1001, gradBuf.ToArray()), version: 0x3);
+        byte[] spContainer = BuildContainerRecord(0xF004, 0, leaf.Concat(optAngle).Concat(optStops).ToArray());
+
+        using var stream = new MemoryStream(spContainer);
+        var reader = new OfficeArtReader(stream);
+        var doc = new DocumentModel();
+        OfficeArtMapper.AttachShapes(doc, reader, null);
+
+        var shape = Assert.Single(doc.Shapes);
+        Assert.Equal(FillType.LinearGradient, shape.FillType);
+        Assert.Equal(5400000, shape.GradientAngle);
+        Assert.NotNull(shape.GradientStops);
+        Assert.Equal(2, shape.GradientStops!.Count);
+        Assert.Equal(0xFF0000, shape.GradientStops![0].Color);
+        Assert.Equal(0d, shape.GradientStops![0].Position);
+        Assert.Equal(0x00FF00, shape.GradientStops![1].Color);
+        Assert.Equal(1d, shape.GradientStops![1].Position);
     }
 }

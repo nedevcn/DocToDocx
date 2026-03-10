@@ -367,6 +367,27 @@ public enum ParagraphAlignment
 /// <summary>
 /// Lightweight shape model used for OfficeArt/Escher-based drawing objects.
 /// </summary>
+/// <summary>
+/// Type of fill used for a shape.  Solid is the default; linear gradient is
+/// supported for simple two-color interpolations.
+/// </summary>
+public enum FillType
+{
+    Solid,
+    LinearGradient
+}
+
+/// <summary>
+/// Represents a single color stop in a gradient fill.  Position is a value
+/// between 0 and 1 inclusive (0 = start of gradient, 1 = end).
+/// </summary>
+public class GradientStop
+{
+    public int Color { get; set; }
+    /// <summary>Fractional position along gradient (0..1).</summary>
+    public double Position { get; set; }
+}
+
 public class ShapeModel
 {
     public int Id { get; set; }
@@ -381,11 +402,22 @@ public class ShapeModel
     public int ParagraphIndexHint { get; set; } = -1;
 
     /// <summary>
+    /// Collection of child shapes when <see cref="Type"/> == <see cref="ShapeType.Group"/>.
+    /// This field is populated by the OfficeArtMapper when a group container is
+    /// encountered and is used by the writer to emit a &lt;a:grpSp&gt; element.
+    /// </summary>
+    public List<ShapeModel>? Children { get; set; }
+
+    /// <summary>
     /// Vertices for non-rectangular text wrapping (wp:wrapPolygon).
     /// </summary>
     public List<System.Drawing.Point>? WrapPolygonVertices { get; set; }
 
     public int FillColor { get; set; }   // ICO or COLORREF, 0 = auto/none
+    public FillType FillType { get; set; } = FillType.Solid;
+    public List<GradientStop>? GradientStops { get; set; }
+    public int GradientAngle { get; set; } // degrees clockwise from 3 o'clock
+
     public int LineColor { get; set; }   // COLORREF
     public int LineWidth { get; set; }   // In EMUs or twips
     public bool IsLineVisible { get; set; } = true;
@@ -409,7 +441,8 @@ public enum ShapeType
     Rectangle,
     Ellipse,
     Textbox,
-    Custom
+    Custom,
+    Group
 }
 
 /// <summary>

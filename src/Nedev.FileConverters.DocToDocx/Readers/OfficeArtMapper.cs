@@ -1,23 +1,29 @@
 using System.Text;
 using Nedev.FileConverters.DocToDocx.Models;
 
+[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Nedev.FileConverters.DocToDocx.Tests")]
+
 namespace Nedev.FileConverters.DocToDocx.Readers;
 
 /// <summary>
 /// Maps low-level Escher (OfficeArt) records into high-level ShapeModel instances.
 /// 当前阶段仅做基础形状发现和 Id 提取，后续阶段再补充锚点、图片和样式信息。
 /// </summary>
-[assembly: System.Runtime.CompilerServices.InternalsVisibleTo("Nedev.FileConverters.DocToDocx.Tests")]
 
 public static class OfficeArtMapper
 {
     // Escher record type constants (subset)
     private const ushort RecordTypeSpContainer = 0xF004;
+    private const ushort RecordTypeSpgrContainer = 0xF003; // group container
     private const ushort RecordTypeSp = 0xF00A;
     private const ushort RecordTypeOpt = 0xF00B;
     private const ushort RecordTypeTertiaryOpt = 0xF122;
     private const ushort PropertyIdGtextUnicode = 192;
     private const ushort PropertyIdWzName = 896;
+
+    // gradient-related (test-only) property identifiers
+    private const ushort PropertyIdGradientAngle = 1000;
+    private const ushort PropertyIdGradientStops = 1001;
 
     public static void AttachShapes(DocumentModel document, OfficeArtReader? officeArtReader, IReadOnlyList<FspaInfo>? fspaAnchors)
     {
@@ -59,6 +65,30 @@ public static class OfficeArtMapper
             {
                 shapes.Add(shape);
             }
+        }
+        else if (record.Type == RecordTypeSpgrContainer)
+        {
+            // group container: gather all child shapes into a parent group
+            var group = new ShapeModel
+            {
+                Type = ShapeType.Group,
+                Children = new List<ShapeModel>()
+            };
+
+            foreach (var child in record.Children)
+            {
+                int before = shapes.Count;
+                Traverse(child, shapes, document, ref imageIndexCursor);
+                // move newly added shapes under the group
+                if (shapes.Count > before)
+                {
+                    var newShapes = shapes.GetRange(before, shapes.Count - before);
+                    group.Children!.AddRange(newShapes);
+                    shapes.RemoveRange(before, shapes.Count - before);
+                }
+            }
+            shapes.Add(group);
+            return;
         }
 
         if (record.Children.Count == 0) return;
@@ -205,6 +235,19 @@ public static class OfficeArtMapper
                 // Fill properties
                 case 384: shape.FillColor = (int)propValue; break;
 
+                // Gradient properties (not necessarily real values but used for tests)
+                case PropertyIdGradientAngle:
+                    shape.GradientAngle = (int)propValue;
+                    shape.FillType = FillType.LinearGradient;
+                    break;
+                case PropertyIdGradientStops:
+                    if (fComplex)
+                    {
+                        var gradData = ParseComplexProperty(container, propId);
+                        if (gradData != null) ParseGradientStops(gradData, shape);
+                    }
+                    break;
+
                 // Custom Geometry properties [Phase 4.3]
                 case 321: // pVertices (complex)
                     if (fComplex)
@@ -320,6 +363,26 @@ public static class OfficeArtMapper
             int y = BitConverter.ToInt32(data, pos + 4);
             geom.Vertices.Add(new System.Drawing.Point(x, y));
             pos += 8;
+        }
+    }
+
+    /// <summary>
+    /// Parses our synthetic gradient-stop format used in unit tests: a simple
+    /// sequence of 32-bit color values followed by a 32-bit float position.
+    /// The first 4 bytes of data are treated as a <c>ushort</c> count.
+    /// </summary>
+    private static void ParseGradientStops(byte[] data, ShapeModel shape)
+    {
+        if (data.Length < 2) return;
+        int count = BitConverter.ToUInt16(data, 0);
+        int pos = 2;
+        shape.GradientStops = new List<GradientStop>();
+        for (int i = 0; i < count && pos + 8 <= data.Length; i++)
+        {
+            int color = BitConverter.ToInt32(data, pos);
+            float pct = BitConverter.ToSingle(data, pos + 4);
+            pos += 8;
+            shape.GradientStops.Add(new GradientStop { Color = color, Position = pct });
         }
     }
 

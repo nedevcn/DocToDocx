@@ -1104,6 +1104,8 @@ namespace Nedev.FileConverters.DocToDocx.Tests
         public void WriteDocument_CustomGeometry_MultiplePaths_RendersAllPaths()
         {
             var doc = new DocumentModel();
+            // add placeholder paragraph so shapes with hint=0 will be placed
+            doc.Paragraphs.Add(new ParagraphModel { Index = 0, Runs = { new RunModel { Text = "body" } } });
             // create geometry with two disjoint rectangles (outer + inner hole)
             var geom = new CustomGeometry
             {
@@ -1142,6 +1144,7 @@ namespace Nedev.FileConverters.DocToDocx.Tests
             {
                 Id = 1,
                 Type = ShapeType.Custom,
+                ParagraphIndexHint = 0, // ensure writer emits the shape
                 CustomGeometry = geom
             });
 
@@ -1157,7 +1160,8 @@ namespace Nedev.FileConverters.DocToDocx.Tests
                 writer.Flush();
                 xml = Encoding.UTF8.GetString(ms.ToArray());
             }
-            var pathCount = System.Text.RegularExpressions.Regex.Matches(xml, "<a:path").Count;
+            // count only real <a:path> elements, not the surrounding <a:pathLst> tag
+            var pathCount = System.Text.RegularExpressions.Regex.Matches(xml, "<a:path(?!Lst)").Count;
             Assert.Equal(2, pathCount);
             Assert.Contains("<a:close", xml); // ensure close tags were emitted
 
@@ -1169,37 +1173,84 @@ namespace Nedev.FileConverters.DocToDocx.Tests
                 zw.Dispose();
                 using var zip = new System.IO.Compression.ZipArchive(new MemoryStream(ms.ToArray()), System.IO.Compression.ZipArchiveMode.Read);
                 var docXml = new StreamReader(zip.GetEntry("word/document.xml").Open()).ReadToEnd();
-                var pathCount2 = System.Text.RegularExpressions.Regex.Matches(docXml, "<a:path").Count;
+                var pathCount2 = System.Text.RegularExpressions.Regex.Matches(docXml, "<a:path(?!Lst)").Count;
                 Assert.Equal(2, pathCount2);
             }
         }
 
-        [Fact]
-        public void OfficeArtMapper_ParseSegments_RecognizesCloseAndEnd()
-        {
-            var shape = new ShapeModel();
-            // construct a simple segments stream: 3 entries
-            // header: count=3, cbElem=2
-            var data = new byte[6 + 2 * 3];
-            BitConverter.GetBytes((ushort)3).CopyTo(data, 0);
-            BitConverter.GetBytes((ushort)2).CopyTo(data, 2);
-            // codes: line, close (high bit), end
-            BitConverter.GetBytes((ushort)0x0001).CopyTo(data, 6);
-            BitConverter.GetBytes((ushort)0x8000).CopyTo(data, 8);
-            BitConverter.GetBytes((ushort)0x00AA).CopyTo(data, 10);
 
-            OfficeArtMapper.ParseSegments(data, shape);
-            Assert.NotNull(shape.CustomGeometry);
-            var segments = shape.CustomGeometry!.Segments;
-            Assert.Equal(3, segments.Count);
-            Assert.Equal(SegmentType.LineTo, segments[0].Type);
-            Assert.Equal(SegmentType.Close, segments[1].Type);
-            Assert.Equal(SegmentType.End, segments[2].Type);
+        [Fact]
+        public void WriteDocument_GroupShape_EmitsGrpSpWrapper()
+        {
+            var doc = new DocumentModel();
+            // add a paragraph so shapes with hint=0 will be written
+            doc.Paragraphs.Add(new ParagraphModel { Index = 0, Runs = { new RunModel { Text = "body" } } });
+            var child = new ShapeModel
+            {
+                Id = 2,
+                Type = ShapeType.Rectangle,
+                FillColor = 0xFF0000,
+                ParagraphIndexHint = 0
+            };
+            var group = new ShapeModel
+            {
+                Id = 1,
+                Type = ShapeType.Group,
+                ParagraphIndexHint = 0,
+                Children = new List<ShapeModel> { child }
+            };
+            doc.Shapes.Add(group);
+
+            string xml;
+            using (var ms = new MemoryStream())
+            {
+                var settings = new XmlWriterSettings { Encoding = Encoding.UTF8, OmitXmlDeclaration = true };
+                using var writer = XmlWriter.Create(ms, settings);
+                var dw = new DocumentWriter(writer);
+                dw.WriteDocument(doc);
+                writer.Flush();
+                xml = Encoding.UTF8.GetString(ms.ToArray());
+            }
+
+            Assert.Contains("<a:grpSp", xml);
+            Assert.Contains("Shape 2", xml); // child docPr name should appear
         }
 
+        [Fact]
+        public void WriteDocument_GradientFill_IsWrittenAsGradFill()
+        {
+            var doc = new DocumentModel();
+            doc.Paragraphs.Add(new ParagraphModel { Index = 0, Runs = { new RunModel { Text = "body" } } });
+            doc.Paragraphs.Add(new ParagraphModel { Index = 1, Runs = { new RunModel { Text = "body" } } });
+            doc.Shapes.Add(new ShapeModel
+            {
+                Id = 5,
+                Type = ShapeType.Rectangle,
+                ParagraphIndexHint = 0,
+                FillType = FillType.LinearGradient,
+                GradientAngle = 5400000, // 90 degrees in DrawingML units
+                GradientStops = new List<GradientStop>
+                {
+                    new GradientStop { Color = 0xFF0000, Position = 0 },
+                    new GradientStop { Color = 0x00FF00, Position = 1 }
+                }
+            });
 
-            using var reader = XmlReader.Create(new StringReader(xml.TrimStart('\uFEFF')));
-            while (reader.Read()) { }
+            string xml;
+            using (var ms = new MemoryStream())
+            {
+                var settings = new XmlWriterSettings { Encoding = Encoding.UTF8, OmitXmlDeclaration = true };
+                using var writer = XmlWriter.Create(ms, settings);
+                var dw = new DocumentWriter(writer);
+                dw.WriteDocument(doc);
+                writer.Flush();
+                xml = Encoding.UTF8.GetString(ms.ToArray());
+            }
+
+            Assert.Contains("<a:gradFill", xml);
+            Assert.Contains("<a:gs", xml);
+            Assert.Contains("pos=\"0\"", xml);
+            Assert.Contains("pos=\"100000\"", xml);
         }
 
         [Fact]

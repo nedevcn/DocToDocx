@@ -71,6 +71,31 @@ public partial class DocumentWriter
             }
         }
 
+        // group shapes are written differently
+        if (shape.Type == ShapeType.Group)
+        {
+            // currently write group with children inside a <a:grpSp>
+            WriteGroupShape(shape, widthEmu, heightEmu);
+            return;
+        }
+
+        // Clamp width to page width (inside margins) while preserving aspect ratio.
+        if (_document.Properties != null)
+        {
+            var page = _document.Properties;
+            var maxWidthTwips = page.PageWidth - page.MarginLeft - page.MarginRight;
+            if (maxWidthTwips > 0)
+            {
+                var maxWidthEmu = maxWidthTwips * emuPerTwip;
+                if (widthEmu > maxWidthEmu && widthEmu > 0 && heightEmu > 0)
+                {
+                    var scale = (double)maxWidthEmu / widthEmu;
+                    widthEmu = maxWidthEmu;
+                    heightEmu = (int)(heightEmu * scale);
+                }
+            }
+        }
+
         _writer.WriteStartElement("w", "p", wNs);
         _writer.WriteStartElement("w", "r", wNs);
         _writer.WriteStartElement("w", "drawing", wNs);
@@ -209,6 +234,21 @@ public partial class DocumentWriter
         const string wpsNs = "http://schemas.microsoft.com/office/word/2010/wordprocessingShape";
 
         _writer.WriteStartElement("wps", "wsp", wpsNs);
+
+        // non-visual properties (id/name) - helps identify child shapes inside
+        // groups and mirrors what Word produces for regular shapes.  Previously
+        // we only emitted docPr in the surrounding wp:anchor/inline which meant
+        // group children had no identifier; the corresponding unit test failed
+        // because Shape 2 was missing.  Adding nvSpPr here covers both standalone
+        // and grouped shapes without breaking existing output.
+        _writer.WriteStartElement("wps", "nvSpPr", wpsNs);
+        _writer.WriteStartElement("wps", "cNvPr", wpsNs);
+        _writer.WriteAttributeString("id", (2000 + shape.Id).ToString());
+        _writer.WriteAttributeString("name", $"Shape {shape.Id}");
+        _writer.WriteEndElement(); // wps:cNvPr
+        _writer.WriteStartElement("wps", "cNvSpPr", wpsNs);
+        _writer.WriteEndElement(); // wps:cNvSpPr
+        _writer.WriteEndElement(); // wps:nvSpPr
 
         // spPr
         _writer.WriteStartElement("wps", "spPr", wpsNs);
@@ -375,7 +415,29 @@ public partial class DocumentWriter
         const string aNs = "http://schemas.openxmlformats.org/drawingml/2006/main";
         
         // Background fill
-        if (shape.FillColor != 0)
+        if (shape.FillType == FillType.LinearGradient && shape.GradientStops?.Count > 0)
+        {
+            _writer.WriteStartElement("a", "gradFill", aNs);
+            _writer.WriteStartElement("a", "lin", aNs);
+            _writer.WriteAttributeString("ang", shape.GradientAngle.ToString());
+            _writer.WriteAttributeString("scaled", "1");
+            _writer.WriteEndElement();
+
+            foreach (var stop in shape.GradientStops)
+            {
+                _writer.WriteStartElement("a", "gs", aNs);
+                // pos is in 1/100000
+                var pos = (int)(stop.Position * 100000);
+                _writer.WriteAttributeString("pos", pos.ToString());
+                _writer.WriteStartElement("a", "srgbClr", aNs);
+                _writer.WriteAttributeString("val", ColorHelper.ResolveColorHex(stop.Color, _document?.Theme, "FFFFFF"));
+                _writer.WriteEndElement(); // a:srgbClr
+                _writer.WriteEndElement(); // a:gs
+            }
+
+            _writer.WriteEndElement(); // a:gradFill
+        }
+        else if (shape.FillColor != 0)
         {
             _writer.WriteStartElement("a", "solidFill", aNs);
             WriteDrawingColor(shape.FillColor, aNs, fallback: "FFFFFF");
@@ -398,6 +460,39 @@ public partial class DocumentWriter
             
             _writer.WriteEndElement(); // a:ln
         }
+    }
+
+    private void WriteGroupShape(ShapeModel group, int widthEmu, int heightEmu)
+    {
+        const string aNs = "http://schemas.openxmlformats.org/drawingml/2006/main";
+        
+        _writer.WriteStartElement("a", "grpSp", aNs);
+
+        // group properties with transform
+        _writer.WriteStartElement("a", "grpSpPr", aNs);
+        _writer.WriteStartElement("a", "xfrm", aNs);
+        _writer.WriteStartElement("a", "off", aNs);
+        _writer.WriteAttributeString("x", "0");
+        _writer.WriteAttributeString("y", "0");
+        _writer.WriteEndElement(); // a:off
+        _writer.WriteStartElement("a", "ext", aNs);
+        _writer.WriteAttributeString("cx", widthEmu.ToString());
+        _writer.WriteAttributeString("cy", heightEmu.ToString());
+        _writer.WriteEndElement(); // a:ext
+        _writer.WriteEndElement(); // a:xfrm
+        _writer.WriteEndElement(); // a:grpSpPr
+
+        // children shapes (each emitted as a wps:wsp inside grpSp)
+        if (group.Children != null)
+        {
+            foreach (var child in group.Children)
+            {
+                // reuse the existing writer logic by temporarily faking anchor
+                WriteWpsShape(child, widthEmu, heightEmu);
+            }
+        }
+
+        _writer.WriteEndElement(); // a:grpSp
     }
 
     private void WriteDrawingColor(int color, string aNs, string fallback)
