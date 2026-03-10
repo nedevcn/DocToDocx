@@ -67,5 +67,46 @@ namespace Nedev.FileConverters.DocToDocx.Tests
             Assert.Equal(data.Length, read);
             Assert.Equal(data, decrypted);
         }
+
+        [Fact]
+        public void Rc4Stream_PreservesConfiguredClearPrefix()
+        {
+            byte[] baseHash = { 0x10, 0x20, 0x30, 0x40 };
+            byte[] clearPrefix = new byte[512];
+            byte[] encryptedPayload = new byte[300];
+            var rand = new Random(456);
+            rand.NextBytes(clearPrefix);
+            rand.NextBytes(encryptedPayload);
+
+            byte[] plain = new byte[clearPrefix.Length + encryptedPayload.Length];
+            Buffer.BlockCopy(clearPrefix, 0, plain, 0, clearPrefix.Length);
+            Buffer.BlockCopy(encryptedPayload, 0, plain, clearPrefix.Length, encryptedPayload.Length);
+
+            byte[] encrypted = new byte[plain.Length];
+            Buffer.BlockCopy(clearPrefix, 0, encrypted, 0, clearPrefix.Length);
+
+            var cipher = new Rc4Cipher();
+            uint blockNumber = 1;
+            byte[] blockBytes = BitConverter.GetBytes(blockNumber);
+            byte[] combined = new byte[baseHash.Length + blockBytes.Length];
+            Buffer.BlockCopy(baseHash, 0, combined, 0, baseHash.Length);
+            Buffer.BlockCopy(blockBytes, 0, combined, baseHash.Length, blockBytes.Length);
+            byte[] blockKey;
+            using (var md5 = System.Security.Cryptography.MD5.Create())
+            {
+                blockKey = md5.ComputeHash(combined);
+            }
+
+            cipher.Initialize(blockKey);
+            cipher.TransformBlock(encryptedPayload, 0, encryptedPayload.Length, encrypted, clearPrefix.Length);
+
+            using var ms = new MemoryStream(encrypted);
+            using var rc4 = new Rc4Stream(ms, baseHash, streamStartOffset: 0, useSha1: false, leaveOpen: true, clearPrefixLength: clearPrefix.Length);
+            byte[] decrypted = new byte[plain.Length];
+            int read = rc4.Read(decrypted, 0, decrypted.Length);
+
+            Assert.Equal(plain.Length, read);
+            Assert.Equal(plain, decrypted);
+        }
     }
 }

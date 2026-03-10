@@ -61,12 +61,13 @@ public class Rc4Stream : Stream
     private readonly bool _leaveOpen;
     private readonly long _streamLength;
     private readonly long _streamStartOffset;
+    private readonly long _clearPrefixLength;
     
     private readonly bool _useSha1;
     private Rc4Cipher? _decryptor;
     private uint _currentBlock = uint.MaxValue; // Invalid block to force init
 
-    public Rc4Stream(Stream baseStream, byte[] baseHash, long streamStartOffset = 0, bool useSha1 = false, bool leaveOpen = false)
+    public Rc4Stream(Stream baseStream, byte[] baseHash, long streamStartOffset = 0, bool useSha1 = false, bool leaveOpen = false, long clearPrefixLength = 0)
     {
         _baseStream = baseStream ?? throw new ArgumentNullException(nameof(baseStream));
         _baseHash = baseHash ?? throw new ArgumentNullException(nameof(baseHash));
@@ -74,6 +75,7 @@ public class Rc4Stream : Stream
         _leaveOpen = leaveOpen;
         _streamLength = _baseStream.Length;
         _streamStartOffset = streamStartOffset; // Offset within the overarching logical stream
+        _clearPrefixLength = Math.Clamp(clearPrefixLength, 0, _streamLength);
     }
 
     public override bool CanRead => true;
@@ -95,6 +97,20 @@ public class Rc4Stream : Stream
         {
             // Position in the logical stream (including any start offset if the physical stream starts partway through)
             long logicalPosition = Position + _streamStartOffset;
+
+            if (logicalPosition < _clearPrefixLength)
+            {
+                int clearBytesToRead = (int)Math.Min(count, _clearPrefixLength - logicalPosition);
+                int clearBytesRead = _baseStream.Read(buffer, offset, clearBytesToRead);
+                if (clearBytesRead == 0)
+                    break;
+
+                offset += clearBytesRead;
+                count -= clearBytesRead;
+                totalRead += clearBytesRead;
+                continue;
+            }
+
             uint targetBlock = (uint)(logicalPosition / 512);
 
             if (_currentBlock != targetBlock || _decryptor == null)

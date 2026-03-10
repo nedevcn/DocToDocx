@@ -34,10 +34,22 @@ public static class DocToDocxConverter
         => Convert(inputPath, outputPath, progress: null, password, enableHyperlinks, CancellationToken.None);
 
     /// <summary>
+    /// Converts a DOC file to DOCX format and returns any non-fatal warnings captured during conversion.
+    /// </summary>
+    public static ConversionResult ConvertWithWarnings(string inputPath, string outputPath, string? password = null, bool enableHyperlinks = true)
+        => ConvertWithWarnings(inputPath, outputPath, progress: null, password, enableHyperlinks, CancellationToken.None);
+
+    /// <summary>
     /// Converts a DOC file to DOCX format asynchronously.
     /// </summary>
     public static Task ConvertAsync(string inputPath, string outputPath, string? password = null, bool enableHyperlinks = true, CancellationToken cancellationToken = default)
         => ConvertAsync(inputPath, outputPath, progress: null, password, enableHyperlinks, cancellationToken);
+
+    /// <summary>
+    /// Converts a DOC file to DOCX format asynchronously and returns captured non-fatal warnings.
+    /// </summary>
+    public static Task<ConversionResult> ConvertWithWarningsAsync(string inputPath, string outputPath, string? password = null, bool enableHyperlinks = true, CancellationToken cancellationToken = default)
+        => ConvertWithWarningsAsync(inputPath, outputPath, progress: null, password, enableHyperlinks, cancellationToken);
 
     /// <summary>
     /// Converts a DOC file to DOCX format asynchronously with progress reporting.
@@ -46,10 +58,22 @@ public static class DocToDocxConverter
         => Task.Run(() => Convert(inputPath, outputPath, progress, password, enableHyperlinks, cancellationToken), cancellationToken);
 
     /// <summary>
+    /// Converts a DOC file to DOCX format asynchronously with progress reporting and captured warnings.
+    /// </summary>
+    public static Task<ConversionResult> ConvertWithWarningsAsync(string inputPath, string outputPath, IProgress<ConversionProgress>? progress, string? password = null, bool enableHyperlinks = true, CancellationToken cancellationToken = default)
+        => Task.Run(() => ConvertWithWarnings(inputPath, outputPath, progress, password, enableHyperlinks, cancellationToken), cancellationToken);
+
+    /// <summary>
     /// Converts a DOC file to DOCX format with progress reporting
     /// </summary>
     public static void Convert(string inputPath, string outputPath, IProgress<ConversionProgress>? progress, string? password = null, bool enableHyperlinks = true)
         => Convert(inputPath, outputPath, progress, password, enableHyperlinks, CancellationToken.None);
+
+    /// <summary>
+    /// Converts a DOC file to DOCX format with progress reporting and returns captured warnings.
+    /// </summary>
+    public static ConversionResult ConvertWithWarnings(string inputPath, string outputPath, IProgress<ConversionProgress>? progress, string? password = null, bool enableHyperlinks = true)
+        => ConvertWithWarnings(inputPath, outputPath, progress, password, enableHyperlinks, CancellationToken.None);
 
     /// <summary>
     /// Converts a DOC file to DOCX format with progress reporting and cancellation.
@@ -99,6 +123,20 @@ public static class DocToDocxConverter
             Report(progress, ConversionStage.Error, 100, ex.Message);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Converts a DOC file to DOCX format with progress reporting, cancellation, and captured warnings.
+    /// </summary>
+    public static ConversionResult ConvertWithWarnings(string inputPath, string outputPath, IProgress<ConversionProgress>? progress, string? password, bool enableHyperlinks, CancellationToken cancellationToken)
+    {
+        var warnings = new List<string>();
+        using (Logger.BeginWarningCapture(warnings))
+        {
+            Convert(inputPath, outputPath, progress, password, enableHyperlinks, cancellationToken);
+        }
+
+        return new ConversionResult(outputPath, warnings);
     }
     
     /// <summary>
@@ -411,6 +449,21 @@ public class ConversionProgress
     /// Human-readable status message for the current progress update.
     /// </summary>
     public string? Message { get; set; }
+}
+
+/// <summary>
+/// Represents the output path and captured non-fatal warnings for a conversion.
+/// </summary>
+public sealed class ConversionResult
+{
+    public ConversionResult(string outputPath, IReadOnlyList<string> warnings)
+    {
+        OutputPath = outputPath ?? throw new ArgumentNullException(nameof(outputPath));
+        Warnings = warnings ?? throw new ArgumentNullException(nameof(warnings));
+    }
+
+    public string OutputPath { get; }
+    public IReadOnlyList<string> Warnings { get; }
 }
 
 /// <summary>

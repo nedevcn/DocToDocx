@@ -6,6 +6,7 @@ using System.IO.Compression;
 using System.Text;
 using Nedev.FileConverters.Core;
 using Nedev.FileConverters.DocToDocx.Models;
+using Nedev.FileConverters.DocToDocx.Utils;
 using Xunit;
 
 namespace Nedev.FileConverters.DocToDocx.Tests;
@@ -70,6 +71,51 @@ public class DocToDocxConverterTests
             DeleteIfExists(inputPath);
             DeleteIfExists(outputPath);
         }
+    }
+
+    [Fact]
+    public void ConvertWithWarnings_DetectsDocxBySignature_AndReturnsNoWarnings()
+    {
+        var inputPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".bin");
+        var outputPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".docx");
+        var sourcePath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".docx");
+
+        try
+        {
+            var document = new DocumentModel();
+            document.Paragraphs.Add(new ParagraphModel { Runs = { new RunModel { Text = "copied" } } });
+            DocToDocxConverter.SaveDocument(document, sourcePath);
+            File.Copy(sourcePath, inputPath, overwrite: true);
+
+            var result = DocToDocxConverter.ConvertWithWarnings(inputPath, outputPath);
+
+            Assert.True(DocToDocxConverter.ValidatePackage(outputPath, out var validationError), validationError);
+            Assert.Equal(outputPath, result.OutputPath);
+            Assert.Empty(result.Warnings);
+        }
+        finally
+        {
+            DeleteIfExists(inputPath);
+            DeleteIfExists(outputPath);
+            DeleteIfExists(sourcePath);
+        }
+    }
+
+    [Fact]
+    public void Logger_BeginWarningCapture_CapturesWarningsWithinScopeOnly()
+    {
+        var warnings = new List<string>();
+
+        using (Logger.BeginWarningCapture(warnings))
+        {
+            Logger.Warning("captured warning");
+        }
+
+        Logger.Warning("outside scope");
+
+        Assert.Single(warnings);
+        Assert.Contains("captured warning", warnings[0], StringComparison.Ordinal);
+        Assert.DoesNotContain(warnings, warning => warning.Contains("outside scope", StringComparison.Ordinal));
     }
 
     [Fact]

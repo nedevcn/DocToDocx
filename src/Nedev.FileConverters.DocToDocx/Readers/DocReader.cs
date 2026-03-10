@@ -92,6 +92,7 @@ public class DocReader : IDisposable
 
         _fibReader = new FibReader(_wordDocReader);
         _fibReader.Read();
+        long rawFibPrefixLength = _wordDocStream.Position;
 
         // Extract Table stream (0Table or 1Table)
         var tableName = _fibReader.TableStreamName;
@@ -116,22 +117,14 @@ public class DocReader : IDisposable
                 throw new UnauthorizedAccessException("Document is RC4 encrypted. A valid password is required.");
             }
 
+            long wordDocumentClearPrefixLength = CalculateWordDocumentRc4ClearPrefixLength(rawFibPrefixLength, _wordDocStream.Length);
+            Logger.Warning($"RC4 WordDocument decryption is preserving the first {wordDocumentClearPrefixLength} bytes as an unencrypted prefix based on the raw FIB length ({rawFibPrefixLength} bytes).");
+
             // Wrap WordDocument stream
             _wordDocReader.Dispose();
             _wordDocStream.Dispose();
-            // Start RC4 decryption from offset 0, but FIB is unencrypted (usually first 1472 or similar? No, only FIB size.)
-            // Wait, RC4 encryption in MS-DOC: "The Fib is stored unencrypted... encryption starts at first 512-byte boundary following FIB, or stream start."
-            // Actually, for WordDocument stream, block 0 starts at offset 0, but the first 68 bytes (?) or FIB is unencrypted.
-            // Oh, block 0 corresponds to offset 0 in the stream.
             
             _wordDocStream = _cfb.GetStream("WordDocument");
-            var rc4Word = new Rc4Stream(_wordDocStream, rc4Context.BaseKey, streamStartOffset: 0, useSha1: rc4Context.UseSha1, leaveOpen: true);
-            
-            // To be perfectly safe, we'll just read through the RC4 stream for the FIB as well, but the FIB is NOT encrypted!
-            // According to [MS-OFFCRYPTO] 2.3.6.2, "The FIB is not encrypted... The encryption starts at the next 512-byte boundary."
-            // Wait! The entire first part of WordDocument stream before FIB.fcMin is unencrypted?
-            // "The algorithm is applied to the remainder of WordDocument stream... starting at offset 0X00000000."
-            // Wait, so we can't just wrap the whole `WordDocument` stream? No, `Rc4Stream` offsets matter!
         }
         else if (_fibReader.FEncrypted && _fibReader.FObfuscated)
         {
@@ -159,11 +152,8 @@ public class DocReader : IDisposable
         Stream finalWordDocStream = _wordDocStream;
         if (isRc4Encrypted)
         {
-            // WordDoc encryption is applied but some sections (FIB) might just be copied straight.
-            // We'll wrap the stream and then let individual readers handle reading.
-            // Wait, if we wrap the whole stream but the FIB is unencrypted, reading the FIB again through Rc4Stream will result in garbage!
-            // Actually FibReader already read the FIB from the raw stream above!
-            finalWordDocStream = new Rc4Stream(_wordDocStream, rc4Context!.BaseKey, streamStartOffset: 0, useSha1: rc4Context.UseSha1, leaveOpen: true);
+            long wordDocumentClearPrefixLength = CalculateWordDocumentRc4ClearPrefixLength(rawFibPrefixLength, _wordDocStream.Length);
+            finalWordDocStream = new Rc4Stream(_wordDocStream, rc4Context!.BaseKey, streamStartOffset: 0, useSha1: rc4Context.UseSha1, leaveOpen: true, clearPrefixLength: wordDocumentClearPrefixLength);
         }
         _wordDocReader = new BinaryReader(finalWordDocStream, Encoding.Default, leaveOpen: true);
 
@@ -172,8 +162,9 @@ public class DocReader : IDisposable
         {
             _fspaAnchors = FspaReader.ReadPlcSpaMom(_tableReader, _fibReader);
         }
-        catch
+        catch (Exception ex)
         {
+            Logger.Warning("Failed to read floating shape anchors; continuing without anchor metadata.", ex);
             _fspaAnchors = new List<FspaInfo>();
         }
 
@@ -201,8 +192,9 @@ public class DocReader : IDisposable
             {
                 _officeArtReader = new OfficeArtReader(_dataStream);
             }
-            catch
+            catch (Exception ex)
             {
+                Logger.Warning("Failed to initialize OfficeArt reader; continuing without OfficeArt mapping.", ex);
                 _officeArtReader = null;
             }
         }
@@ -260,6 +252,15 @@ public class DocReader : IDisposable
         }
 
         return _cfb!.GetDecryptedStream(streamName);
+    }
+
+    private static long CalculateWordDocumentRc4ClearPrefixLength(long rawFibPrefixLength, long streamLength)
+    {
+        if (rawFibPrefixLength <= 0 || streamLength <= 0)
+            return 0;
+
+        long alignedPrefixLength = ((rawFibPrefixLength + 511) / 512) * 512;
+        return Math.Min(streamLength, Math.Max(rawFibPrefixLength, alignedPrefixLength));
     }
 
     /// <summary>
@@ -498,11 +499,17 @@ public class DocReader : IDisposable
 
                         document.OleObjects.Add(oleObj);
                     }
-                    catch { }
+                    catch (Exception ex)
+                    {
+                        Logger.Warning($"Failed to repack OLE storage '{objectId}' from ObjectPool.", ex);
+                    }
                 }
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Logger.Warning("Failed to scan ObjectPool for embedded OLE objects.", ex);
+        }
     }
 
     private string? ExtractProgIdFromOleStorage(DirectoryEntry storage)
@@ -1041,7 +1048,7 @@ public class DocReader : IDisposable
                                 }
                                 catch (Exception ex)
                                 {
-                                    Console.WriteLine($"Warning: Failed to extract OLE object {activeOleObjectId}: {ex.Message}");
+                                    Logger.Warning($"Failed to extract OLE object '{activeOleObjectId}' from field data.", ex);
                                 }
                             }
                         }
@@ -1780,7 +1787,7 @@ public class DocReader : IDisposable
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Warning: Failed to extract VBA Macros: {ex.Message}");
+            Logger.Warning("Failed to extract VBA project storage.", ex);
         }
     }
 
@@ -1858,7 +1865,7 @@ public class ImageReader
         }
         catch (Exception ex)
         {
-            Console.WriteLine($"Warning: Image extraction failed: {ex.Message}");
+            Logger.Warning("Image extraction failed; continuing with partial image recovery.", ex);
         }
     }
 
@@ -2320,7 +2327,10 @@ public class ImageReader
                 var bytes = _cfb.GetStreamBytes(name);
                 ScanForImageSignatures(bytes, images);
             }
-            catch { /* best-effort */ }
+            catch (Exception ex)
+            {
+                Logger.Warning($"Failed to scan stream '{name}' for embedded images.", ex);
+            }
         }
         // Scan other top-level streams that might contain embedded images (e.g. OLE embeddings)
         foreach (var name in _cfb!.StreamNames)
@@ -2333,7 +2343,10 @@ public class ImageReader
                 if (bytes.Length > 8 && bytes.Length < 50 * 1024 * 1024)
                     ScanForImageSignatures(bytes, images);
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Logger.Warning($"Failed to scan auxiliary stream '{name}' for embedded images.", ex);
+            }
         }
     }
 
@@ -2634,7 +2647,10 @@ public class ImageReader
                     break;
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Logger.Warning("Failed to read image dimensions from embedded data.", ex);
+        }
 
         return (0, 0);
     }

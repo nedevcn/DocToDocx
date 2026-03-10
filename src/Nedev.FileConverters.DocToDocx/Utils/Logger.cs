@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Threading;
 
 namespace Nedev.FileConverters.DocToDocx.Utils;
 
@@ -8,6 +9,40 @@ namespace Nedev.FileConverters.DocToDocx.Utils;
 /// </summary>
 public static class Logger
 {
+    private sealed class WarningCaptureScopeState
+    {
+        public WarningCaptureScopeState(WarningCaptureScopeState? parent, ICollection<string> warnings)
+        {
+            Parent = parent;
+            Warnings = warnings;
+        }
+
+        public WarningCaptureScopeState? Parent { get; }
+        public ICollection<string> Warnings { get; }
+    }
+
+    private sealed class WarningCaptureScope : IDisposable
+    {
+        private readonly WarningCaptureScopeState? _previous;
+        private bool _disposed;
+
+        public WarningCaptureScope(WarningCaptureScopeState? previous)
+        {
+            _previous = previous;
+        }
+
+        public void Dispose()
+        {
+            if (_disposed)
+                return;
+
+            _warningCaptureState.Value = _previous;
+            _disposed = true;
+        }
+    }
+
+    private static readonly AsyncLocal<WarningCaptureScopeState?> _warningCaptureState = new();
+
     /// <summary>
     /// Log level enumeration
     /// </summary>
@@ -34,6 +69,19 @@ public static class Logger
     /// Custom log handler (if null, logs to Debug output)
     /// </summary>
     public static Action<LogLevel, string>? CustomHandler { get; set; }
+
+    /// <summary>
+    /// Begins capturing warning-or-higher log messages into the supplied collection for the current async flow.
+    /// </summary>
+    public static IDisposable BeginWarningCapture(ICollection<string> warnings)
+    {
+        if (warnings == null)
+            throw new ArgumentNullException(nameof(warnings));
+
+        var previous = _warningCaptureState.Value;
+        _warningCaptureState.Value = new WarningCaptureScopeState(previous, warnings);
+        return new WarningCaptureScope(previous);
+    }
 
     /// <summary>
     /// Logs a debug message
@@ -108,6 +156,12 @@ public static class Logger
             return;
 
         var formattedMessage = FormatMessage(level, message, exception);
+
+        if (level >= LogLevel.Warning)
+        {
+            var captureState = _warningCaptureState.Value;
+            captureState?.Warnings.Add(formattedMessage);
+        }
 
         if (CustomHandler != null)
         {

@@ -4,6 +4,7 @@ using System.IO;
 using System.Linq;
 using System.Text;
 using Nedev.FileConverters.DocToDocx.Models;
+using Nedev.FileConverters.DocToDocx.Utils;
 
 namespace Nedev.FileConverters.DocToDocx.Readers;
 
@@ -38,7 +39,10 @@ public static class BiffChartScanner
                     return;
                 }
             }
-            catch { /* Ignore CFB parse errors from partial streams */ }
+            catch (Exception ex)
+            {
+                Logger.Warning($"Failed to inspect embedded chart source '{model.SourceStreamName ?? "<unknown>"}' as a CFB workbook.", ex);
+            }
         }
         
         // If not OLE, check if it's a raw BIFF stream (BOF record starts with 09 08, 09 04, etc.)
@@ -130,7 +134,10 @@ public static class BiffChartScanner
                 ms.Position = nextPos;
             }
         }
-        catch { /* Stop parsing if stream is abruptly truncated */ }
+        catch (Exception ex)
+        {
+            Logger.Warning($"Stopped parsing BIFF chart stream '{model.SourceStreamName ?? "<unknown>"}' due to malformed or truncated record data.", ex);
+        }
         
         if (cells.Count == 0) return;
         
@@ -281,7 +288,10 @@ public static class BiffChartScanner
                 if (hasPhoneticData) reader.ReadBytes((int)reader.ReadUInt32());
             }
         }
-        catch { }
+        catch (Exception ex)
+        {
+            Logger.Warning("Failed to parse BIFF shared string table completely; continuing with partial chart labels.", ex);
+        }
     }
 
     /// <summary>
