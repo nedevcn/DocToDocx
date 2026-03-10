@@ -194,4 +194,17 @@ public static class ColorHelper
 
         return theme.ColorMap.TryGetValue(schemeName, out var hex) ? hex : null;
     }
+
+    /// <summary>
+    /// Resolves a color to the concrete RGB hex that should be written when OOXML requires a literal value.
+    /// </summary>
+    public static string ResolveColorHex(int color, ThemeModel? theme, string fallback = "000000")
+    {
+        var resolvedThemeHex = ResolveThemeColorHex(color, theme);
+        if (!string.IsNullOrEmpty(resolvedThemeHex))
+            return resolvedThemeHex;
+
+        var colorHex = ColorToHex(color);
+        return colorHex == "auto" ? fallback : colorHex;
+    }
 }

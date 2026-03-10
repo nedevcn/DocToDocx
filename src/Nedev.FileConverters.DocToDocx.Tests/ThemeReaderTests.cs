@@ -107,4 +107,37 @@ public class ThemeReaderTests
         Assert.Contains("eastAsia=\"SimSun\"", xml);
         Assert.Contains("cs=\"Arial\"", xml);
     }
+
+      [Fact]
+      public void StylesWriter_UsesThemeColorsForTableBordersAndShading()
+      {
+        var document = new DocumentModel
+        {
+          Theme = new ThemeModel()
+        };
+        document.Theme.ColorMap["accent1"] = "4472C4";
+        document.Theme.ColorMap["accent2"] = "ED7D31";
+        document.Styles.Styles.Add(new StyleDefinition
+        {
+          StyleId = 7,
+          Name = "ThemeTable",
+          Type = StyleType.Table,
+          TableProperties = new TableProperties
+          {
+            BorderTop = new BorderInfo { Style = BorderStyle.Single, Width = 4, Space = 0, Color = 0x01000000 | 4 },
+            Shading = new ShadingInfo { ForegroundColor = 0x01000000 | 4, BackgroundColor = 0x01000000 | 5 }
+          }
+        });
+
+        using var ms = new MemoryStream();
+        using var writer = XmlWriter.Create(ms, new XmlWriterSettings { Encoding = Encoding.UTF8 });
+        new StylesWriter(writer).WriteStyles(document);
+        writer.Flush();
+
+        var xml = Encoding.UTF8.GetString(ms.ToArray());
+        Assert.Contains("themeColor=\"accent1\"", xml);
+        Assert.Contains("themeFill=\"accent2\"", xml);
+        Assert.Contains("color=\"4472C4\"", xml);
+        Assert.Contains("fill=\"ED7D31\"", xml);
+      }
 }

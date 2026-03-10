@@ -760,6 +760,61 @@ namespace Nedev.FileConverters.DocToDocx.Tests
         }
 
         [Fact]
+        public void WriteDocument_UsesThemeColorsForBordersShadingAndShapes()
+        {
+            var doc = new DocumentModel
+            {
+                Theme = new ThemeModel()
+            };
+            doc.Theme.ColorMap["accent1"] = "4472C4";
+            doc.Theme.ColorMap["accent2"] = "ED7D31";
+
+            doc.Paragraphs.Add(new ParagraphModel
+            {
+                Index = 0,
+                Properties = new ParagraphProperties
+                {
+                    BorderTop = new BorderInfo { Style = BorderStyle.Single, Width = 4, Space = 0, Color = 0x01000000 | 4 },
+                    Shading = new ShadingInfo
+                    {
+                        ForegroundColor = 0x01000000 | 4,
+                        BackgroundColor = 0x01000000 | 5
+                    }
+                },
+                Runs = { new RunModel { Text = "Themed" } }
+            });
+
+            doc.Shapes.Add(new ShapeModel
+            {
+                Id = 1,
+                Type = ShapeType.Rectangle,
+                ParagraphIndexHint = 0,
+                FillColor = 0x01000000 | 4,
+                LineColor = 0x01000000 | 5,
+                LineWidth = 12700,
+                Text = "Box"
+            });
+
+            string xml;
+            using (var ms = new MemoryStream())
+            {
+                var settings = new XmlWriterSettings { Encoding = Encoding.UTF8, OmitXmlDeclaration = true };
+                using var writer = XmlWriter.Create(ms, settings);
+                var dw = new DocumentWriter(writer);
+                dw.WriteDocument(doc);
+                writer.Flush();
+                xml = Encoding.UTF8.GetString(ms.ToArray());
+            }
+
+            Assert.Contains("w:themeColor=\"accent1\"", xml);
+            Assert.Contains("w:themeFill=\"accent2\"", xml);
+            Assert.Contains("w:color=\"4472C4\"", xml);
+            Assert.Contains("w:fill=\"ED7D31\"", xml);
+            Assert.Contains("<a:schemeClr val=\"accent1\"", xml);
+            Assert.Contains("<a:schemeClr val=\"accent2\"", xml);
+        }
+
+        [Fact]
         public void WriteDocument_FirstAndEvenHeaders_EnableSectionSemantics()
         {
             var doc = new DocumentModel();

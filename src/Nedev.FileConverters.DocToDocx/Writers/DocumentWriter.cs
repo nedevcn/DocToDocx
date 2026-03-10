@@ -1023,18 +1023,28 @@ public partial class DocumentWriter
         if (border.Style == BorderStyle.None) return;
         
         const string wNs = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+        string? themeColor = ColorHelper.GetThemeColorName(border.Color);
+        string? resolvedThemeHex = ColorHelper.ResolveThemeColorHex(border.Color, _document?.Theme);
         _writer.WriteStartElement("w", position, wNs);
         _writer.WriteAttributeString("w", "val", wNs, GetBorderStyle(border.Style));
         // Width is in 1/8 pt (same as OOXML w:sz units) after BRC80 decode
         _writer.WriteAttributeString("w", "sz", wNs, border.Width.ToString());
         _writer.WriteAttributeString("w", "space", wNs, border.Space.ToString());
-        _writer.WriteAttributeString("w", "color", wNs, ColorHelper.ColorToHex(border.Color));
+        _writer.WriteAttributeString("w", "color", wNs, resolvedThemeHex ?? ColorHelper.ResolveColorHex(border.Color, _document?.Theme));
+        if (themeColor != null)
+        {
+            _writer.WriteAttributeString("w", "themeColor", wNs, themeColor);
+        }
         _writer.WriteEndElement();
     }
     
     private void WriteShading(ShadingInfo shading)
     {
         const string wNs = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+        string? foregroundThemeColor = ColorHelper.GetThemeColorName(shading.ForegroundColor);
+        string? foregroundThemeHex = ColorHelper.ResolveThemeColorHex(shading.ForegroundColor, _document?.Theme);
+        string? backgroundThemeColor = ColorHelper.GetThemeColorName(shading.BackgroundColor);
+        string? backgroundThemeHex = ColorHelper.ResolveThemeColorHex(shading.BackgroundColor, _document?.Theme);
         _writer.WriteStartElement("w", "shd", wNs);
         // Use PatternVal (from SHD ipat) when set; otherwise map Pattern enum to OOXML val so pattern/tiled background is preserved
         var val = !string.IsNullOrEmpty(shading.PatternVal)
@@ -1042,8 +1052,18 @@ public partial class DocumentWriter
             : ShadingPatternToShdVal(shading.Pattern);
         _writer.WriteAttributeString("w", "val", wNs, val);
         if (shading.ForegroundColor != 0)
-            _writer.WriteAttributeString("w", "color", wNs, ColorHelper.ColorToHex(shading.ForegroundColor));
-        _writer.WriteAttributeString("w", "fill", wNs, ColorHelper.ColorToHex(shading.BackgroundColor));
+        {
+            _writer.WriteAttributeString("w", "color", wNs, foregroundThemeHex ?? ColorHelper.ResolveColorHex(shading.ForegroundColor, _document?.Theme));
+            if (foregroundThemeColor != null)
+            {
+                _writer.WriteAttributeString("w", "themeColor", wNs, foregroundThemeColor);
+            }
+        }
+        _writer.WriteAttributeString("w", "fill", wNs, backgroundThemeHex ?? ColorHelper.ResolveColorHex(shading.BackgroundColor, _document?.Theme, fallback: "FFFFFF"));
+        if (backgroundThemeColor != null)
+        {
+            _writer.WriteAttributeString("w", "themeFill", wNs, backgroundThemeColor);
+        }
         _writer.WriteEndElement();
     }
 

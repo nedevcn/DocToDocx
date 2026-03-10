@@ -341,9 +341,8 @@ public partial class DocumentWriter
         if (shape.FillColor != 0)
         {
             _writer.WriteStartElement("a", "solidFill", aNs);
-            _writer.WriteStartElement("a", "srgbClr", aNs);
-            _writer.WriteAttributeString("val", ColorHelper.ColorToHex(shape.FillColor));
-            _writer.WriteEndElement(); _writer.WriteEndElement();
+            WriteDrawingColor(shape.FillColor, aNs, fallback: "FFFFFF");
+            _writer.WriteEndElement();
         }
         else
         {
@@ -357,12 +356,27 @@ public partial class DocumentWriter
             _writer.WriteAttributeString("w", shape.LineWidth > 0 ? shape.LineWidth.ToString() : "9525"); // Default 1pt
             
             _writer.WriteStartElement("a", "solidFill", aNs);
-            _writer.WriteStartElement("a", "srgbClr", aNs);
-            _writer.WriteAttributeString("val", ColorHelper.ColorToHex(shape.LineColor != 0 ? shape.LineColor : 0));
-            _writer.WriteEndElement(); _writer.WriteEndElement();
+            WriteDrawingColor(shape.LineColor, aNs, fallback: "000000");
+            _writer.WriteEndElement();
             
             _writer.WriteEndElement(); // a:ln
         }
+    }
+
+    private void WriteDrawingColor(int color, string aNs, string fallback)
+    {
+        var schemeColor = ColorHelper.GetThemeSchemeColorName(color);
+        if (schemeColor != null)
+        {
+            _writer.WriteStartElement("a", "schemeClr", aNs);
+            _writer.WriteAttributeString("val", schemeColor);
+            _writer.WriteEndElement();
+            return;
+        }
+
+        _writer.WriteStartElement("a", "srgbClr", aNs);
+        _writer.WriteAttributeString("val", ColorHelper.ResolveColorHex(color, _document?.Theme, fallback));
+        _writer.WriteEndElement();
     }
 
     /// <summary>
@@ -639,9 +653,7 @@ public partial class DocumentWriter
             _writer.WriteStartElement("a", "ln", "http://schemas.openxmlformats.org/drawingml/2006/main");
             if (shape.LineWidth > 0) _writer.WriteAttributeString("w", shape.LineWidth.ToString());
             _writer.WriteStartElement("a", "solidFill", "http://schemas.openxmlformats.org/drawingml/2006/main");
-            _writer.WriteStartElement("a", "srgbClr", "http://schemas.openxmlformats.org/drawingml/2006/main");
-            _writer.WriteAttributeString("val", ColorHelper.ColorToHex(shape.LineColor == 0 ? 0 : shape.LineColor));
-            _writer.WriteEndElement();
+            WriteDrawingColor(shape.LineColor, "http://schemas.openxmlformats.org/drawingml/2006/main", fallback: "000000");
             _writer.WriteEndElement();
             _writer.WriteEndElement(); // a:ln
         }

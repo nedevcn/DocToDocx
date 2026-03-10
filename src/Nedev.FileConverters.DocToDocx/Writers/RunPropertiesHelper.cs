@@ -295,11 +295,17 @@ internal static class RunPropertiesHelper
 
         if (props.Border?.Style is not null && props.Border.Style != BorderStyle.None)
         {
+            string? themeColor = ColorHelper.GetThemeColorName(props.Border.Color);
+            string? resolvedThemeHex = ColorHelper.ResolveThemeColorHex(props.Border.Color, theme);
             writer.WriteStartElement("w", "bdr", WNs);
             writer.WriteAttributeString("w", "val", WNs, GetBorderStyle(props.Border.Style));
             writer.WriteAttributeString("w", "sz", WNs, props.Border.Width.ToString());
             writer.WriteAttributeString("w", "space", WNs, props.Border.Space.ToString());
-            writer.WriteAttributeString("w", "color", WNs, ColorHelper.ColorToHex(props.Border.Color));
+            writer.WriteAttributeString("w", "color", WNs, resolvedThemeHex ?? ColorHelper.ResolveColorHex(props.Border.Color, theme));
+            if (themeColor != null)
+            {
+                writer.WriteAttributeString("w", "themeColor", WNs, themeColor);
+            }
             writer.WriteEndElement();
         }
 
