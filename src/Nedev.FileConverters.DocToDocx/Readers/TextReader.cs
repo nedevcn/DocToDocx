@@ -239,13 +239,13 @@ public class TextReader
             var buf = new byte[charCount];
             stream.Read(buf, 0, buf.Length);
             var enc = GetEncodingForCompressedText(lid);
-            try { Consider(enc.GetString(buf)); } catch { }
+            try { Consider(enc.GetString(buf)); } catch (Exception ex) { Logger.Debug($"Primary compressed-text decode failed for code page {enc.CodePage}: {ex.Message}"); }
 
             // extra code pages as in DecodeCompressedPieceWithLid
             foreach (var extra in GetExtraEncodingsForCompressed(lid))
             {
                 if (extra.CodePage == enc.CodePage) continue;
-                try { Consider(extra.GetString(buf)); } catch { }
+                try { Consider(extra.GetString(buf)); } catch (Exception ex) { Logger.Debug($"Fallback compressed-text decode failed for code page {extra.CodePage}: {ex.Message}"); }
             }
         }
 
@@ -460,11 +460,11 @@ public class TextReader
                 if (!list.Any(e => e.CodePage == enc.CodePage))
                     list.Add(enc);
             }
-            catch (ArgumentException) { }
+            catch (ArgumentException ex) { Logger.Debug($"Code page {cp} is unavailable for compressed-text fallback decoding: {ex.Message}"); }
         }
         if (lid != 0x0804 && lid != 0x0404 && lid != 0x0411 && lid != 0x0412)
         {
-            try { list.Add(Encoding.GetEncoding(1252)); } catch { }
+            try { list.Add(Encoding.GetEncoding(1252)); } catch (ArgumentException ex) { Logger.Debug($"Code page 1252 is unavailable for compressed-text fallback decoding: {ex.Message}"); }
         }
         return list;
     }
@@ -627,7 +627,10 @@ public class TextReader
                 var q = DecodeQuality(s);
                 if (q > bestScore) { bestScore = q; bestStr = s; }
             }
-            catch { /* ignore */ }
+            catch (Exception ex)
+            {
+                Logger.Debug($"Extra compressed-piece decode failed for code page {enc.CodePage}: {ex.Message}");
+            }
         }
 
         // Prefer Unicode when ANSI result is clearly bad (replacement chars or very low score)
@@ -662,7 +665,10 @@ public class TextReader
                 var q = DecodeQuality(s);
                 if (q > bestScore) { bestScore = q; bestStr = s; }
             }
-            catch { /* ignore */ }
+            catch (Exception ex)
+            {
+                Logger.Debug($"Compressed-byte fallback decode failed for code page {enc.CodePage}: {ex.Message}");
+            }
         }
         return bestStr;
     }

@@ -39,7 +39,7 @@ public class FootnoteReader
 
             if (_fib.CcpFtn == 0)
             {
-                Logger.Info("FIB reports CcpFtn=0; will attempt to read footnotes anyway using PLCF data");
+                Logger.Debug("FIB reports CcpFtn=0; will attempt to read footnotes anyway using PLCF data");
             }
 
             footnotes = ReadFootnotesWithOffset();
@@ -131,7 +131,7 @@ public class FootnoteReader
                 var fcOffset = _fkpParser.CpToFc(absoluteStartCp);
                 if (fcOffset.HasValue)
                 {
-                    Logger.Info($"FKP fallback cp={absoluteStartCp} length={length} -> fc={fcOffset.Value}");
+                    Logger.Debug($"FKP fallback cp={absoluteStartCp} length={length} -> fc={fcOffset.Value}");
                     // first try the usual WordDocument stream
                     var alt = _textReader.DecodeRangeFromFc(fcOffset.Value, length, _fib.Lid);
                     if (!string.IsNullOrEmpty(alt) && !LooksGarbled(alt, length))
@@ -144,7 +144,7 @@ public class FootnoteReader
                         var alt2 = _textReader.DecodeRangeFromTableFc(fcOffset.Value, length, _fib.Lid);
                         if (!string.IsNullOrEmpty(alt2) && !LooksGarbled(alt2, length))
                         {
-                            Logger.Info("Successfully decoded using table stream fallback");
+                            Logger.Debug("Successfully decoded using table stream fallback");
                             noteText = alt2;
                         }
                         // as a last resort, take alt2 even if it looked garbled so we
@@ -152,7 +152,7 @@ public class FootnoteReader
                         // helps tests and prevents silent data loss in strange files.
                         else if (!string.IsNullOrEmpty(alt2))
                         {
-                            Logger.Info("Using garbled table-stream text as final fallback");
+                            Logger.Warning("Using garbled table-stream text as final fallback for footnote/endnote recovery.");
                             noteText = alt2;
                         }
                     }

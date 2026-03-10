@@ -1409,7 +1409,7 @@ public partial class DocumentWriter
         _writer.WriteEndElement();
         if (run.Properties != null && RunPropertiesHelper.HasRunProperties(run.Properties))
         {
-            RunPropertiesHelper.WriteRunPropertiesContent(_writer, run.Properties, includeExtended: true);
+            RunPropertiesHelper.WriteRunPropertiesContent(_writer, run.Properties, includeExtended: true, _document?.Theme);
         }
         _writer.WriteEndElement(); // w:rPr
         _writer.WriteStartElement("w", "t", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");

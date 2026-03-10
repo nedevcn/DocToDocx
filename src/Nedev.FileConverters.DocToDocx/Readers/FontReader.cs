@@ -130,7 +130,10 @@ public class FontReader
                 name = Encoding.ASCII.GetString(data, startOfName, endOfName - startOfName);
                 if (IsLegalFontName(name)) return name;
             }
-            catch { }
+            catch (Exception ex)
+            {
+                Logger.Debug($"Failed to decode embedded font name candidate: {ex.Message}");
+            }
         }
         
         return string.Empty;

@@ -210,7 +210,7 @@ internal static class RunPropertiesHelper
             string? resolvedThemeHex = ColorHelper.ResolveThemeColorHex(props.Color, theme);
             string colorHex = props.HasRgbColor
                 ? ColorHelper.RgbToHex(props.RgbColor)
-                : ColorHelper.ColorToHex(props.Color);
+                : ColorHelper.ResolveColorHex(props.Color, theme);
 
             if (themeColor != null || colorHex != "auto" || resolvedThemeHex != null)
             {
@@ -235,7 +235,7 @@ internal static class RunPropertiesHelper
             // Style-level: simple ICO index only
             string? themeColor = ColorHelper.GetThemeColorName(props.Color);
             string? resolvedThemeHex = ColorHelper.ResolveThemeColorHex(props.Color, theme);
-            var colorHex = ColorHelper.ColorToHex(props.Color);
+            var colorHex = ColorHelper.ResolveColorHex(props.Color, theme);
             if (themeColor != null || colorHex != "auto" || resolvedThemeHex != null)
             {
                 writer.WriteStartElement("w", "color", WNs);

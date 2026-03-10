@@ -114,6 +114,7 @@ namespace Nedev.FileConverters.DocToDocx.Tests
             var model = new ChartModel { SourceBytes = bytes, SourceStreamName = "Chart1" };
             BiffChartScanner.TryPopulateChart(model);
             Assert.Equal(ChartType.Pie, model.Type);
+            Assert.Equal("OnlySeries", model.ValueAxisTitle);
         }
 
         [Fact]

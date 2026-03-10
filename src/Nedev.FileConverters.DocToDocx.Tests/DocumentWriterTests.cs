@@ -736,6 +736,47 @@ namespace Nedev.FileConverters.DocToDocx.Tests
         }
 
         [Fact]
+        public void HyperlinkRun_UsesThemeAwareRunProperties()
+        {
+            var doc = new DocumentModel
+            {
+                Theme = new ThemeModel()
+            };
+            doc.Theme.ColorMap["accent1"] = "4472C4";
+
+            var para = new ParagraphModel();
+            para.Runs.Add(new RunModel
+            {
+                Text = "jump",
+                IsHyperlink = true,
+                HyperlinkBookmark = "targetBookmark",
+                Properties = new RunProperties
+                {
+                    Color = 0x01000000 | 4,
+                    IsUnderline = true,
+                    UnderlineType = UnderlineType.Single
+                }
+            });
+            doc.Paragraphs.Add(para);
+
+            byte[] pkg;
+            using (var ms = new MemoryStream())
+            {
+                var zw = new ZipWriter(ms);
+                zw.WriteDocument(doc);
+                zw.Dispose();
+                pkg = ms.ToArray();
+            }
+
+            using var zip = new System.IO.Compression.ZipArchive(new MemoryStream(pkg), System.IO.Compression.ZipArchiveMode.Read);
+            var documentXml = new StreamReader(zip.GetEntry("word/document.xml").Open()).ReadToEnd();
+
+            Assert.Contains("anchor=\"targetBookmark\"", documentXml);
+            Assert.Contains("themeColor=\"accent1\"", documentXml);
+            Assert.Contains("val=\"4472C4\"", documentXml);
+        }
+
+        [Fact]
         public void ParagraphKeepWithNext_IsSerialized()
         {
             var doc = new DocumentModel();

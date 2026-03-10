@@ -380,7 +380,10 @@ public class SprmParser
                             PatternVal = patternVal
                         };
                     }
-                    catch { /* ignore */ }
+                    catch (Exception ex)
+                    {
+                        Logger.Debug($"Failed to parse paragraph shading operand: {ex.Message}");
+                    }
                 }
                 break;
 

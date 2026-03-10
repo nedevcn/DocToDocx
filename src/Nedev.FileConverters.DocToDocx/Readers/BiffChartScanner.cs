@@ -310,6 +310,15 @@ public static class BiffChartScanner
             if (seriesList.Count <= 1)
             {
                 model.ShowLegend = false;
+
+                if (string.IsNullOrWhiteSpace(model.ValueAxisTitle))
+                {
+                    var singleSeriesName = seriesList[0].Name;
+                    if (!string.IsNullOrWhiteSpace(singleSeriesName) && !singleSeriesName.StartsWith("Series ", StringComparison.OrdinalIgnoreCase))
+                    {
+                        model.ValueAxisTitle = singleSeriesName;
+                    }
+                }
             }
 
             if (strings.TryGetValue((0, 0), out var topLeftText) && !string.IsNullOrWhiteSpace(topLeftText) && string.IsNullOrWhiteSpace(model.CategoryAxisTitle))
