@@ -1,79 +1,92 @@
 # Nedev.FileConverters.DocToDocx
 
-A DOC to DOCX converter for .NET 8.0 and .NET Standard 2.1 with no third-party runtime dependencies.
+一个面向 .NET 的 DOC 到 DOCX 转换器，当前代码基线以“可生成有效 DOCX、优先恢复可读内容”为目标，而不是追求对旧版 Word 二进制格式的完全等价复刻。
 
-## Features
+## 当前完成度
 
-- **Binary DOC reader**: Reads compound file storage, FIB metadata, CLX/piece tables, FKPs, PLCFs, and related legacy Word structures.
-- **Rich text and paragraph formatting**: Preserves common character and paragraph properties including fonts, size, bold, italic, underline, colors, highlight, alignment, spacing, indentation, borders, shading, list formatting, and theme-backed hyperlink/comment/note colors.
-- **Tables**: Writes table width, indentation, spacing, borders, shading, header rows, cantSplit, vertical merges, horizontal merges, and nested table structures recovered from TAP/PAP data.
-- **Sections and page setup**: Emits page size, orientation, margins, page numbering, and first/odd/even header and footer parts, with paragraph-based header/footer content now reusing document theme/style context while degrading unsupported external hyperlinks to plain text.
-- **Images and floating pictures**: Extracts embedded images and OfficeArt picture data, writes media parts, and emits inline or anchored drawings depending on available FSPA anchor information.
-- **Footnotes, endnotes, comments, textboxes, and equations**: Writes common annotation parts, textbox content, and Equation Editor content converted to OMML where recognized, now reusing the same run-property pipeline for theme-backed colors, highlight, underline, borders, and vertical alignment.
-- **Encrypted DOC support**: Supports XOR-obfuscated streams and Office 97-2003 RC4-encrypted DOC files when the correct password is supplied.
-- **Package validation helpers**: Exposes helpers to load, save, convert, and validate generated DOCX packages.
-- **CLI and library APIs**: Includes synchronous conversion, asynchronous conversion, progress reporting, and a command-line tool for file and directory conversion.
+基于现有源码和测试，项目可以判断为“可用的早期版本”，不是纯概念验证，但也还没有到“复杂旧文档高保真转换”的阶段。
 
-## Current limitations and known issues
+### 已完成且可直接使用
 
-The converter is intentionally pragmatic: it aims to produce valid, readable DOCX output from a wide range of legacy DOC files, but it does not implement the full MS-DOC / OfficeArt feature surface.
+- 提供文件路径和流两套转换 API。
+- 提供同步、异步、进度回调、取消、告警收集等调用方式。
+- 可以识别输入是 DOC 还是 DOCX，DOCX 会直接透传复制。
+- 可以输出结构合法的 DOCX 包，并提供包校验辅助方法。
+- 提供 CLI，可处理单文件，也可批量处理目录。
+- 已接入 `Nedev.FileConverters.Core` 的 `IFileConverter` 接口。
 
-- **Complex vector shapes are downgraded**: Non-picture OfficeArt content and SmartArt-like shapes are still converted via a simplified DrawingML fallback, but multi-path contours are now preserved (holes and disjoint paths will generate separate `<a:path>` elements) and the segment parser understands additional codes.  Groups of shapes are now represented with `<a:grpSp>` containers when possible, and group children include non-visual id/name properties so they can be identified.  Shapes carrying text but no other classification are now flagged `SmartArt` in the model.  A basic linear-gradient fill model is available; simple gradients can also be read from OfficeArt OPT records (covered by unit tests).  Full SmartArt fidelity and richer gradient types remain longer-term goals.
-- **Chart support is partial**: Embedded BIFF/OLE chart data is scanned on a best-effort basis. Category and value series can often be recovered, including simple `FORMULA`/`STRING` cells as well as RK/MULRK numeric records, stream-name hints for doughnut/radar charts, single-series value-axis title inference, sanitized chart labels, and a broader set of stable OOXML defaults (clustered bar settings, line marker/smoothing defaults, axis visibility/tick/grid settings, pie first-slice defaults, etc.). Writer logic also pads or truncates series values to match category counts.  Titles and axis labels may carry explicit colors that are emitted in the chart XML. Complex chart formatting is still regenerated heuristically.
-- **Theme interpretation is broader but still incomplete**: Theme colors and fonts now influence document defaults, runs, borders, shading, shapes, comments, footnotes, endnotes, and paragraph-based header/footer output, but not every output surface is fully theme-aware yet.
-- **Best-effort parsing still prefers partial output over hard failure**: Many OLE, chart, image, math, and binary parsing paths continue conversion after malformed or truncated input. Nested tables of arbitrary depth now round-trip through the writer, and a new deep‑nesting regression test guards against collapse.  Those paths now surface more structured warnings, and several former silent/developer-only fallbacks have been downgraded to debug traces or explicit warnings, but not every degraded recovery path is fully classified yet.
-- **Layout heuristics remain in a few areas**: Deeply nested tables, unusual merge layouts, and some header/footer or drawing placement cases may be approximated rather than reproduced exactly.
-- **Not a round-trip converter**: The goal is compatible DOCX output, not byte-for-byte structural equivalence with the source DOC.
+### 已有实现，但属于“最佳努力恢复”
 
-## Priority implementation gaps
+- 旧版 DOC 二进制解析链路已经搭起来，包括 CFB、FIB、CLX/Piece Table、FKP、SPRM、样式、段落与 run 解析。
+- 基础文本、常见 run/段落格式、超链接字段、书签、批注、脚注、页眉页脚、列表和部分主题色映射已有代码与测试支撑。
+- 表格、嵌套表格、图片、OfficeArt 形状、文本框、OLE 对象、图表、公式对象都已有 reader 或 writer，但不少场景仍是启发式恢复。
+- 支持 XOR/RC4 相关加密读取路径，但还缺真实样本驱动的端到端回归验证。
 
-The following areas are the main remaining implementation and maintenance hotspots identified from the current codebase.
+### 目前不能承诺的能力
 
-1. **RC4 stream boundary handling needs a dedicated end-to-end audit**: The RC4 setup in the DOC reader includes explicit uncertainty around where encrypted content begins in WordDocument and related streams. The current code works for covered cases, but this area should be treated as fragile until it is backed by encrypted real-world regression samples.
-2. **Structured diagnostics are better, but not exhaustive**: High-value parsing paths now emit structured warnings and the obvious `Console.WriteLine` readers have been unified behind `Logger`, but there are still best-effort recovery branches where degradation is only loosely classified.
-3. **Chart reconstruction remains intentionally minimal**: The BIFF scanner now understands simple `FORMULA` numeric/string results in addition to plain numeric grids, but chart metadata and formatting are still largely regenerated from defaults. This is sufficient for editable fallback charts, not faithful reproduction of complex embedded Excel chart state.
-4. **Theme support is now cross-cutting, not complete**: Theme XML no longer stops at extraction. Parsed theme data already influences defaults, body runs, hyperlinks, borders, shading, shapes, comments, footnotes, and endnotes, but a full pass over every generated part is still pending.
-5. **Nested table parsing is still a high-complexity area**: Table recovery relies on paragraph nesting levels, cell boundary markers, and stack-based state. The implementation is robust for common cases, but exotic nesting and malformed cell boundaries remain one of the more failure-prone parts of the reader.
-6. **Binary property decoding still needs broader hostile-input coverage**: SPRM/FKP parsing has targeted regression tests, but there is still no broad malformed-input or fuzz-style test coverage for truncated operands, corrupt piece tables, or extreme legacy edge cases.
+- 不保证复杂版式、复杂图形、复杂图表在 Word 中高保真还原。
+- 不保证损坏文档、截断流、异常 OfficeArt/OLE 数据都能稳定恢复。
+- 不保证与源 DOC 在结构上 round-trip 等价。
+- 不保证所有主题、域、修订、控件、SmartArt、宏相关对象都被完整建模。
 
-## Test coverage notes
+## 代码里已经明确存在的能力
 
-- **Covered today**: Package validation, sample conversion flows, selected chart heuristics, BIFF `FORMULA`/`STRING` recovery, chart axis/default XML emission, chart text sanitization and fallback-series behavior, OMML namespace generation, FIB regression cases, bookmark decoding, annotation/note/header-footer writer formatting, shape textbox text sanitization, and some encryption helper behavior.
-- **Still missing**: End-to-end encrypted DOC regression files, malformed document fuzzing, broad OLE/object-pool failure cases, and systematic compatibility suites for complex layout documents.
+下面这些能力是可以从当前入口代码和测试中直接确认的。
 
-## Usage
+- `DocToDocxConverter` 提供文件/流转换、异步转换、进度回调、带告警结果的转换，以及保存/加载/校验 DOCX 包的辅助方法。
+- `DocToDocxFileConverter` 可作为 `IFileConverter` 被宿主框架发现和调用。
+- CLI 支持以下行为：
+  - 单文件转换。
+  - 目录批量转换。
+  - `-r` 递归处理子目录。
+  - `-p` 指定密码。
+  - `--no-hyperlinks` 禁止生成超链接关系。
+  - `-h`/`--help` 与 `-v`/`--version`。
+- 测试已经覆盖的一些关键点：
+  - DOCX 透传复制。
+  - 流式转换与非可 seek 输入。
+  - 进度事件与诊断采集。
+  - 包结构校验。
+  - 文档写出中的基础段落、格式、批注、页眉页脚、脚注、字段、部分图表 XML。
+  - 图表扫描器对基础 BIFF 数值和标签恢复。
+  - OfficeArt、SPRM、主题读取、RC4 流等核心辅助模块。
 
-### Library
+当前测试项目下有大量针对 writer 和底层解析器的单元测试，但端到端真实样本文档覆盖仍然偏少，尤其是加密、损坏、复杂排版、复杂 OLE/图表这几类。
 
-A new set of overloads is available for working directly with streams, which is
-handy for scenarios such as web applications or in-memory transformations.  The
-input stream must be readable (and preferably seekable), and the output stream
-must be writable.  Neither stream is closed by the API.
+## 适合当前版本的使用场景
 
-Reference the Nedev.FileConverters.DocToDocx assembly and call the public
-converter API:
+- 批量把普通历史 DOC 文档迁移到可继续编辑的 DOCX。
+- 服务端或工具链中做“尽量恢复内容”的自动化转换。
+- 对文本、基础格式、常见批注脚注、基础表格结构的保留要求高，但接受部分版式近似。
+
+## 暂不建议过度承诺的场景
+
+- 法务、审计、档案类场景下要求像素级版式一致。
+- 大量依赖复杂图形、复杂图表、嵌套对象、控件、宏的 DOC 文档。
+- 对损坏文档修复能力有严格 SLA 的场景。
+
+## 使用方式
+
+### 类库调用
 
 ```csharp
 using Nedev.FileConverters.DocToDocx;
 
-// file-based conversion (existing API)
 DocToDocxConverter.Convert("input.doc", "output.docx");
 
-// same as above with options
 DocToDocxConverter.Convert(
     "input.doc",
     "output.docx",
     password: null,
-    enableHyperlinks: false);
+    enableHyperlinks: true);
 
-// stream-based conversion
 using var input = File.OpenRead("input.doc");
-using var output = new MemoryStream();
+using var output = File.Create("output.docx");
+
 DocToDocxConverter.Convert(input, output);
-// output now contains a valid DOCX package
 ```
 
-### Async conversion with progress
+### 异步与进度
 
 ```csharp
 using Nedev.FileConverters.DocToDocx;
@@ -92,40 +105,72 @@ await DocToDocxConverter.ConvertAsync(
     cancellationToken: CancellationToken.None);
 ```
 
-The converter can also detect an existing DOCX input and copy it through to the output path instead of attempting DOC parsing.
+### 获取非致命告警
 
-### Command-line interface
+```csharp
+using Nedev.FileConverters.DocToDocx;
 
-```bash
-Nedev.FileConverters.DocToDocx.Cli <input.doc|input.docx|inputDir> <output.docx|outputDir> [-p <password>] [-r] [--no-hyperlinks]
+var result = DocToDocxConverter.ConvertWithWarnings("input.doc", "output.docx");
+
+foreach (var diagnostic in result.Diagnostics)
+{
+    Console.WriteLine($"[{diagnostic.Level}] {diagnostic.Message}");
+}
 ```
 
-When the input is a DOC file, the tool converts it. When the input is already a DOCX file, it copies the package to the output location. When the input is a directory, the tool can convert matching files in-place into a mirrored output directory tree.
+### CLI
 
-**Arguments:**
-- `<input.doc|input.docx|inputDir>` Input DOC file, DOCX file, or directory.
-- `<output.docx|outputDir>` Output DOCX file or destination directory.
+```bash
+Nedev.FileConverters.DocToDocx.Cli <input.doc|inputDir> <output.docx|outputDir> [-p <password>] [-r] [--no-hyperlinks]
+```
 
-**Options:**
-- `-p`, `--password` Password for encrypted DOC files.
-- `-r`, `--recursive` Recursively process directories.
-- `--no-hyperlinks` Disable hyperlink elements and relationships in the generated DOCX.
-- `-v`, `--version` Print the CLI version and exit.
-- `-h`, `--help` Show usage information and exit.
+参数说明：
 
-The CLI now also documents exit codes in its help output:
-  - `0` success
-  - `1` conversion/runtime error
-  - `2` invalid arguments (help shown)
+- `<input.doc|inputDir>` 输入 DOC 文件或目录。
+- `<output.docx|outputDir>` 输出 DOCX 文件或目录。
+- `-p`, `--password` 加密 DOC 的密码。
+- `-r`, `--recursive` 目录模式下递归处理。
+- `--no-hyperlinks` 输出普通文本，不生成超链接关系。
+- `-h`, `--help` 显示帮助。
+- `-v`, `--version` 显示版本。
 
-## Running the tests
+CLI 退出码：
 
-The repository includes unit and focused integration tests under `src/Nedev.FileConverters.DocToDocx.Tests`.
+- `0` 成功。
+- `1` 转换失败或运行时异常。
+- `2` 参数错误。
+
+## 目标框架
+
+- 类库：`net8.0`、`netstandard2.1`
+- 测试：`net10.0`
+
+## 测试
+
+在仓库根目录执行：
 
 ```bash
 dotnet test
 ```
 
-The current test suite covers package validation helpers, selected writer behavior, chart scanning heuristics, OMML namespace generation, sample document conversion, and CLI conversion flows. It does not yet provide exhaustive coverage for malformed-input fuzzing or every edge case in legacy Word binary parsing.
+当前测试更偏向“模块正确性”和“生成包有效性”，而不是“真实世界 DOC 样本大规模兼容性”。因此，测试通过不代表所有旧文档都能高质量还原。
 
-A GitHub Actions workflow at `.github/workflows/ci.yml` builds the solution and runs the test suite on push and pull request events.
+## 下一阶段开发计划
+
+### 第一优先级
+
+1. 补齐真实加密 DOC 样本回归，重点验证 RC4 边界、错误密码、表流和数据流解密路径。
+2. 给最佳努力恢复路径补结构化诊断，减少静默降级，尤其是 OLE、图表、形状、图片和截断流解析。
+3. 建立一批真实 DOC 回归样本，覆盖中文文档、复杂表格、页眉页脚、批注、脚注、图文混排。
+
+### 第二优先级
+
+1. 强化复杂表格和嵌套表格恢复，补异常 cell 边界和 merge 场景测试。
+2. 扩大图表恢复范围，把标题、图例、轴标签、更多 BIFF 记录恢复从“可编辑占位图”推进到“保留更多源信息”。
+3. 补齐恶意或损坏输入的防御性测试，覆盖 FKP、SPRM、CLX、OLE 和 OfficeArt。
+
+### 第三优先级
+
+1. 继续提升主题、形状、文本框、公式等输出面的完整性。
+2. 评估是否需要公开更明确的“支持矩阵”与“已知不兼容清单”。
+3. 在有足够样本前，不建议把项目版本含义提升为高保真生产级转换器。
