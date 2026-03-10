@@ -85,6 +85,48 @@ public class ChartModel
     /// Whether a legend should be shown for the chart. Defaults to true.
     /// </summary>
     public bool ShowLegend { get; set; } = true;
+
+    /// <summary>
+    /// Preferred legend position in the generated chart.
+    /// </summary>
+    public ChartLegendPosition LegendPosition { get; set; } = ChartLegendPosition.Right;
+
+    /// <summary>
+    /// Whether the category axis should be displayed in reverse order.
+    /// </summary>
+    public bool CategoryAxisReverseOrder { get; set; }
+
+    /// <summary>
+    /// Whether the value axis should be displayed in reverse order.
+    /// </summary>
+    public bool ValueAxisReverseOrder { get; set; }
+
+    /// <summary>
+    /// Preferred position for the category axis.
+    /// </summary>
+    public ChartAxisPosition CategoryAxisPosition { get; set; } = ChartAxisPosition.Bottom;
+
+    /// <summary>
+    /// Preferred position for the value axis.
+    /// </summary>
+    public ChartAxisPosition ValueAxisPosition { get; set; } = ChartAxisPosition.Left;
+}
+
+public enum ChartLegendPosition
+{
+    Right,
+    Left,
+    Top,
+    Bottom,
+    TopRight
+}
+
+public enum ChartAxisPosition
+{
+    Bottom,
+    Top,
+    Left,
+    Right
 }
 
 public enum ChartType

@@ -73,6 +73,8 @@ public class TextboxReader
             var textbox = new TextboxModel
             {
                 Index = i + 1,
+                StoryStartCharacterPosition = textboxStoryStartCp + relStart,
+                StoryEndCharacterPosition = textboxStoryStartCp + relEnd,
                 Width = 4320,
                 Height = 2880
             };
@@ -80,6 +82,7 @@ public class TextboxReader
             // Pull text from global TextReader using absolute CP
             int absCp = textboxStoryStartCp + relStart;
             var textboxText = _textReader.GetText(absCp, length);
+            textboxText = CleanTextboxText(textboxText);
 
             if (!string.IsNullOrEmpty(textboxText))
             {
@@ -93,6 +96,17 @@ public class TextboxReader
                 foreach (var para in paragraphs)
                 {
                     textbox.Runs.AddRange(para.Runs);
+                }
+
+                var firstParagraphWithProps = paragraphs.FirstOrDefault(paragraph => paragraph.Properties != null);
+                if (firstParagraphWithProps?.Properties != null)
+                {
+                    textbox.HorizontalAlignment = firstParagraphWithProps.Properties.Alignment switch
+                    {
+                        ParagraphAlignment.Center => TextboxHorizontalAlignment.Center,
+                        ParagraphAlignment.Right => TextboxHorizontalAlignment.Right,
+                        _ => TextboxHorizontalAlignment.Left
+                    };
                 }
             }
 
@@ -129,6 +143,7 @@ public class TextboxReader
 
             // Try to get actual CHP properties from FkpParser
             RunProperties? runProps = null;
+            ParagraphProperties? paragraphProps = null;
             if (_fkpParser != null && _styles != null)
             {
                 try
@@ -138,12 +153,20 @@ public class TextboxReader
                     {
                         runProps = _fkpParser.ConvertToRunProperties(chp, _styles);
                     }
+
+                    var pap = _fkpParser.GetPapAtCp(currentCp);
+                    if (pap != null)
+                    {
+                        paragraphProps = _fkpParser.ConvertToParagraphProperties(pap, _styles);
+                    }
                 }
                 catch
                 {
                     // Fall through to default properties
                 }
             }
+
+            paragraph.Properties = paragraphProps;
 
             paragraph.Runs.Add(new RunModel
             {

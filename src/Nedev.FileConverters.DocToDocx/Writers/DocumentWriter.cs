@@ -1733,6 +1733,8 @@ public partial class DocumentWriter
     /// </summary>
     private void WriteTextbox(TextboxModel textbox)
     {
+        var isBehindText = textbox.WrapMode == TextboxWrapMode.Behind;
+
         // For floating textboxes, we embed them in a w:drawing inside a w:p
         _writer.WriteStartElement("w", "p", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
         _writer.WriteStartElement("w", "r", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
@@ -1746,7 +1748,7 @@ public partial class DocumentWriter
         _writer.WriteAttributeString("distR", "114300");
         _writer.WriteAttributeString("simplePos", "0");
         _writer.WriteAttributeString("relativeHeight", "251658240");
-        _writer.WriteAttributeString("behindDoc", "0");
+        _writer.WriteAttributeString("behindDoc", isBehindText ? "1" : "0");
         _writer.WriteAttributeString("locked", "0");
         _writer.WriteAttributeString("layoutInCell", "1");
         _writer.WriteAttributeString("allowOverlap", "1");
@@ -1781,9 +1783,7 @@ public partial class DocumentWriter
         _writer.WriteAttributeString("b", "0");
         _writer.WriteEndElement();
 
-        // Wrap None (floating) or Wrap Square
-        _writer.WriteStartElement("wp", "wrapNone", "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing");
-        _writer.WriteEndElement();
+        WriteWrapMode(GetShapeWrapType(textbox.WrapMode));
 
         // Doc Pr
         _writer.WriteStartElement("wp", "docPr", "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing");
@@ -1798,6 +1798,15 @@ public partial class DocumentWriter
 
         // WPS Shape
         _writer.WriteStartElement("wps", "wsp", "http://schemas.microsoft.com/office/word/2010/wordprocessingShape");
+
+        _writer.WriteStartElement("wps", "bodyPr", "http://schemas.microsoft.com/office/word/2010/wordprocessingShape");
+        _writer.WriteAttributeString("wrap", GetTextboxBodyWrapValue(textbox.WrapMode));
+        _writer.WriteAttributeString("vert", GetTextboxVerticalAlignmentValue(textbox.VerticalAlignment));
+        if (textbox.HorizontalAlignment == TextboxHorizontalAlignment.Center)
+        {
+            _writer.WriteAttributeString("anchorCtr", "1");
+        }
+        _writer.WriteEndElement();
         
         // Shape properties
         _writer.WriteStartElement("wps", "spPr", "http://schemas.microsoft.com/office/word/2010/wordprocessingShape");
@@ -1870,6 +1879,47 @@ public partial class DocumentWriter
         _writer.WriteEndElement(); // w:drawing
         _writer.WriteEndElement(); // w:r
         _writer.WriteEndElement(); // w:p
+    }
+
+    private static ShapeWrapType GetShapeWrapType(TextboxWrapMode wrapMode)
+    {
+        return wrapMode switch
+        {
+            TextboxWrapMode.Square => ShapeWrapType.Square,
+            TextboxWrapMode.Tight => ShapeWrapType.Tight,
+            TextboxWrapMode.Through => ShapeWrapType.Through,
+            TextboxWrapMode.TopBottom => ShapeWrapType.TopBottom,
+            TextboxWrapMode.Behind => ShapeWrapType.BehindText,
+            TextboxWrapMode.InFront => ShapeWrapType.InFrontOfText,
+            _ => ShapeWrapType.None
+        };
+    }
+
+    private static string GetTextboxBodyWrapValue(TextboxWrapMode wrapMode)
+    {
+        return wrapMode switch
+        {
+            TextboxWrapMode.Inline => "square",
+            TextboxWrapMode.Square => "square",
+            TextboxWrapMode.Tight => "tight",
+            TextboxWrapMode.Through => "through",
+            TextboxWrapMode.TopBottom => "topAndBottom",
+            TextboxWrapMode.Behind => "none",
+            TextboxWrapMode.InFront => "none",
+            _ => "square"
+        };
+    }
+
+    private static string GetTextboxVerticalAlignmentValue(TextboxVerticalAlignment alignment)
+    {
+        return alignment switch
+        {
+            TextboxVerticalAlignment.Center => "ctr",
+            TextboxVerticalAlignment.Bottom => "b",
+            TextboxVerticalAlignment.Inside => "ctr",
+            TextboxVerticalAlignment.Outside => "ctr",
+            _ => "t"
+        };
     }
     
     private void WriteRunProperties(RunModel run)

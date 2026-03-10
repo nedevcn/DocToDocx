@@ -160,6 +160,96 @@ public class DocReaderTests
             });
     }
 
+    [Fact]
+    public void MergeTextboxShapesIntoTextboxes_CopiesRecoveredLayout_AndRemovesDuplicateShapes()
+    {
+        var document = new DocumentModel();
+        document.Textboxes.Add(new TextboxModel
+        {
+            Index = 1,
+            AnchorParagraphIndex = 0,
+            Paragraphs =
+            {
+                new ParagraphModel
+                {
+                    Properties = new ParagraphProperties { Alignment = ParagraphAlignment.Center },
+                    Runs = { new RunModel { Text = "textbox" } }
+                }
+            }
+        });
+
+        document.Shapes.Add(new ShapeModel
+        {
+            Id = 11,
+            Type = ShapeType.Textbox,
+            Anchor = new ShapeAnchor
+            {
+                IsFloating = true,
+                X = 120,
+                Y = 240,
+                Width = 3600,
+                Height = 1800,
+                WrapType = ShapeWrapType.Through
+            }
+        });
+
+        DocReader.MergeTextboxShapesIntoTextboxes(document);
+
+        var textbox = Assert.Single(document.Textboxes);
+        Assert.Equal(120, textbox.Left);
+        Assert.Equal(240, textbox.Top);
+        Assert.Equal(3600, textbox.Width);
+        Assert.Equal(1800, textbox.Height);
+        Assert.Equal(TextboxWrapMode.Through, textbox.WrapMode);
+        Assert.Equal(TextboxHorizontalAlignment.Center, textbox.HorizontalAlignment);
+        Assert.Empty(document.Shapes);
+    }
+
+    [Fact]
+    public void MergeTextboxShapesIntoTextboxes_PrefersMatchingAnchorParagraphOverInputOrder()
+    {
+        var document = new DocumentModel();
+        document.Textboxes.Add(new TextboxModel { Index = 1, AnchorParagraphIndex = 4, Paragraphs = { new ParagraphModel { Runs = { new RunModel { Text = "late" } } } } });
+        document.Textboxes.Add(new TextboxModel { Index = 2, AnchorParagraphIndex = 1, Paragraphs = { new ParagraphModel { Runs = { new RunModel { Text = "early" } } } } });
+
+        document.Shapes.Add(new ShapeModel
+        {
+            Id = 101,
+            Type = ShapeType.Textbox,
+            Anchor = new ShapeAnchor { IsFloating = true, ParagraphIndex = 1, X = 10, Y = 20, Width = 1000, Height = 500, WrapType = ShapeWrapType.Square }
+        });
+        document.Shapes.Add(new ShapeModel
+        {
+            Id = 102,
+            Type = ShapeType.Textbox,
+            Anchor = new ShapeAnchor { IsFloating = true, ParagraphIndex = 4, X = 30, Y = 40, Width = 2000, Height = 800, WrapType = ShapeWrapType.Through }
+        });
+
+        DocReader.MergeTextboxShapesIntoTextboxes(document);
+
+        Assert.Equal(30, document.Textboxes[0].Left);
+        Assert.Equal(TextboxWrapMode.Through, document.Textboxes[0].WrapMode);
+        Assert.Equal(10, document.Textboxes[1].Left);
+        Assert.Equal(TextboxWrapMode.Square, document.Textboxes[1].WrapMode);
+    }
+
+    [Fact]
+    public void AttachTextboxAnchorHints_MapsAnchorCpToParagraphIndex()
+    {
+        var document = new DocumentModel();
+        document.Paragraphs.Add(new ParagraphModel { Index = 0, Runs = { new RunModel { Text = "p0", CharacterPosition = 0, CharacterLength = 2 } } });
+        document.Paragraphs.Add(new ParagraphModel { Index = 1, Runs = { new RunModel { Text = "p1", CharacterPosition = 20, CharacterLength = 2 } } });
+        document.Textboxes.Add(new TextboxModel { Index = 1 });
+        document.Textboxes.Add(new TextboxModel { Index = 2 });
+
+        DocReader.AttachTextboxAnchorHints(document, new[] { 5, 25 });
+
+        Assert.Equal(5, document.Textboxes[0].AnchorCharacterPosition);
+        Assert.Equal(0, document.Textboxes[0].AnchorParagraphIndex);
+        Assert.Equal(25, document.Textboxes[1].AnchorCharacterPosition);
+        Assert.Equal(1, document.Textboxes[1].AnchorParagraphIndex);
+    }
+
     private static void AddChpRange(Dictionary<int, ChpBase> map, int start, int end, int fontSize)
     {
         var chp = new ChpBase { FontSize = (byte)fontSize };

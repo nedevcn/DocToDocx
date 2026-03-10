@@ -159,4 +159,74 @@ public class OfficeArtMapperTests
         Assert.Equal(0x00FF00, shape.GradientStops![1].Color);
         Assert.Equal(1d, shape.GradientStops![1].Position);
     }
+
+    [Fact]
+    public void OfficeArtMapper_DerivesWrapPolygonFromCustomGeometry_WhenAnchorUsesTightWrap()
+    {
+        byte[] leaf = BuildLeafRecord(0xF00A, 0x0010, BitConverter.GetBytes(77).Concat(new byte[4]).ToArray(), version: 0x2);
+        byte[] vertices = BuildVerticesPayload(
+            new System.Drawing.Point(0, 0),
+            new System.Drawing.Point(1000, 0),
+            new System.Drawing.Point(1000, 1000),
+            new System.Drawing.Point(0, 1000));
+
+        byte[] optVertices = BuildLeafRecord(0xF00B, 1, BuildOptPayload(321, vertices), version: 0x3);
+        byte[] optLeft = BuildLeafRecord(0xF00B, 1, BuildSimpleOptPayload(323, 0), version: 0x3);
+        byte[] optTop = BuildLeafRecord(0xF00B, 1, BuildSimpleOptPayload(324, 0), version: 0x3);
+        byte[] optRight = BuildLeafRecord(0xF00B, 1, BuildSimpleOptPayload(325, 1000), version: 0x3);
+        byte[] optBottom = BuildLeafRecord(0xF00B, 1, BuildSimpleOptPayload(326, 1000), version: 0x3);
+        byte[] spContainer = BuildContainerRecord(0xF004, 0, leaf.Concat(optVertices).Concat(optLeft).Concat(optTop).Concat(optRight).Concat(optBottom).ToArray());
+
+        using var stream = new MemoryStream(spContainer);
+        var reader = new OfficeArtReader(stream);
+        var doc = new DocumentModel();
+        doc.Paragraphs.Add(new ParagraphModel { Index = 0, Runs = { new RunModel { Text = "body", CharacterPosition = 0, CharacterLength = 4 } } });
+
+        OfficeArtMapper.AttachShapes(doc, reader, new[]
+        {
+            new FspaInfo
+            {
+                Spid = 77,
+                XaLeft = 10,
+                YaTop = 20,
+                XaRight = 1010,
+                YaBottom = 820,
+                Cp = 0,
+                Flags = 0x0020
+            }
+        });
+
+        var shape = Assert.Single(doc.Shapes);
+        Assert.NotNull(shape.Anchor);
+        Assert.Equal(ShapeWrapType.Tight, shape.Anchor!.WrapType);
+        Assert.NotNull(shape.WrapPolygonVertices);
+        Assert.Equal(new System.Drawing.Point(0, 0), shape.WrapPolygonVertices![0]);
+        Assert.Contains(shape.WrapPolygonVertices, point => point == new System.Drawing.Point(21600, 21600));
+    }
+
+    private static byte[] BuildSimpleOptPayload(ushort propId, uint value)
+    {
+        using var ms = new MemoryStream();
+        using var writer = new BinaryWriter(ms, Encoding.Default, leaveOpen: true);
+        writer.Write(propId);
+        writer.Write(value);
+        writer.Flush();
+        return ms.ToArray();
+    }
+
+    private static byte[] BuildVerticesPayload(params System.Drawing.Point[] points)
+    {
+        using var ms = new MemoryStream();
+        using var writer = new BinaryWriter(ms, Encoding.Default, leaveOpen: true);
+        writer.Write((ushort)points.Length);
+        writer.Write((ushort)points.Length);
+        writer.Write((ushort)8);
+        foreach (var point in points)
+        {
+            writer.Write(point.X);
+            writer.Write(point.Y);
+        }
+        writer.Flush();
+        return ms.ToArray();
+    }
 }

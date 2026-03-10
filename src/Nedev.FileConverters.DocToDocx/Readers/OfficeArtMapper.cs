@@ -543,6 +543,12 @@ public static class OfficeArtMapper
                 ZOrder = zOrderCounter++
             };
 
+            if ((shape.Anchor.WrapType == ShapeWrapType.Tight || shape.Anchor.WrapType == ShapeWrapType.Through) &&
+                (shape.WrapPolygonVertices == null || shape.WrapPolygonVertices.Count == 0))
+            {
+                shape.WrapPolygonVertices = BuildWrapPolygonFromGeometry(shape.CustomGeometry);
+            }
+
             // Map CP to the paragraph containing the CP.
             // A paragraph contains the CP if its MinCp is <= the shape's CP.
             // Since paraInfos is ordered by MinCp ascending, the LAST one satisfying MinCp <= cp is the container.
@@ -559,6 +565,33 @@ public static class OfficeArtMapper
                 shape.Anchor.ParagraphIndex = bestPara.Paragraph.Index;
             }
         }
+    }
+
+    private static List<System.Drawing.Point>? BuildWrapPolygonFromGeometry(CustomGeometry? geometry)
+    {
+        if (geometry == null || geometry.Vertices.Count < 3)
+            return null;
+
+        int left = geometry.ViewLeft;
+        int top = geometry.ViewTop;
+        int width = geometry.ViewRight - geometry.ViewLeft;
+        int height = geometry.ViewBottom - geometry.ViewTop;
+        if (width <= 0 || height <= 0)
+            return null;
+
+        var points = new List<System.Drawing.Point>();
+        foreach (var vertex in geometry.Vertices)
+        {
+            int x = (int)Math.Round((vertex.X - left) * 21600d / width);
+            int y = (int)Math.Round((vertex.Y - top) * 21600d / height);
+            var point = new System.Drawing.Point(Math.Clamp(x, 0, 21600), Math.Clamp(y, 0, 21600));
+            if (points.Count == 0 || points[^1] != point)
+            {
+                points.Add(point);
+            }
+        }
+
+        return points.Count >= 3 ? points : null;
     }
 
     /// <summary>

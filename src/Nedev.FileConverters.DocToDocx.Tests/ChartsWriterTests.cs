@@ -276,5 +276,35 @@ namespace Nedev.FileConverters.DocToDocx.Tests
             Assert.Contains("srgbClr val=\"665544\"", xml);
             Assert.Contains("srgbClr val=\"998877\"", xml);
         }
+
+        [Fact]
+        public void WriteChart_UsesLegendAndAxisLayoutProperties()
+        {
+            var model = new ChartModel
+            {
+                Type = ChartType.Column,
+                ShowLegend = true,
+                LegendPosition = ChartLegendPosition.Bottom,
+                CategoryAxisReverseOrder = true,
+                ValueAxisReverseOrder = true,
+                CategoryAxisPosition = ChartAxisPosition.Top,
+                ValueAxisPosition = ChartAxisPosition.Right,
+                Categories = new List<string> { "A", "B" },
+                Series = { new ChartSeries { Name = "S", Values = new List<double> { 1, 2 } } }
+            };
+
+            using var ms = new MemoryStream();
+            using var writer = XmlWriter.Create(ms, new XmlWriterSettings { Encoding = Encoding.UTF8 });
+            new ChartsWriter(writer).WriteChart(model);
+            writer.Flush();
+            string xml = Encoding.UTF8.GetString(ms.ToArray());
+
+            Assert.Contains("<c:legendPos val=\"b\"", xml);
+            Assert.Equal(2, xml.Split("<c:orientation val=\"maxMin\"", StringSplitOptions.None).Length - 1);
+            Assert.Contains("<c:catAx>", xml);
+            Assert.Contains("<c:axPos val=\"t\"", xml);
+            Assert.Contains("<c:valAx>", xml);
+            Assert.Contains("<c:axPos val=\"r\"", xml);
+        }
     }
 }

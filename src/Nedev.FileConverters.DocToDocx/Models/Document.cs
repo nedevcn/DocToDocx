@@ -749,6 +749,10 @@ public class TextboxModel
     public string? Name { get; set; }
     public List<ParagraphModel> Paragraphs { get; set; } = new();
     public List<RunModel> Runs { get; set; } = new();
+    public int StoryStartCharacterPosition { get; set; } = -1;
+    public int StoryEndCharacterPosition { get; set; } = -1;
+    public int AnchorCharacterPosition { get; set; } = -1;
+    public int AnchorParagraphIndex { get; set; } = -1;
     public int Left { get; set; }
     public int Top { get; set; }
     public int Width { get; set; }

@@ -147,7 +147,7 @@ public partial class DocumentWriter
             _writer.WriteEndElement();
 
             // Text wrapping
-            WriteWrapMode(shape.Anchor?.WrapType ?? ShapeWrapType.Square);
+            WriteWrapMode(shape.Anchor?.WrapType ?? ShapeWrapType.Square, shape.WrapPolygonVertices);
 
             // docPr
             _writer.WriteStartElement("wp", "docPr", wpNs);
@@ -696,7 +696,7 @@ public partial class DocumentWriter
         _writer.WriteEndElement();
 
         // Text wrapping
-        WriteWrapMode(anchor.WrapType);
+        WriteWrapMode(anchor.WrapType, shape.WrapPolygonVertices);
 
         // Doc properties
         _writer.WriteStartElement("wp", "docPr", "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing");
@@ -812,7 +812,7 @@ public partial class DocumentWriter
         };
     }
 
-    private void WriteWrapMode(ShapeWrapType wrapType)
+    private void WriteWrapMode(ShapeWrapType wrapType, IReadOnlyList<System.Drawing.Point>? polygonVertices = null)
     {
         const string wpNs = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing";
         switch (wrapType)
@@ -825,27 +825,13 @@ public partial class DocumentWriter
             case ShapeWrapType.Tight:
                 _writer.WriteStartElement("wp", "wrapTight", wpNs);
                 _writer.WriteAttributeString("wrapText", "bothSides");
-                _writer.WriteStartElement("wp", "wrapPolygon", wpNs);
-                _writer.WriteAttributeString("edited", "0");
-                _writer.WriteStartElement("wp", "start", wpNs); _writer.WriteAttributeString("x", "0"); _writer.WriteAttributeString("y", "0"); _writer.WriteEndElement();
-                _writer.WriteStartElement("wp", "lineTo", wpNs); _writer.WriteAttributeString("x", "0"); _writer.WriteAttributeString("y", "21600"); _writer.WriteEndElement();
-                _writer.WriteStartElement("wp", "lineTo", wpNs); _writer.WriteAttributeString("x", "21600"); _writer.WriteAttributeString("y", "21600"); _writer.WriteEndElement();
-                _writer.WriteStartElement("wp", "lineTo", wpNs); _writer.WriteAttributeString("x", "21600"); _writer.WriteAttributeString("y", "0"); _writer.WriteEndElement();
-                _writer.WriteStartElement("wp", "lineTo", wpNs); _writer.WriteAttributeString("x", "0"); _writer.WriteAttributeString("y", "0"); _writer.WriteEndElement();
-                _writer.WriteEndElement();
+                WriteWrapPolygon(polygonVertices);
                 _writer.WriteEndElement();
                 break;
             case ShapeWrapType.Through:
                 _writer.WriteStartElement("wp", "wrapThrough", wpNs);
                 _writer.WriteAttributeString("wrapText", "bothSides");
-                _writer.WriteStartElement("wp", "wrapPolygon", wpNs);
-                _writer.WriteAttributeString("edited", "0");
-                _writer.WriteStartElement("wp", "start", wpNs); _writer.WriteAttributeString("x", "0"); _writer.WriteAttributeString("y", "0"); _writer.WriteEndElement();
-                _writer.WriteStartElement("wp", "lineTo", wpNs); _writer.WriteAttributeString("x", "0"); _writer.WriteAttributeString("y", "21600"); _writer.WriteEndElement();
-                _writer.WriteStartElement("wp", "lineTo", wpNs); _writer.WriteAttributeString("x", "21600"); _writer.WriteAttributeString("y", "21600"); _writer.WriteEndElement();
-                _writer.WriteStartElement("wp", "lineTo", wpNs); _writer.WriteAttributeString("x", "21600"); _writer.WriteAttributeString("y", "0"); _writer.WriteEndElement();
-                _writer.WriteStartElement("wp", "lineTo", wpNs); _writer.WriteAttributeString("x", "0"); _writer.WriteAttributeString("y", "0"); _writer.WriteEndElement();
-                _writer.WriteEndElement();
+                WriteWrapPolygon(polygonVertices);
                 _writer.WriteEndElement();
                 break;
             case ShapeWrapType.TopBottom:
@@ -857,5 +843,50 @@ public partial class DocumentWriter
                 _writer.WriteEndElement();
                 break;
         }
+    }
+
+    private void WriteWrapPolygon(IReadOnlyList<System.Drawing.Point>? polygonVertices)
+    {
+        const string wpNs = "http://schemas.openxmlformats.org/drawingml/2006/wordprocessingDrawing";
+
+        var vertices = polygonVertices;
+        if (vertices == null || vertices.Count < 3)
+        {
+            vertices = new[]
+            {
+                new System.Drawing.Point(0, 0),
+                new System.Drawing.Point(0, 21600),
+                new System.Drawing.Point(21600, 21600),
+                new System.Drawing.Point(21600, 0)
+            };
+        }
+
+        _writer.WriteStartElement("wp", "wrapPolygon", wpNs);
+        _writer.WriteAttributeString("edited", "0");
+
+        var first = vertices[0];
+        _writer.WriteStartElement("wp", "start", wpNs);
+        _writer.WriteAttributeString("x", first.X.ToString());
+        _writer.WriteAttributeString("y", first.Y.ToString());
+        _writer.WriteEndElement();
+
+        for (int i = 1; i < vertices.Count; i++)
+        {
+            var point = vertices[i];
+            _writer.WriteStartElement("wp", "lineTo", wpNs);
+            _writer.WriteAttributeString("x", point.X.ToString());
+            _writer.WriteAttributeString("y", point.Y.ToString());
+            _writer.WriteEndElement();
+        }
+
+        if (vertices[^1] != first)
+        {
+            _writer.WriteStartElement("wp", "lineTo", wpNs);
+            _writer.WriteAttributeString("x", first.X.ToString());
+            _writer.WriteAttributeString("y", first.Y.ToString());
+            _writer.WriteEndElement();
+        }
+
+        _writer.WriteEndElement();
     }
 }

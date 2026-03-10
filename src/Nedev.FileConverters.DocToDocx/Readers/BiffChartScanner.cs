@@ -348,7 +348,64 @@ public static class BiffChartScanner
                 else if (name.Contains("radar")) model.Type = ChartType.Radar;
                 else if (name.Contains("scatter")) model.Type = ChartType.Scatter;
             }
+
+            ApplyLayoutHints(model);
         }
+    }
+
+    private static void ApplyLayoutHints(ChartModel model)
+    {
+        switch (model.Type)
+        {
+            case ChartType.Bar:
+                model.CategoryAxisPosition = ChartAxisPosition.Left;
+                model.ValueAxisPosition = ChartAxisPosition.Bottom;
+                break;
+            case ChartType.Column:
+            case ChartType.Line:
+            case ChartType.Area:
+            case ChartType.Scatter:
+            case ChartType.Radar:
+            case ChartType.Unknown:
+                model.CategoryAxisPosition = ChartAxisPosition.Bottom;
+                model.ValueAxisPosition = ChartAxisPosition.Left;
+                break;
+        }
+
+        if (model.ShowLegend && model.Series.Count > 0 && model.Series.Count <= 2)
+        {
+            model.LegendPosition = model.Type is ChartType.Pie or ChartType.Doughnut
+                ? ChartLegendPosition.Bottom
+                : ChartLegendPosition.Right;
+        }
+
+        if (TryDetectDescendingCategoryOrder(model.Categories))
+        {
+            model.CategoryAxisReverseOrder = true;
+        }
+    }
+
+    private static bool TryDetectDescendingCategoryOrder(IReadOnlyList<string> categories)
+    {
+        if (categories.Count < 2)
+            return false;
+
+        var numericValues = new List<double>(categories.Count);
+        foreach (var category in categories)
+        {
+            if (!double.TryParse(category, out var value))
+                return false;
+
+            numericValues.Add(value);
+        }
+
+        for (int i = 1; i < numericValues.Count; i++)
+        {
+            if (numericValues[i] >= numericValues[i - 1])
+                return false;
+        }
+
+        return true;
     }
 
     private static string? ParseShortBiffString(BinaryReader reader, int length)

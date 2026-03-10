@@ -10,6 +10,7 @@ using System.Text.RegularExpressions;
 using System.IO.Compression;
 using System.Threading.Tasks;
 using Nedev.FileConverters.DocToDocx.Models;
+using Nedev.FileConverters.DocToDocx.Readers;
 using Nedev.FileConverters.DocToDocx.Writers;
 using Nedev.FileConverters.DocToDocx.Utils;
 using Xunit;
@@ -1785,6 +1786,133 @@ namespace Nedev.FileConverters.DocToDocx.Tests
                 if (File.Exists(outputPath))
                     File.Delete(outputPath);
             }
+        }
+
+        [Fact]
+        public void WriteDocument_FloatingShape_UsesCustomWrapPolygon()
+        {
+            var doc = new DocumentModel();
+            doc.Paragraphs.Add(new ParagraphModel { Index = 0, Runs = { new RunModel { Text = "body" } } });
+            doc.Shapes.Add(new ShapeModel
+            {
+                Id = 1,
+                Type = ShapeType.Rectangle,
+                ParagraphIndexHint = 0,
+                Anchor = new ShapeAnchor
+                {
+                    IsFloating = true,
+                    Width = 2000,
+                    Height = 1200,
+                    WrapType = ShapeWrapType.Tight
+                },
+                WrapPolygonVertices = new List<System.Drawing.Point>
+                {
+                    new(0, 0),
+                    new(10800, 0),
+                    new(21600, 10800),
+                    new(0, 21600)
+                }
+            });
+
+            string xml;
+            using (var ms = new MemoryStream())
+            {
+                var settings = new XmlWriterSettings { Encoding = Encoding.UTF8, OmitXmlDeclaration = true };
+                using var writer = XmlWriter.Create(ms, settings);
+                new DocumentWriter(writer).WriteDocument(doc);
+                writer.Flush();
+                xml = Encoding.UTF8.GetString(ms.ToArray());
+            }
+
+            Assert.Contains("<wp:wrapTight", xml);
+            Assert.Contains("<wp:start x=\"0\" y=\"0\"", xml);
+            Assert.Contains("<wp:lineTo x=\"10800\" y=\"0\"", xml);
+            Assert.Contains("<wp:lineTo x=\"21600\" y=\"10800\"", xml);
+        }
+
+        [Fact]
+        public void WriteDocument_Textbox_UsesWrapAndAlignmentMetadata()
+        {
+            var doc = new DocumentModel();
+            doc.Textboxes.Add(new TextboxModel
+            {
+                Index = 1,
+                Name = "Box 1",
+                Left = 100,
+                Top = 200,
+                Width = 2400,
+                Height = 1200,
+                WrapMode = TextboxWrapMode.Tight,
+                VerticalAlignment = TextboxVerticalAlignment.Center,
+                HorizontalAlignment = TextboxHorizontalAlignment.Center,
+                Paragraphs =
+                {
+                    new ParagraphModel { Runs = { new RunModel { Text = "textbox" } } }
+                }
+            });
+
+            string xml;
+            using (var ms = new MemoryStream())
+            {
+                var settings = new XmlWriterSettings { Encoding = Encoding.UTF8, OmitXmlDeclaration = true };
+                using var writer = XmlWriter.Create(ms, settings);
+                new DocumentWriter(writer).WriteDocument(doc);
+                writer.Flush();
+                xml = Encoding.UTF8.GetString(ms.ToArray());
+            }
+
+            Assert.Contains("<wp:wrapTight", xml);
+            Assert.Contains("<wps:bodyPr wrap=\"tight\" vert=\"ctr\" anchorCtr=\"1\"", xml);
+            Assert.Contains("textbox", xml);
+        }
+
+        [Fact]
+        public void MergeTextboxShapesIntoTextboxes_FlowsIntoWrittenDocx_WithoutDuplicateTextboxShapes()
+        {
+            var doc = new DocumentModel();
+            doc.Textboxes.Add(new TextboxModel
+            {
+                Index = 1,
+                Paragraphs =
+                {
+                    new ParagraphModel
+                    {
+                        Properties = new ParagraphProperties { Alignment = ParagraphAlignment.Center },
+                        Runs = { new RunModel { Text = "merged textbox" } }
+                    }
+                }
+            });
+            doc.Shapes.Add(new ShapeModel
+            {
+                Id = 21,
+                Type = ShapeType.Textbox,
+                Anchor = new ShapeAnchor
+                {
+                    IsFloating = true,
+                    X = 100,
+                    Y = 200,
+                    Width = 2400,
+                    Height = 1200,
+                    WrapType = ShapeWrapType.Through
+                }
+            });
+
+            DocReader.MergeTextboxShapesIntoTextboxes(doc);
+
+            string xml;
+            using (var ms = new MemoryStream())
+            {
+                var settings = new XmlWriterSettings { Encoding = Encoding.UTF8, OmitXmlDeclaration = true };
+                using var writer = XmlWriter.Create(ms, settings);
+                new DocumentWriter(writer).WriteDocument(doc);
+                writer.Flush();
+                xml = Encoding.UTF8.GetString(ms.ToArray());
+            }
+
+            Assert.Contains("merged textbox", xml);
+            Assert.Contains("<wp:wrapThrough", xml);
+            Assert.Contains("<wps:bodyPr wrap=\"through\"", xml);
+            Assert.DoesNotContain("Shape 21", xml);
         }
 
         private static int CountNestedTables(IEnumerable<TableModel> tables)

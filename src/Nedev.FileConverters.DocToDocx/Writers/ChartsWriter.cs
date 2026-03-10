@@ -93,7 +93,7 @@ public class ChartsWriter
         {
             _writer.WriteStartElement("c", "legend", cNs);
             _writer.WriteStartElement("c", "legendPos", cNs);
-            _writer.WriteAttributeString("val", "r");
+            _writer.WriteAttributeString("val", GetLegendPosition(chart.LegendPosition));
             _writer.WriteEndElement();
             _writer.WriteEndElement();
         }
@@ -141,11 +141,11 @@ public class ChartsWriter
         _writer.WriteEndElement();
         _writer.WriteStartElement("c", "scaling", cNs);
         _writer.WriteStartElement("c", "orientation", cNs);
-        _writer.WriteAttributeString("val", "minMax");
+        _writer.WriteAttributeString("val", chart.CategoryAxisReverseOrder ? "maxMin" : "minMax");
         _writer.WriteEndElement();
         _writer.WriteEndElement();
         _writer.WriteStartElement("c", "axPos", cNs);
-        _writer.WriteAttributeString("val", "b");
+        _writer.WriteAttributeString("val", GetAxisPosition(chart.CategoryAxisPosition));
         _writer.WriteEndElement();
         _writer.WriteStartElement("c", "delete", cNs);
         _writer.WriteAttributeString("val", "0");
@@ -171,11 +171,11 @@ public class ChartsWriter
         _writer.WriteEndElement();
         _writer.WriteStartElement("c", "scaling", cNs);
         _writer.WriteStartElement("c", "orientation", cNs);
-        _writer.WriteAttributeString("val", "minMax");
+        _writer.WriteAttributeString("val", chart.ValueAxisReverseOrder ? "maxMin" : "minMax");
         _writer.WriteEndElement();
         _writer.WriteEndElement();
         _writer.WriteStartElement("c", "axPos", cNs);
-        _writer.WriteAttributeString("val", "l");
+        _writer.WriteAttributeString("val", GetAxisPosition(chart.ValueAxisPosition));
         _writer.WriteEndElement();
         _writer.WriteStartElement("c", "delete", cNs);
         _writer.WriteAttributeString("val", "0");
@@ -434,6 +434,23 @@ public class ChartsWriter
         _writer.WriteAttributeString("val", value ? "1" : "0");
         _writer.WriteEndElement();
     }
+
+    private static string GetLegendPosition(ChartLegendPosition position) => position switch
+    {
+        ChartLegendPosition.Left => "l",
+        ChartLegendPosition.Top => "t",
+        ChartLegendPosition.Bottom => "b",
+        ChartLegendPosition.TopRight => "tr",
+        _ => "r"
+    };
+
+    private static string GetAxisPosition(ChartAxisPosition position) => position switch
+    {
+        ChartAxisPosition.Top => "t",
+        ChartAxisPosition.Left => "l",
+        ChartAxisPosition.Right => "r",
+        _ => "b"
+    };
 
     private static bool NeedsSpacePreserve(string text)
     {

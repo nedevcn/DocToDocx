@@ -231,7 +231,7 @@ public class DocReader : IDisposable
         _imageReader = new ImageReader(_wordDocReader!, _dataReader, _fibReader!, _cfb);
         _footnoteReader = new FootnoteReader(_fibReader!, _textReader!, _fkpParser);
         _annotationReader = new AnnotationReader(_tableReader!, _fibReader!, _textReader!);
-        _textboxReader = new TextboxReader(_tableReader!, _fibReader!, _textReader!, _fkpParser);
+        _textboxReader = new TextboxReader(_tableReader!, _fibReader!, _textReader!, _fkpParser, Document.Styles);
         _headerFooterReader = new HeaderFooterReader(_tableReader!, _wordDocReader!, _fibReader!, _textReader!);
         _listReader = new ListReader(_tableReader!, _fibReader!);
         _bookmarkReader = new BookmarkReader(_tableReader!, _wordDocReader!, _fibReader!);
@@ -346,6 +346,8 @@ public class DocReader : IDisposable
         if (_textboxReader != null)
         {
             Document.Textboxes = _textboxReader.ReadTextboxes();
+            AttachTextboxAnchorHints(Document, ReadTextboxAnchorCharacterPositions());
+            MergeTextboxShapesIntoTextboxes(Document);
         }
 
         // Step 10: Read headers/footers
@@ -380,6 +382,179 @@ public class DocReader : IDisposable
         ExtractVbaProject();
 
         IsLoaded = true;
+    }
+
+    internal static void MergeTextboxShapesIntoTextboxes(DocumentModel document)
+    {
+        if (document.Textboxes.Count == 0 || document.Shapes.Count == 0)
+            return;
+
+        var textboxShapes = document.Shapes
+            .Where(shape => shape.Type == ShapeType.Textbox)
+            .OrderBy(shape => shape.Anchor?.ParagraphIndex ?? shape.ParagraphIndexHint)
+            .ThenBy(shape => shape.Id)
+            .ToList();
+
+        if (textboxShapes.Count == 0)
+            return;
+
+        var matchedShapeIds = new HashSet<int>();
+        foreach (var textbox in document.Textboxes.OrderBy(t => t.AnchorParagraphIndex).ThenBy(t => t.AnchorCharacterPosition).ThenBy(t => t.Index))
+        {
+            var shape = FindBestTextboxShapeMatch(textbox, textboxShapes, matchedShapeIds);
+            if (shape == null)
+                continue;
+
+            matchedShapeIds.Add(shape.Id);
+            var anchor = shape.Anchor;
+            if (anchor != null)
+            {
+                textbox.Left = anchor.X;
+                textbox.Top = anchor.Y;
+                if (anchor.Width > 0)
+                    textbox.Width = anchor.Width;
+                if (anchor.Height > 0)
+                    textbox.Height = anchor.Height;
+                textbox.WrapMode = MapTextboxWrapMode(anchor.WrapType);
+            }
+
+            var firstAlignedParagraph = textbox.Paragraphs.FirstOrDefault(paragraph => paragraph.Properties != null);
+            if (firstAlignedParagraph?.Properties != null)
+            {
+                textbox.HorizontalAlignment = firstAlignedParagraph.Properties.Alignment switch
+                {
+                    ParagraphAlignment.Center => TextboxHorizontalAlignment.Center,
+                    ParagraphAlignment.Right => TextboxHorizontalAlignment.Right,
+                    _ => TextboxHorizontalAlignment.Left
+                };
+            }
+        }
+
+        document.Shapes.RemoveAll(shape => matchedShapeIds.Contains(shape.Id));
+    }
+
+    internal static void AttachTextboxAnchorHints(DocumentModel document, IReadOnlyList<int> anchorCharacterPositions)
+    {
+        if (document.Textboxes.Count == 0 || anchorCharacterPositions.Count == 0 || document.Paragraphs.Count == 0)
+            return;
+
+        var paragraphsByCp = document.Paragraphs
+            .Select(paragraph => new
+            {
+                Paragraph = paragraph,
+                StartCp = paragraph.Runs.Count > 0 ? paragraph.Runs.Min(run => run.CharacterPosition) : int.MaxValue
+            })
+            .Where(item => item.StartCp != int.MaxValue)
+            .OrderBy(item => item.StartCp)
+            .ToList();
+
+        if (paragraphsByCp.Count == 0)
+            return;
+
+        int count = Math.Min(document.Textboxes.Count, anchorCharacterPositions.Count);
+        for (int i = 0; i < count; i++)
+        {
+            int anchorCp = anchorCharacterPositions[i];
+            var textbox = document.Textboxes[i];
+            textbox.AnchorCharacterPosition = anchorCp;
+
+            var bestParagraph = paragraphsByCp.LastOrDefault(item => item.StartCp <= anchorCp) ?? paragraphsByCp[0];
+            textbox.AnchorParagraphIndex = bestParagraph.Paragraph.Index;
+        }
+    }
+
+    private List<int> ReadTextboxAnchorCharacterPositions()
+    {
+        var anchorCharacterPositions = new List<int>();
+        if (_fibReader == null || _tableReader == null || _textReader == null)
+            return anchorCharacterPositions;
+
+        if (_fibReader.FcPlcfFldTxbx == 0 || _fibReader.LcbPlcfFldTxbx < 10)
+            return anchorCharacterPositions;
+
+        try
+        {
+            _tableReader.BaseStream.Seek(_fibReader.FcPlcfFldTxbx, SeekOrigin.Begin);
+            int n = (int)((_fibReader.LcbPlcfFldTxbx - 4) / 6);
+            if (n <= 0)
+                return anchorCharacterPositions;
+
+            var cpArray = new int[n + 1];
+            for (int i = 0; i <= n; i++)
+            {
+                cpArray[i] = _tableReader.ReadInt32();
+            }
+
+            for (int i = 0; i < n; i++)
+            {
+                if (_tableReader.BaseStream.Position + 2 > _tableReader.BaseStream.Length)
+                    break;
+
+                _tableReader.ReadUInt16();
+                int cp = cpArray[i];
+                if (cp < 0 || cp >= _fibReader.CcpText || cp >= _textReader.Text.Length)
+                    continue;
+
+                if (_textReader.Text[cp] == FieldReader.FieldStartChar)
+                {
+                    anchorCharacterPositions.Add(cp);
+                }
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning("Failed to read textbox anchor field positions; continuing with sequence-based textbox matching.", ex);
+        }
+
+        return anchorCharacterPositions;
+    }
+
+    private static ShapeModel? FindBestTextboxShapeMatch(TextboxModel textbox, IReadOnlyList<ShapeModel> textboxShapes, ISet<int> matchedShapeIds)
+    {
+        ShapeModel? bestShape = null;
+        int bestScore = int.MaxValue;
+
+        foreach (var shape in textboxShapes)
+        {
+            if (matchedShapeIds.Contains(shape.Id))
+                continue;
+
+            int shapeParagraph = shape.Anchor?.ParagraphIndex ?? shape.ParagraphIndexHint;
+            int score = 0;
+
+            if (textbox.AnchorParagraphIndex >= 0 && shapeParagraph >= 0)
+            {
+                score += Math.Abs(textbox.AnchorParagraphIndex - shapeParagraph) * 100;
+            }
+            else if (textbox.AnchorParagraphIndex >= 0 || shapeParagraph >= 0)
+            {
+                score += 10_000;
+            }
+
+            score += Math.Abs(textbox.Index - shape.Id % 1000);
+
+            if (score < bestScore)
+            {
+                bestScore = score;
+                bestShape = shape;
+            }
+        }
+
+        return bestShape;
+    }
+
+    private static TextboxWrapMode MapTextboxWrapMode(ShapeWrapType wrapType)
+    {
+        return wrapType switch
+        {
+            ShapeWrapType.Square => TextboxWrapMode.Square,
+            ShapeWrapType.Tight => TextboxWrapMode.Tight,
+            ShapeWrapType.Through => TextboxWrapMode.Through,
+            ShapeWrapType.TopBottom => TextboxWrapMode.TopBottom,
+            ShapeWrapType.BehindText => TextboxWrapMode.Behind,
+            ShapeWrapType.InFrontOfText => TextboxWrapMode.InFront,
+            _ => TextboxWrapMode.Inline
+        };
     }
 
     private int RepairFootnoteStoryLength(int totalCp)

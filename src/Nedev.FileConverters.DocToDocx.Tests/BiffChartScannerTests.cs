@@ -344,6 +344,27 @@ namespace Nedev.FileConverters.DocToDocx.Tests
             Assert.Equal(expectedType, model.Type);
         }
 
+        [Fact]
+        public void DetectsBarChartLayoutHints_AndDescendingCategories()
+        {
+            double[,] data = {
+                { double.NaN, 30, 20, 10 },
+                { 0, 1, 2, 3 },
+                { 0, 4, 5, 6 }
+            };
+
+            var bytes = BuildBiffMatrix(data, rowLabels: new[] { "North", "South" }, colLabels: new[] { "3", "2", "1" });
+            var model = new ChartModel { SourceBytes = bytes, SourceStreamName = "Regional Bar Chart" };
+
+            BiffChartScanner.TryPopulateChart(model);
+
+            Assert.Equal(ChartType.Bar, model.Type);
+            Assert.Equal(ChartAxisPosition.Left, model.CategoryAxisPosition);
+            Assert.Equal(ChartAxisPosition.Bottom, model.ValueAxisPosition);
+            Assert.True(model.CategoryAxisReverseOrder);
+            Assert.Equal(ChartLegendPosition.Right, model.LegendPosition);
+        }
+
         private static void WriteLabel(BinaryWriter writer, int row, int col, string text)
         {
             var bytes = Encoding.Default.GetBytes(text);
