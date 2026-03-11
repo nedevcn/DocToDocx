@@ -1207,6 +1207,7 @@ public class TableReader
         {
             var titleTap = targetRowIndex < rowTaps.Count ? CloneTapBase(rowTaps[targetRowIndex]) : CloneTapBase(tapForParagraph);
             ApplyCompactGridWidthTemplate(titleTap, widthTemplate);
+            ApplyCompactGridTableProperties(ctx.Table, titleTap);
             ctx.Table.Rows.Add(BuildCompactGridTitleRow(grid.TitleCell, targetRowIndex, grid.ColumnCount, titleTap, rowAlignments.ElementAtOrDefault(targetRowIndex)));
             ctx.RowTaps.Add(titleTap);
             targetRowIndex++;
@@ -1216,6 +1217,7 @@ public class TableReader
         {
             var rowTap = targetRowIndex < rowTaps.Count ? CloneTapBase(rowTaps[targetRowIndex]) : CloneTapBase(tapForParagraph);
             ApplyCompactGridWidthTemplate(rowTap, widthTemplate);
+            ApplyCompactGridTableProperties(ctx.Table, rowTap);
             ctx.Table.Rows.Add(BuildCompactGridRow(rowCells, targetRowIndex, grid.ColumnCount, rowTap, rowAlignments.ElementAtOrDefault(targetRowIndex)));
             ctx.RowTaps.Add(rowTap);
             targetRowIndex++;
@@ -1528,20 +1530,76 @@ public class TableReader
     private static void ConfigureCompactGridCell(TableCellModel cell, TapBase? rowTap, int columnIndex, int columnSpan)
     {
         cell.ColumnSpan = Math.Max(1, columnSpan);
-        if (rowTap?.CellWidths == null || rowTap.CellWidths.Length <= columnIndex)
+        cell.Properties ??= new TableCellProperties();
+
+        if (rowTap?.CellWidths != null && rowTap.CellWidths.Length > columnIndex)
+        {
+            int width = 0;
+            for (int offset = 0; offset < cell.ColumnSpan && columnIndex + offset < rowTap.CellWidths.Length; offset++)
+            {
+                width += rowTap.CellWidths[columnIndex + offset];
+            }
+
+            if (width > 0)
+            {
+                cell.Properties.Width = width;
+            }
+        }
+
+        if (rowTap?.CellBorders != null && rowTap.CellBorders.Length > columnIndex)
+        {
+            var cellBorders = rowTap.CellBorders[columnIndex];
+            if (cellBorders != null)
+            {
+                cell.Properties.BorderTop = cellBorders.Top;
+                cell.Properties.BorderBottom = cellBorders.Bottom;
+                cell.Properties.BorderLeft = cellBorders.Left;
+                cell.Properties.BorderRight = cellBorders.Right;
+            }
+        }
+    }
+
+    private static void ApplyCompactGridTableProperties(TableModel table, TapBase? rowTap)
+    {
+        if (rowTap == null)
             return;
 
-        cell.Properties ??= new TableCellProperties();
-        int width = 0;
-        for (int offset = 0; offset < cell.ColumnSpan && columnIndex + offset < rowTap.CellWidths.Length; offset++)
+        table.Properties ??= new TableProperties();
+
+        if (table.Properties.Alignment == TableAlignment.Left && rowTap.Justification != 0)
         {
-            width += rowTap.CellWidths[columnIndex + offset];
+            table.Properties.Alignment = rowTap.Justification switch
+            {
+                1 => TableAlignment.Center,
+                2 => TableAlignment.Right,
+                _ => TableAlignment.Left
+            };
         }
 
-        if (width > 0)
+        if (table.Properties.CellSpacing == 0)
         {
-            cell.Properties.Width = width;
+            table.Properties.CellSpacing = rowTap.CellSpacing != 0
+                ? rowTap.CellSpacing
+                : (rowTap.GapHalf != 0 ? rowTap.GapHalf * 2 : 0);
         }
+
+        if (table.Properties.Indent == 0 && rowTap.IndentLeft != 0)
+        {
+            table.Properties.Indent = rowTap.IndentLeft;
+        }
+
+        if (table.Properties.PreferredWidth == 0 && rowTap.TableWidth != 0)
+        {
+            table.Properties.PreferredWidth = rowTap.TableWidth;
+        }
+
+        table.Properties.BorderTop ??= rowTap.BorderTop;
+        table.Properties.BorderBottom ??= rowTap.BorderBottom;
+        table.Properties.BorderLeft ??= rowTap.BorderLeft;
+        table.Properties.BorderRight ??= rowTap.BorderRight;
+        table.Properties.BorderInsideH ??= rowTap.BorderInsideH;
+        table.Properties.BorderInsideV ??= rowTap.BorderInsideV;
+        table.Properties.Shading ??= rowTap.Shading;
     }
 
     private List<TapBase?> GetCompactRowTaps(ParagraphModel paragraph, int expectedRowCount, TapBase? fallbackTap)
@@ -1602,8 +1660,60 @@ public class TableReader
                left.TableWidth == right.TableWidth &&
                left.IndentLeft == right.IndentLeft &&
                left.CellSpacing == right.CellSpacing &&
+               BordersEqual(left.BorderTop, right.BorderTop) &&
+               BordersEqual(left.BorderBottom, right.BorderBottom) &&
+               BordersEqual(left.BorderLeft, right.BorderLeft) &&
+               BordersEqual(left.BorderRight, right.BorderRight) &&
+               BordersEqual(left.BorderInsideH, right.BorderInsideH) &&
+               BordersEqual(left.BorderInsideV, right.BorderInsideV) &&
+               CellBordersEqual(left.CellBorders, right.CellBorders) &&
                ((left.CellWidths == null && right.CellWidths == null) ||
                 (left.CellWidths != null && right.CellWidths != null && left.CellWidths.SequenceEqual(right.CellWidths)));
+    }
+
+    private static bool BordersEqual(BorderInfo? left, BorderInfo? right)
+    {
+        if (ReferenceEquals(left, right))
+            return true;
+
+        if (left == null || right == null)
+            return false;
+
+        return left.Style == right.Style &&
+               left.Width == right.Width &&
+               left.Space == right.Space &&
+               left.Color == right.Color;
+    }
+
+    private static bool CellBordersEqual(CellBorderInfo?[]? left, CellBorderInfo?[]? right)
+    {
+        if (ReferenceEquals(left, right))
+            return true;
+
+        if (left == null || right == null || left.Length != right.Length)
+            return false;
+
+        for (int i = 0; i < left.Length; i++)
+        {
+            var leftBorder = left[i];
+            var rightBorder = right[i];
+
+            if (ReferenceEquals(leftBorder, rightBorder))
+                continue;
+
+            if (leftBorder == null || rightBorder == null)
+                return false;
+
+            if (!BordersEqual(leftBorder.Top, rightBorder.Top) ||
+                !BordersEqual(leftBorder.Bottom, rightBorder.Bottom) ||
+                !BordersEqual(leftBorder.Left, rightBorder.Left) ||
+                !BordersEqual(leftBorder.Right, rightBorder.Right))
+            {
+                return false;
+            }
+        }
+
+        return true;
     }
 
     private static TapBase? CloneTapBase(TapBase? source)
@@ -2531,8 +2641,81 @@ public class TableReader
 
         existingTap.IsHeaderRow |= deferredTap.IsHeaderRow;
         existingTap.CantSplit |= deferredTap.CantSplit;
+        existingTap.BorderTop = MergeBorder(existingTap.BorderTop, deferredTap.BorderTop);
+        existingTap.BorderBottom = MergeBorder(existingTap.BorderBottom, deferredTap.BorderBottom);
+        existingTap.BorderLeft = MergeBorder(existingTap.BorderLeft, deferredTap.BorderLeft);
+        existingTap.BorderRight = MergeBorder(existingTap.BorderRight, deferredTap.BorderRight);
+        existingTap.BorderInsideH = MergeBorder(existingTap.BorderInsideH, deferredTap.BorderInsideH);
+        existingTap.BorderInsideV = MergeBorder(existingTap.BorderInsideV, deferredTap.BorderInsideV);
+
+        if (deferredTap.CellBorders != null)
+        {
+            if (existingTap.CellBorders == null || existingTap.CellBorders.Length < deferredTap.CellBorders.Length)
+            {
+                existingTap.CellBorders = deferredTap.CellBorders.Select(CloneCellBorderInfo).ToArray();
+            }
+            else
+            {
+                for (int i = 0; i < deferredTap.CellBorders.Length; i++)
+                {
+                    existingTap.CellBorders[i] = MergeCellBorderInfo(existingTap.CellBorders[i], deferredTap.CellBorders[i]);
+                }
+            }
+        }
 
         return existingTap;
+    }
+
+    private static BorderInfo? MergeBorder(BorderInfo? existingBorder, BorderInfo? deferredBorder)
+    {
+        if (deferredBorder == null)
+            return existingBorder;
+
+        if (existingBorder == null)
+            return deferredBorder;
+
+        if (existingBorder.Style == BorderStyle.None && deferredBorder.Style != BorderStyle.None)
+            return deferredBorder;
+
+        bool existingUsesPaletteColor = existingBorder.Color >= 0 && existingBorder.Color <= 16;
+        bool deferredUsesDirectColor = deferredBorder.Color > 16;
+
+        if (deferredUsesDirectColor && existingUsesPaletteColor)
+            return deferredBorder;
+
+        if (existingBorder.Color == 0 && deferredBorder.Color != 0)
+            return deferredBorder;
+
+        return existingBorder;
+    }
+
+    private static CellBorderInfo? MergeCellBorderInfo(CellBorderInfo? existingBorders, CellBorderInfo? deferredBorders)
+    {
+        if (deferredBorders == null)
+            return existingBorders;
+
+        if (existingBorders == null)
+            return CloneCellBorderInfo(deferredBorders);
+
+        existingBorders.Top = MergeBorder(existingBorders.Top, deferredBorders.Top);
+        existingBorders.Bottom = MergeBorder(existingBorders.Bottom, deferredBorders.Bottom);
+        existingBorders.Left = MergeBorder(existingBorders.Left, deferredBorders.Left);
+        existingBorders.Right = MergeBorder(existingBorders.Right, deferredBorders.Right);
+        return existingBorders;
+    }
+
+    private static CellBorderInfo? CloneCellBorderInfo(CellBorderInfo? source)
+    {
+        if (source == null)
+            return null;
+
+        return new CellBorderInfo
+        {
+            Top = source.Top,
+            Bottom = source.Bottom,
+            Left = source.Left,
+            Right = source.Right
+        };
     }
 
     private void FinalizeTable(TableContext ctx)
@@ -2568,6 +2751,11 @@ public class TableReader
                     table.Properties.PreferredWidth = compactWidthTemplate.Sum();
                 }
             }
+        }
+
+        foreach (var rowTap in effectiveRowTaps)
+        {
+            ApplyCompactGridTableProperties(table, rowTap);
         }
 
         table.EndParagraphIndex = ctx.LastTableParagraphIndex;
@@ -2875,20 +3063,32 @@ public class TableReader
         cell.ColumnSpan = Math.Max(1, columnSpan);
         cell.RowSpan = Math.Max(1, cell.RowSpan);
 
-        if (rowTap?.CellWidths == null || rowTap.CellWidths.Length <= columnIndex)
-            return;
-
         cell.Properties ??= new TableCellProperties();
 
-        int width = 0;
-        for (int offset = 0; offset < cell.ColumnSpan && columnIndex + offset < rowTap.CellWidths.Length; offset++)
+        if (rowTap?.CellWidths != null && rowTap.CellWidths.Length > columnIndex)
         {
-            width += rowTap.CellWidths[columnIndex + offset];
+            int width = 0;
+            for (int offset = 0; offset < cell.ColumnSpan && columnIndex + offset < rowTap.CellWidths.Length; offset++)
+            {
+                width += rowTap.CellWidths[columnIndex + offset];
+            }
+
+            if (width > 0)
+            {
+                cell.Properties.Width = width;
+            }
         }
 
-        if (width > 0)
+        if (rowTap?.CellBorders != null && rowTap.CellBorders.Length > columnIndex)
         {
-            cell.Properties.Width = width;
+            var cellBorders = rowTap.CellBorders[columnIndex];
+            if (cellBorders != null)
+            {
+                cell.Properties.BorderTop = cellBorders.Top;
+                cell.Properties.BorderBottom = cellBorders.Bottom;
+                cell.Properties.BorderLeft = cellBorders.Left;
+                cell.Properties.BorderRight = cellBorders.Right;
+            }
         }
     }
 

@@ -250,6 +250,7 @@ public partial class DocumentWriter
     private TableProperties? ResolveEffectiveTableProperties(TableModel table)
     {
         TableProperties? resolved = null;
+        bool hasExplicitTableProperties = table.Properties != null;
 
         if (table.Properties != null)
         {
@@ -268,14 +269,14 @@ public partial class DocumentWriter
             }
         }
 
-        if (resolved == null && !TableNeedsVisibleBorders(table))
+        if (resolved == null && !TableNeedsVisibleBorders(table, hasExplicitTableProperties))
         {
             return null;
         }
 
         resolved ??= new TableProperties();
 
-        if (!HasAnyTableBorders(resolved) && TableNeedsVisibleBorders(table))
+        if (!HasAnyTableBorders(resolved) && TableNeedsVisibleBorders(table, hasExplicitTableProperties))
         {
             var fallbackBorder = new BorderInfo
             {
@@ -296,7 +297,22 @@ public partial class DocumentWriter
         return resolved;
     }
 
-    private static bool TableNeedsVisibleBorders(TableModel table)
+    private static bool TableNeedsVisibleBorders(TableModel table, bool hasExplicitTableProperties)
+    {
+        if (TableContainsNestedTables(table))
+        {
+            return true;
+        }
+
+        if (!TableHasRenderableContent(table))
+        {
+            return false;
+        }
+
+        return !hasExplicitTableProperties || TableHasEmptyCells(table);
+    }
+
+    private static bool TableContainsNestedTables(TableModel table)
     {
         foreach (var row in table.Rows)
         {
@@ -309,10 +325,60 @@ public partial class DocumentWriter
                         return true;
                     }
 
+                    if (paragraph.NestedTable != null && TableContainsNestedTables(paragraph.NestedTable))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TableHasRenderableContent(TableModel table)
+    {
+        foreach (var row in table.Rows)
+        {
+            foreach (var cell in row.Cells)
+            {
+                foreach (var paragraph in cell.Paragraphs)
+                {
                     if (paragraph.Runs.Any(HasRenderableContent))
                     {
                         return true;
                     }
+
+                    if (paragraph.NestedTable != null && TableHasRenderableContent(paragraph.NestedTable))
+                    {
+                        return true;
+                    }
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private static bool TableHasEmptyCells(TableModel table)
+    {
+        foreach (var row in table.Rows)
+        {
+            foreach (var cell in row.Cells)
+            {
+                if (!cell.Paragraphs.Any())
+                {
+                    return true;
+                }
+
+                bool hasText = cell.Paragraphs.Any(paragraph =>
+                    !string.IsNullOrWhiteSpace(paragraph.Text) ||
+                    paragraph.NestedTable != null ||
+                    paragraph.Runs.Any(HasRenderableContent));
+
+                if (!hasText)
+                {
+                    return true;
                 }
             }
         }

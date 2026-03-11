@@ -1,5 +1,6 @@
 using System.IO;
 using System.Text;
+using System.Linq;
 using Nedev.FileConverters.DocToDocx.Models;
 using Nedev.FileConverters.DocToDocx.Utils;
 
@@ -447,7 +448,15 @@ public class SprmParser
     {
         var sprmCode = sprm.Code & 0x01FF;
         var sgc = (sprm.Code >> 10) & 0x07;
+
         if (sgc != 3 && sgc != 5) return;
+
+        if (TryApplyExtendedTableBorderSprm(sprm, tap))
+            return;
+
+        if (TryApplyCellBorderSprm(sprm, tap))
+            return;
+
         switch (sprmCode)
         {
             // Table indent from left margin (sprmTDxaLeft)
@@ -470,9 +479,10 @@ public class SprmParser
             case 0x03: tap.CantSplit = sprm.Operand != 0; break; // sprmTFCantSplit
             case 0x04: tap.IsHeaderRow = sprm.Operand != 0; break; // sprmTHeader
             // sprmTTableBorders — table-wide borders (top/bottom/left/right/insideH/insideV).
-            // The variable operand is an array of 6 BRC structures in the order:
-            // top, left, bottom, right, insideH, insideV. Each BRC is 4 bytes in
-            // the Word 97 binary format. We decode width/style/color into BorderInfo.
+            // The variable operand is an array of 6 border records in the order:
+            // top, left, bottom, right, insideH, insideV. Legacy Word 97 documents
+            // use 4-byte BRC80 records, while later documents can use 8-byte BRC
+            // records that append a COLORREF after the BRC80 payload.
             case 0x05:
                 if (sprm.VariableOperand != null && sprm.VariableOperand.Length >= 6 * 4)
                 {
@@ -481,13 +491,17 @@ public class SprmParser
                         using var brcMs = new MemoryStream(sprm.VariableOperand);
                         using var brcReader = new BinaryReader(brcMs);
                         var borders = new BorderInfo[6];
+                        int bytesPerBorder = sprm.VariableOperand.Length >= 6 * 8 && (sprm.VariableOperand.Length % 8 == 0)
+                            ? 8
+                            : 4;
                         for (int i = 0; i < 6; i++)
                         {
-                            if (brcReader.BaseStream.Position + 4 > brcReader.BaseStream.Length)
+                            if (brcReader.BaseStream.Position + bytesPerBorder > brcReader.BaseStream.Length)
                                 break;
 
-                            var brc = brcReader.ReadUInt32();
-                            borders[i] = DecodeBrc(brc);
+                            borders[i] = bytesPerBorder == 8
+                                ? DecodeBrc(brcReader.ReadUInt32(), brcReader.ReadUInt32())
+                                : DecodeBrc(brcReader.ReadUInt32());
                         }
 
                         if (borders[0] != null) tap.BorderTop = borders[0];
@@ -544,6 +558,7 @@ public class SprmParser
                             // the first 2 bytes (grfw bitfield), which contain the merge flags.
                             // We conservatively assume a fixed TC size and advance cautiously.
                             var merges = new CellMergeFlags[cellCount];
+                            var cellBorders = new CellBorderInfo?[cellCount];
                             const int assumedTcSize = 20; // bytes per TC (>= 2, includes padding/other fields)
 
                             for (int i = 0; i < cellCount; i++)
@@ -566,18 +581,41 @@ public class SprmParser
                                 };
                                 merges[i] = flags;
 
-                                // Skip the remainder of the TC structure, if present.
-                                if (assumedTcSize > 2 && defMs.Position + (assumedTcSize - 2) <= defMs.Length)
+                                if (defMs.Position + (assumedTcSize - 2) <= defMs.Length)
                                 {
-                                    defMs.Seek(assumedTcSize - 2, SeekOrigin.Current);
+                                    try
+                                    {
+                                        defReader.ReadUInt16(); // wWidth or reserved field
+                                        var top = DecodeBrc(defReader.ReadUInt32());
+                                        var left = DecodeBrc(defReader.ReadUInt32());
+                                        var bottom = DecodeBrc(defReader.ReadUInt32());
+                                        var right = DecodeBrc(defReader.ReadUInt32());
+
+                                        cellBorders[i] = new CellBorderInfo
+                                        {
+                                            Top = top.Style == BorderStyle.None ? null : top,
+                                            Left = left.Style == BorderStyle.None ? null : left,
+                                            Bottom = bottom.Style == BorderStyle.None ? null : bottom,
+                                            Right = right.Style == BorderStyle.None ? null : right
+                                        };
+                                    }
+                                    catch
+                                    {
+                                        // Ignore malformed per-cell border structures and keep merge flags.
+                                    }
                                 }
-                                else if (defMs.Position > defMs.Length)
+
+                                if (defMs.Position > defMs.Length)
                                 {
                                     break;
                                 }
                             }
 
                             tap.CellMerges = merges;
+                            if (cellBorders.Any(border => border != null))
+                            {
+                                tap.CellBorders = cellBorders;
+                            }
                         }
                     }
                     catch
@@ -641,6 +679,103 @@ public class SprmParser
             case 0x1E: break;
             case 0x1F: break;
         }
+    }
+
+    private static bool TryApplyCellBorderSprm(Sprm sprm, TapBase tap)
+    {
+        return sprm.Code switch
+        {
+            WordConsts.SPRM_TCTOPBORDERW => TryApplyCellBorderRangeSprm(sprm, tap, static (cellBorders, border) => cellBorders.Top = border),
+            WordConsts.SPRM_TCLEFTBORDERW => TryApplyCellBorderRangeSprm(sprm, tap, static (cellBorders, border) => cellBorders.Left = border),
+            WordConsts.SPRM_TCBOTTOMBORDERW => TryApplyCellBorderRangeSprm(sprm, tap, static (cellBorders, border) => cellBorders.Bottom = border),
+            WordConsts.SPRM_TCRIGHTBORDERW => TryApplyCellBorderRangeSprm(sprm, tap, static (cellBorders, border) => cellBorders.Right = border),
+            _ => false
+        };
+    }
+
+    private static bool TryApplyExtendedTableBorderSprm(Sprm sprm, TapBase tap)
+    {
+        if (sprm.Code != 0xD613 || sprm.VariableOperand == null || sprm.VariableOperand.Length < 48)
+            return false;
+
+        var operand = sprm.VariableOperand;
+        var borders = new BorderInfo[6];
+        for (int i = 0; i < 6; i++)
+        {
+            int offset = i * 8;
+            if (offset + 8 > operand.Length)
+                break;
+
+            uint colorRef = BitConverter.ToUInt32(operand, offset);
+            uint brc80 = BitConverter.ToUInt32(operand, offset + 4);
+            borders[i] = DecodeBrc(brc80, colorRef);
+        }
+
+        if (borders[0] != null) tap.BorderTop = borders[0];
+        if (borders[2] != null) tap.BorderBottom = borders[2];
+        if (borders[1] != null) tap.BorderLeft = borders[1];
+        if (borders[3] != null) tap.BorderRight = borders[3];
+        if (borders[4] != null) tap.BorderInsideH = borders[4];
+        if (borders[5] != null) tap.BorderInsideV = borders[5];
+        return true;
+    }
+
+    private static bool TryApplyCellBorderRangeSprm(Sprm sprm, TapBase tap, Action<CellBorderInfo, BorderInfo?> assignBorder)
+    {
+        var operand = sprm.VariableOperand;
+        if (operand == null || operand.Length < 6)
+            return false;
+
+        int itcFirst = operand[0];
+        int itcLim = operand[1];
+        if (itcLim <= itcFirst)
+            itcLim = itcFirst + 1;
+
+        BorderInfo? border;
+        int borderBytes = operand.Length - 2;
+        if (borderBytes >= 8)
+        {
+            border = DecodeBrc(BitConverter.ToUInt32(operand, 2), BitConverter.ToUInt32(operand, 6));
+        }
+        else if (borderBytes >= 4)
+        {
+            border = DecodeBrc(BitConverter.ToUInt32(operand, 2));
+        }
+        else
+        {
+            return false;
+        }
+
+        EnsureCellBorderCapacity(tap, itcLim);
+        if (tap.CellBorders == null)
+            return false;
+
+        for (int index = itcFirst; index < itcLim; index++)
+        {
+            tap.CellBorders[index] ??= new CellBorderInfo();
+            assignBorder(tap.CellBorders[index]!, border);
+        }
+
+        return true;
+    }
+
+    private static void EnsureCellBorderCapacity(TapBase tap, int requiredCount)
+    {
+        if (requiredCount <= 0)
+            return;
+
+        if (tap.CellBorders == null)
+        {
+            tap.CellBorders = new CellBorderInfo?[requiredCount];
+            return;
+        }
+
+        if (tap.CellBorders.Length >= requiredCount)
+            return;
+
+        var resized = tap.CellBorders;
+        Array.Resize(ref resized, requiredCount);
+        tap.CellBorders = resized;
     }
 
     private static int ConvertHundredthsOfLineToTwips(byte value)
@@ -735,7 +870,7 @@ public class SprmParser
     ///  - bit  29    = fShadow
     ///  - bit  30    = fFrame
     /// </summary>
-    private static BorderInfo DecodeBrc(uint brc)
+    private static BorderInfo DecodeBrc(uint brc, uint? colorRef = null)
     {
         var dptLineWidth = (int)(brc & 0xFF);         // bits 0-7
         var brcType      = (int)((brc >> 8) & 0xFF);  // bits 8-15
@@ -773,9 +908,23 @@ public class SprmParser
         {
             Style = style,
             Width = widthEighthPt,
-            Color = ico,
+            Color = ResolveBorderColor(ico, colorRef),
             Space = dptSpace
         };
+    }
+
+    private static int ResolveBorderColor(int ico, uint? colorRef)
+    {
+        if (colorRef.HasValue)
+        {
+            var value = colorRef.Value & 0x00FFFFFF;
+            if (value != 0 && value != 0x00FFFFFF)
+            {
+                return (int)value;
+            }
+        }
+
+        return ico;
     }
 
     private void ApplySepSprm(Sprm sprm, SepBase sep)

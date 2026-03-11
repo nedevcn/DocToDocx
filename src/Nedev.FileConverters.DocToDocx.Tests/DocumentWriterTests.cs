@@ -1884,6 +1884,76 @@ namespace Nedev.FileConverters.DocToDocx.Tests
         }
 
         [Fact]
+        public void SampleTableDoc_LoadDocument_PreservesBorderlessTableAfterMarkerParagraph()
+        {
+            var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+            var inputPath = Path.Combine(repoRoot, "samples", "table.doc");
+
+            var document = DocToDocxConverter.LoadDocument(inputPath);
+            var markerParagraph = document.Paragraphs.FirstOrDefault(paragraph =>
+                paragraph.Text.Contains("无边框", StringComparison.Ordinal));
+
+            Assert.NotNull(markerParagraph);
+
+            var targetTable = document.Tables
+                .Where(table => table.ParentTableIndex == null && table.StartParagraphIndex > markerParagraph!.Index)
+                .OrderBy(table => table.StartParagraphIndex)
+                .FirstOrDefault();
+
+            Assert.NotNull(targetTable);
+            Assert.True(targetTable!.Properties == null ||
+                        (targetTable.Properties.BorderTop == null &&
+                         targetTable.Properties.BorderBottom == null &&
+                         targetTable.Properties.BorderLeft == null &&
+                         targetTable.Properties.BorderRight == null &&
+                         targetTable.Properties.BorderInsideH == null &&
+                         targetTable.Properties.BorderInsideV == null),
+                "Expected the top-level table after the 无边框 paragraph to remain borderless in the parsed model.");
+        }
+
+        [Fact]
+        public void SampleTableDoc_Conversion_PreservesBorderlessTableAfterMarkerParagraph()
+        {
+            var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+            var inputPath = Path.Combine(repoRoot, "samples", "table.doc");
+            var outputPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".docx");
+
+            try
+            {
+                DocToDocxConverter.Convert(inputPath, outputPath);
+
+                using var archive = new ZipArchive(File.OpenRead(outputPath), ZipArchiveMode.Read);
+                var documentXml = new StreamReader(archive.GetEntry("word/document.xml").Open()).ReadToEnd();
+                var xDocument = XDocument.Parse(documentXml);
+                XNamespace w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+                var bodyElements = xDocument.Root?
+                    .Element(w + "body")?
+                    .Elements()
+                    .ToList();
+
+                Assert.NotNull(bodyElements);
+
+                var markerIndex = bodyElements!.FindIndex(element =>
+                    element.Name == w + "p" &&
+                    string.Concat(element.Descendants(w + "t").Select(text => text.Value)).Contains("无边框", StringComparison.Ordinal));
+
+                Assert.True(markerIndex >= 0, "Expected converted document to contain the 无边框 paragraph.");
+
+                var targetTable = bodyElements
+                    .Skip(markerIndex + 1)
+                    .FirstOrDefault(element => element.Name == w + "tbl");
+
+                Assert.NotNull(targetTable);
+                Assert.Null(targetTable!.Element(w + "tblPr")?.Element(w + "tblBorders"));
+            }
+            finally
+            {
+                if (File.Exists(outputPath))
+                    File.Delete(outputPath);
+            }
+        }
+
+        [Fact]
         public void SampleTableDoc_Conversion_PreservesFirstTableFirstColumnAlignment()
         {
             var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
@@ -1974,6 +2044,164 @@ namespace Nedev.FileConverters.DocToDocx.Tests
                 AssertTwipsClose(CmToTwips(2.19), (int?)gridColumns[0].Attribute(w + "w") ?? 0);
                 AssertTwipsClose(CmToTwips(11.25), (int?)gridColumns[1].Attribute(w + "w") ?? 0);
                 AssertTwipsClose(CmToTwips(2.86), (int?)gridColumns[2].Attribute(w + "w") ?? 0);
+            }
+            finally
+            {
+                if (File.Exists(outputPath))
+                    File.Delete(outputPath);
+            }
+        }
+
+        [Fact]
+        public void SampleTableDoc_Conversion_PreservesThirdTopLevelTableVisibleBorders()
+        {
+            var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+            var inputPath = Path.Combine(repoRoot, "samples", "table.doc");
+            var outputPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".docx");
+
+            try
+            {
+                DocToDocxConverter.Convert(inputPath, outputPath);
+
+                using var archive = new ZipArchive(File.OpenRead(outputPath), ZipArchiveMode.Read);
+                var documentXml = new StreamReader(archive.GetEntry("word/document.xml").Open()).ReadToEnd();
+                var xDocument = XDocument.Parse(documentXml);
+                XNamespace w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+                var thirdTable = xDocument
+                    .Descendants(w + "tbl")
+                    .Where(tbl => !tbl.Ancestors(w + "tbl").Any())
+                    .Skip(2)
+                    .First();
+
+                Assert.NotNull(thirdTable.Element(w + "tblPr")?.Element(w + "tblBorders"));
+            }
+            finally
+            {
+                if (File.Exists(outputPath))
+                    File.Delete(outputPath);
+            }
+        }
+
+        [Fact]
+        public void SampleTableDoc_LoadDocument_PreservesBorderColorTableAfterMarkerParagraph()
+        {
+            var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+            var inputPath = Path.Combine(repoRoot, "samples", "table.doc");
+
+            var document = DocToDocxConverter.LoadDocument(inputPath);
+            var markerParagraph = document.Paragraphs.FirstOrDefault(paragraph =>
+                paragraph.Text.Contains("边框颜色", StringComparison.Ordinal));
+
+            Assert.NotNull(markerParagraph);
+
+            var targetTable = document.Tables
+                .Where(table => table.ParentTableIndex == null && table.StartParagraphIndex > markerParagraph!.Index)
+                .OrderBy(table => table.StartParagraphIndex)
+                .FirstOrDefault();
+
+            Assert.NotNull(targetTable);
+
+            var borders = new[]
+            {
+                targetTable!.Properties?.BorderTop,
+                targetTable.Properties?.BorderBottom,
+                targetTable.Properties?.BorderLeft,
+                targetTable.Properties?.BorderRight,
+                targetTable.Properties?.BorderInsideH,
+                targetTable.Properties?.BorderInsideV
+            }
+            .Concat(targetTable.Rows
+                .SelectMany(row => row.Cells)
+                .SelectMany(cell => new[]
+                {
+                    cell.Properties?.BorderTop,
+                    cell.Properties?.BorderBottom,
+                    cell.Properties?.BorderLeft,
+                    cell.Properties?.BorderRight
+                }))
+            .ToArray();
+
+            Assert.Contains(borders, border => border != null && border.Color > 16);
+        }
+
+        [Fact]
+        public void SampleTableDoc_Conversion_PreservesBorderColorTableAfterMarkerParagraph()
+        {
+            var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+            var inputPath = Path.Combine(repoRoot, "samples", "table.doc");
+            var outputPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".docx");
+
+            try
+            {
+                DocToDocxConverter.Convert(inputPath, outputPath);
+
+                using var archive = new ZipArchive(File.OpenRead(outputPath), ZipArchiveMode.Read);
+                var documentXml = new StreamReader(archive.GetEntry("word/document.xml").Open()).ReadToEnd();
+                var xDocument = XDocument.Parse(documentXml);
+                XNamespace w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+                var bodyElements = xDocument.Root?
+                    .Element(w + "body")?
+                    .Elements()
+                    .ToList();
+
+                Assert.NotNull(bodyElements);
+
+                var markerIndex = bodyElements!.FindIndex(element =>
+                    element.Name == w + "p" &&
+                    string.Concat(element.Descendants(w + "t").Select(text => text.Value)).Contains("边框颜色", StringComparison.Ordinal));
+
+                Assert.True(markerIndex >= 0, "Expected converted document to contain the 边框颜色 paragraph.");
+
+                var targetTable = bodyElements
+                    .Skip(markerIndex + 1)
+                    .FirstOrDefault(element => element.Name == w + "tbl");
+
+                Assert.NotNull(targetTable);
+
+                var borders = targetTable!
+                    .Element(w + "tblPr")?
+                    .Element(w + "tblBorders")?
+                    .Elements()
+                    .ToList();
+
+                Assert.NotNull(borders);
+
+                var loadedDocument = DocToDocxConverter.LoadDocument(inputPath);
+                var loadedMarkerParagraph = loadedDocument.Paragraphs.First(paragraph =>
+                    paragraph.Text.Contains("边框颜色", StringComparison.Ordinal));
+                var loadedTable = loadedDocument.Tables
+                    .Where(table => table.ParentTableIndex == null && table.StartParagraphIndex > loadedMarkerParagraph.Index)
+                    .OrderBy(table => table.StartParagraphIndex)
+                    .First();
+
+                var expectedColors = new[]
+                {
+                    loadedTable.Properties?.BorderTop?.Color,
+                    loadedTable.Properties?.BorderBottom?.Color,
+                    loadedTable.Properties?.BorderLeft?.Color,
+                    loadedTable.Properties?.BorderRight?.Color,
+                    loadedTable.Properties?.BorderInsideH?.Color,
+                    loadedTable.Properties?.BorderInsideV?.Color
+                }
+                .Concat(loadedTable.Rows
+                    .SelectMany(row => row.Cells)
+                    .SelectMany(cell => new int?[]
+                    {
+                        cell.Properties?.BorderTop?.Color,
+                        cell.Properties?.BorderBottom?.Color,
+                        cell.Properties?.BorderLeft?.Color,
+                        cell.Properties?.BorderRight?.Color
+                    }))
+                .Where(color => color.HasValue && color.Value > 16)
+                .Select(color => ColorHelper.ResolveColorHex(color!.Value, loadedDocument.Theme))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+
+                Assert.NotEmpty(expectedColors);
+                Assert.DoesNotContain(borders!, border =>
+                    string.Equals(border.Attribute(w + "color")?.Value, "D3D3D3", StringComparison.OrdinalIgnoreCase));
+                Assert.Contains(borders!, border =>
+                    expectedColors.Contains(border.Attribute(w + "color")?.Value ?? string.Empty, StringComparer.OrdinalIgnoreCase));
             }
             finally
             {
@@ -2126,7 +2354,14 @@ namespace Nedev.FileConverters.DocToDocx.Tests
                 Assert.True(
                     xDocument.Descendants(w + "tc").Any(tc => tc.Descendants(w + "tbl").Any()),
                     "Expected at least one nested table in the sample output.");
-                Assert.True(Regex.Matches(documentXml, "<w:tblBorders\\b").Count >= 6, "Expected parent and child tables to emit visible borders.");
+
+                var nestedTable = xDocument
+                    .Descendants(w + "tbl")
+                    .FirstOrDefault(tbl => tbl.Ancestors(w + "tbl").Any());
+
+                Assert.NotNull(nestedTable);
+                Assert.NotNull(nestedTable!.Element(w + "tblPr")?.Element(w + "tblBorders"));
+                Assert.NotNull(nestedTable.Ancestors(w + "tbl").First().Element(w + "tblPr")?.Element(w + "tblBorders"));
             }
             finally
             {
