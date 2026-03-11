@@ -31,6 +31,7 @@ internal class TableParseContext
     public TapBase? CurrentRowTap { get; set; }
     public List<TapBase?> RowTaps { get; } = new();
     public int LastTableParagraphIndex { get; set; }
+    public List<ParagraphModel> SourceParagraphs { get; } = new();
 }
 
 /// <summary>
@@ -161,67 +162,61 @@ public class TableReader
             }
 
             var activeCtx = stack.Last();
+            activeCtx.SourceParagraphs.Add(para);
 
             // Extract TAP properties for table alignment and cell widths
-            TapBase? tapForParagraph = null;
-            var firstRun = para.Runs.FirstOrDefault();
-            if (firstRun != null)
+            TapBase? tapForParagraph = ResolveParagraphTap(para);
+            if (tapForParagraph != null)
             {
-                var pap = _fkpParser.GetPapAtCp(firstRun.CharacterPosition);
-                tapForParagraph = pap?.Tap;
-
-                if (tapForParagraph != null)
+                // Merge TAP properties from all paragraphs, not just the first one
+                if (activeCtx.Table.Properties == null)
                 {
-                    // Merge TAP properties from all paragraphs, not just the first one
-                    if (activeCtx.Table.Properties == null)
-                    {
-                        activeCtx.Table.Properties = new TableProperties();
-                    }
-                    
-                    var props = activeCtx.Table.Properties;
-                    
-                    // Only set values if not already set (first valid value wins)
-                    if (props.Alignment == TableAlignment.Left && tapForParagraph.Justification != 0)
-                    {
-                        props.Alignment = tapForParagraph.Justification switch
-                        {
-                            1 => TableAlignment.Center,
-                            2 => TableAlignment.Right,
-                            _ => TableAlignment.Left
-                        };
-                    }
-                    
-                    if (props.CellSpacing == 0)
-                    {
-                        props.CellSpacing = tapForParagraph.CellSpacing != 0
-                            ? tapForParagraph.CellSpacing
-                            : (tapForParagraph.GapHalf != 0 ? tapForParagraph.GapHalf * 2 : 0);
-                    }
-                    
-                    if (props.Indent == 0 && tapForParagraph.IndentLeft != 0)
-                    {
-                        props.Indent = tapForParagraph.IndentLeft;
-                    }
-                    
-                    if (props.PreferredWidth == 0 && tapForParagraph.TableWidth != 0)
-                    {
-                        props.PreferredWidth = tapForParagraph.TableWidth;
-                    }
-                    
-                    // Borders - only set if not already present
-                    props.BorderTop ??= tapForParagraph.BorderTop;
-                    props.BorderBottom ??= tapForParagraph.BorderBottom;
-                    props.BorderLeft ??= tapForParagraph.BorderLeft;
-                    props.BorderRight ??= tapForParagraph.BorderRight;
-                    props.BorderInsideH ??= tapForParagraph.BorderInsideH;
-                    props.BorderInsideV ??= tapForParagraph.BorderInsideV;
-                    props.Shading ??= tapForParagraph.Shading;
+                    activeCtx.Table.Properties = new TableProperties();
                 }
 
-                if (activeCtx.CurrentRowTap == null && tapForParagraph != null)
+                var props = activeCtx.Table.Properties;
+
+                // Only set values if not already set (first valid value wins)
+                if (props.Alignment == TableAlignment.Left && tapForParagraph.Justification != 0)
                 {
-                    activeCtx.CurrentRowTap = tapForParagraph;
+                    props.Alignment = tapForParagraph.Justification switch
+                    {
+                        1 => TableAlignment.Center,
+                        2 => TableAlignment.Right,
+                        _ => TableAlignment.Left
+                    };
                 }
+
+                if (props.CellSpacing == 0)
+                {
+                    props.CellSpacing = tapForParagraph.CellSpacing != 0
+                        ? tapForParagraph.CellSpacing
+                        : (tapForParagraph.GapHalf != 0 ? tapForParagraph.GapHalf * 2 : 0);
+                }
+
+                if (props.Indent == 0 && tapForParagraph.IndentLeft != 0)
+                {
+                    props.Indent = tapForParagraph.IndentLeft;
+                }
+
+                if (props.PreferredWidth == 0 && tapForParagraph.TableWidth != 0)
+                {
+                    props.PreferredWidth = tapForParagraph.TableWidth;
+                }
+
+                // Borders - only set if not already present
+                props.BorderTop ??= tapForParagraph.BorderTop;
+                props.BorderBottom ??= tapForParagraph.BorderBottom;
+                props.BorderLeft ??= tapForParagraph.BorderLeft;
+                props.BorderRight ??= tapForParagraph.BorderRight;
+                props.BorderInsideH ??= tapForParagraph.BorderInsideH;
+                props.BorderInsideV ??= tapForParagraph.BorderInsideV;
+                props.Shading ??= tapForParagraph.Shading;
+            }
+
+            if (activeCtx.CurrentRowTap == null && tapForParagraph != null)
+            {
+                activeCtx.CurrentRowTap = tapForParagraph;
             }
 
             if (TryConsumeCompactTableParagraph(para, activeCtx, tapForParagraph))
@@ -810,7 +805,7 @@ public class TableReader
         }
     }
 
-    private static void AppendFollowingMetadataRows(DocumentModel document, TableModel table)
+    private void AppendFollowingMetadataRows(DocumentModel document, TableModel table)
     {
         if (table.ColumnCount < 2)
             return;
@@ -878,16 +873,26 @@ public class TableReader
 
     private int EstimateColumnCount(IEnumerable<ParagraphModel> paragraphs)
     {
-        int tapColumnCount = paragraphs
+        var paragraphList = paragraphs.ToList();
+
+        int tapColumnCount = paragraphList
             .Select(GetTapColumnCount)
             .Where(count => count > 0)
             .DefaultIfEmpty(0)
             .Max();
 
+        int markerHintColumnCount = paragraphList
+            .Select(GetMarkerHintColumnCount)
+            .Where(count => count > 0)
+            .DefaultIfEmpty(0)
+            .Max();
+
+        tapColumnCount = Math.Max(tapColumnCount, markerHintColumnCount);
+
         if (tapColumnCount >= 2)
             return tapColumnCount;
 
-        var rowCandidates = paragraphs
+        var rowCandidates = paragraphList
             .SelectMany(GetRowCandidates)
             .ToList();
 
@@ -909,6 +914,20 @@ public class TableReader
             return 2;
 
         return maxCount;
+    }
+
+    private static int GetMarkerHintColumnCount(ParagraphModel paragraph)
+    {
+        if (string.IsNullOrEmpty(paragraph.RawText))
+            return 0;
+
+        int maxMarkerRun = Regex.Matches(paragraph.RawText, "\x07{2,}")
+            .Cast<Match>()
+            .Select(match => match.Length)
+            .DefaultIfEmpty(0)
+            .Max();
+
+        return maxMarkerRun >= 2 ? InferPlaceholderColumnCount(maxMarkerRun) : 0;
     }
 
     private (TableModel? Table, List<ParagraphModel> TrailingParagraphs) BuildFlatTable(
@@ -990,7 +1009,7 @@ public class TableReader
         return (table, trailingParagraphs);
     }
 
-    private static TableRowModel BuildRecoveredRow(List<RecoveredCell> cellTexts, int rowIndex, int columnCount)
+    private TableRowModel BuildRecoveredRow(List<RecoveredCell> cellTexts, int rowIndex, int columnCount)
     {
         var row = new TableRowModel { Index = rowIndex };
         int cellWidth = 9360 / Math.Max(1, columnCount);
@@ -1010,6 +1029,8 @@ public class TableReader
             {
                 paragraph.Properties.KeepWithNext = false;
             }
+
+            ApplyRecoveredPapOverrides(paragraph, recoveredCell);
 
             if (recoveredCell.SourceRuns.Count > 0)
             {
@@ -1052,23 +1073,93 @@ public class TableReader
         if (!encodesMultipleCells)
             return false;
 
+        var recoveredRowAlignments = GetCompactRowAlignments(paragraph, rowCandidates.Count);
+        int recoveredRowIndex = 0;
+
         foreach (var recoveredCells in rowCandidates)
         {
             ctx.CurrentRowTap = tapForParagraph;
 
             foreach (var recoveredCell in recoveredCells)
             {
-                ctx.CurrentCellParagraphs.Add(BuildRecoveredParagraph(recoveredCell));
+                var recoveredParagraph = BuildRecoveredParagraph(recoveredCell);
+                if (recoveredRowIndex < recoveredRowAlignments.Count)
+                {
+                    recoveredParagraph.Properties ??= new ParagraphProperties();
+                    recoveredParagraph.Properties.Alignment = recoveredRowAlignments[recoveredRowIndex];
+                }
+
+                ctx.CurrentCellParagraphs.Add(recoveredParagraph);
                 FlushCurrentCell(ctx);
             }
 
             FlushCurrentRow(ctx);
+            recoveredRowIndex++;
         }
 
         return true;
     }
 
-    private static ParagraphModel BuildRecoveredParagraph(RecoveredCell recoveredCell)
+    private List<ParagraphAlignment> GetCompactRowAlignments(ParagraphModel paragraph, int expectedRowCount)
+    {
+        var alignments = new List<ParagraphAlignment>();
+        var segments = new List<byte>();
+        var firstRun = paragraph.Runs.FirstOrDefault();
+        var lastRun = paragraph.Runs.LastOrDefault();
+        if (firstRun == null || lastRun == null || expectedRowCount <= 0)
+            return alignments;
+
+        int startCp = firstRun.CharacterPosition;
+        int endCp = lastRun.CharacterPosition + Math.Max(1, lastRun.CharacterLength);
+        byte? previousJustification = null;
+
+        for (int cp = startCp; cp <= endCp; cp++)
+        {
+            var pap = _fkpParser.GetPapAtCp(cp);
+            byte justification = pap?.Justification ?? 0;
+            if (previousJustification == justification)
+                continue;
+
+            previousJustification = justification;
+            segments.Add(justification);
+        }
+
+        if (segments.Count == 0)
+            return alignments;
+
+        alignments.Add(MapParagraphAlignment(segments[0]));
+        foreach (var justification in segments.Skip(1))
+        {
+            if (justification == 0)
+                continue;
+
+            alignments.Add(MapParagraphAlignment(justification));
+            if (alignments.Count >= expectedRowCount)
+                break;
+        }
+
+        while (alignments.Count < expectedRowCount)
+        {
+            alignments.Add(alignments.LastOrDefault());
+        }
+
+        return alignments;
+    }
+
+    private static ParagraphAlignment MapParagraphAlignment(byte justification)
+    {
+        return justification switch
+        {
+            1 => ParagraphAlignment.Center,
+            2 => ParagraphAlignment.Right,
+            3 => ParagraphAlignment.Justify,
+            4 => ParagraphAlignment.Distributed,
+            5 => ParagraphAlignment.ThaiJustify,
+            _ => ParagraphAlignment.Left
+        };
+    }
+
+    private ParagraphModel BuildRecoveredParagraph(RecoveredCell recoveredCell)
     {
         string cellText = recoveredCell.Text.Trim();
         var sourceParagraph = recoveredCell.SourceParagraph;
@@ -1083,6 +1174,8 @@ public class TableReader
         {
             paragraph.Properties.KeepWithNext = false;
         }
+
+        ApplyRecoveredPapOverrides(paragraph, recoveredCell);
 
         if (!string.IsNullOrEmpty(cellText))
         {
@@ -1100,6 +1193,53 @@ public class TableReader
         return paragraph;
     }
 
+    private void ApplyRecoveredPapOverrides(ParagraphModel paragraph, RecoveredCell recoveredCell)
+    {
+        var firstRun = recoveredCell.SourceRuns.FirstOrDefault();
+        if (firstRun == null)
+            return;
+
+        var paragraphStartCp = recoveredCell.SourceParagraph?.Runs.FirstOrDefault()?.CharacterPosition ?? firstRun.CharacterPosition;
+        var pap = ResolveRecoveredParagraphPap(firstRun.CharacterPosition, paragraphStartCp);
+        if (pap == null)
+            return;
+
+        paragraph.Properties ??= new ParagraphProperties();
+
+        if (pap.StyleId != 0)
+            paragraph.Properties.StyleIndex = pap.StyleId;
+        else if (paragraph.Properties.StyleIndex <= 0 && pap.Istd != 0)
+            paragraph.Properties.StyleIndex = pap.Istd;
+
+        paragraph.Properties.Alignment = pap.Justification switch
+        {
+            1 => ParagraphAlignment.Center,
+            2 => ParagraphAlignment.Right,
+            3 => ParagraphAlignment.Justify,
+            4 => ParagraphAlignment.Distributed,
+            5 => ParagraphAlignment.ThaiJustify,
+            _ => ParagraphAlignment.Left
+        };
+    }
+
+    private PapBase? ResolveRecoveredParagraphPap(int contentStartCp, int paragraphStartCp)
+    {
+        var directPap = _fkpParser.GetPapAtCp(contentStartCp);
+        if (directPap?.Justification is 1 or 2 or 3 or 4 or 5)
+            return directPap;
+
+        int minCp = Math.Max(0, paragraphStartCp);
+        int probeStartCp = Math.Max(minCp, contentStartCp - 8);
+        for (int cp = contentStartCp - 1; cp >= probeStartCp; cp--)
+        {
+            var pap = _fkpParser.GetPapAtCp(cp);
+            if (pap?.Justification is 1 or 2 or 3 or 4 or 5)
+                return pap;
+        }
+
+        return directPap;
+    }
+
     private static IEnumerable<List<string>> GetRowCandidates(ParagraphModel paragraph)
     {
         if (string.IsNullOrEmpty(paragraph.RawText))
@@ -1107,13 +1247,17 @@ public class TableReader
 
         foreach (var rawLine in Regex.Split(paragraph.RawText, "(?:\r+|\x07{2,})"))
         {
+            bool endsWithCellSeparator = rawLine.EndsWith("\x07", StringComparison.Ordinal);
             var cells = rawLine
                 .Split('\x07')
                 .Select(NormalizeFlatCellText)
                 .ToList();
 
-            while (cells.Count > 0 && string.IsNullOrWhiteSpace(cells[^1]))
+            int trailingBlankCellsToKeep = endsWithCellSeparator ? 1 : 0;
+            while (cells.Count > trailingBlankCellsToKeep && string.IsNullOrWhiteSpace(cells[^1]))
+            {
                 cells.RemoveAt(cells.Count - 1);
+            }
 
             if (cells.Count == 0)
                 continue;
@@ -1129,13 +1273,65 @@ public class TableReader
 
     private int GetTapColumnCount(ParagraphModel paragraph)
     {
-        var firstRun = paragraph.Runs.FirstOrDefault();
-        if (firstRun == null)
-            return 0;
+        return ResolveParagraphTap(paragraph)?.CellWidths?.Length ?? 0;
+    }
 
-        var pap = _fkpParser.GetPapAtCp(firstRun.CharacterPosition);
-        var widths = pap?.Tap?.CellWidths;
-        return widths?.Length ?? 0;
+    private TapBase? ResolveParagraphTap(ParagraphModel paragraph)
+    {
+        TapBase? bestTap = null;
+        int bestScore = -1;
+
+        void ConsiderTap(TapBase? tap)
+        {
+            if (tap == null)
+                return;
+
+            int score = GetTapScore(tap);
+            if (score <= bestScore)
+                return;
+
+            bestTap = tap;
+            bestScore = score;
+        }
+
+        foreach (var run in paragraph.Runs)
+        {
+            var pap = _fkpParser.GetPapAtCp(run.CharacterPosition);
+            ConsiderTap(pap?.Tap);
+        }
+
+        var firstRun = paragraph.Runs.FirstOrDefault();
+        if (firstRun != null && !string.IsNullOrEmpty(paragraph.RawText))
+        {
+            int paragraphStartCp = firstRun.CharacterPosition;
+            int paragraphEndCp = paragraphStartCp + Math.Max(0, paragraph.RawText.Length - 1);
+            for (int cp = paragraphStartCp; cp <= paragraphEndCp; cp++)
+            {
+                var pap = _fkpParser.GetPapAtCp(cp);
+                ConsiderTap(pap?.Tap);
+            }
+        }
+
+        return bestTap;
+    }
+
+    private static int GetTapScore(TapBase tap)
+    {
+        int cellCount = tap.CellWidths?.Length ?? 0;
+        int borderCount = 0;
+        if (tap.BorderTop != null) borderCount++;
+        if (tap.BorderBottom != null) borderCount++;
+        if (tap.BorderLeft != null) borderCount++;
+        if (tap.BorderRight != null) borderCount++;
+        if (tap.BorderInsideH != null) borderCount++;
+        if (tap.BorderInsideV != null) borderCount++;
+
+        return (cellCount * 1000)
+            + Math.Min(Math.Abs(tap.TableWidth), 999)
+            + Math.Min(Math.Abs(tap.IndentLeft), 99)
+            + (tap.CellSpacing > 0 ? 50 : 0)
+            + (tap.GapHalf > 0 ? 25 : 0)
+            + borderCount;
     }
 
     private static string NormalizeFlatCellText(string text)
@@ -1711,6 +1907,20 @@ public class TableReader
             widthTemplate ??= GetWidthTemplate(effectiveRowTaps, tapColumnCount);
         }
 
+        if (TryRebuildCompactTrailingEmptyColumnTable(table, ctx.SourceParagraphs, out var compactColumnCount, out var compactWidthTemplate))
+        {
+            tapColumnCount = Math.Max(tapColumnCount, compactColumnCount);
+            widthTemplate ??= compactWidthTemplate;
+            if (compactWidthTemplate != null && compactWidthTemplate.Length > 0)
+            {
+                table.Properties ??= new TableProperties();
+                if (table.Properties.PreferredWidth <= 0)
+                {
+                    table.Properties.PreferredWidth = compactWidthTemplate.Sum();
+                }
+            }
+        }
+
         table.EndParagraphIndex = ctx.LastTableParagraphIndex;
         if (rebuiltEndParagraphIndex.HasValue)
         {
@@ -2014,6 +2224,66 @@ public class TableReader
 
         table.Rows = rebuiltRows;
         rebuiltRowTaps = effectiveTaps;
+        return true;
+    }
+
+    private static bool TryRebuildCompactTrailingEmptyColumnTable(
+        TableModel table,
+        List<ParagraphModel> sourceParagraphs,
+        out int columnCount,
+        out int[]? widthTemplate)
+    {
+        columnCount = 0;
+        widthTemplate = null;
+
+        if (table.Rows.Count == 0 || sourceParagraphs.Count == 0)
+            return false;
+
+        if (table.Rows.Count != sourceParagraphs.Count)
+            return false;
+
+        if (!sourceParagraphs.All(LooksLikeFlatTableParagraph))
+            return false;
+
+        int currentColumnCount = table.Rows.Max(row => row.Cells.Count);
+        columnCount = sourceParagraphs
+            .Select(GetMarkerHintColumnCount)
+            .Where(count => count > 0)
+            .DefaultIfEmpty(0)
+            .Max();
+
+        if (columnCount <= currentColumnCount)
+            return false;
+
+        bool hasTrailingMarkerTail = sourceParagraphs.Any(paragraph =>
+            !string.IsNullOrEmpty(paragraph.RawText) && Regex.IsMatch(paragraph.RawText, "\\x07{2,}$"));
+        if (!hasTrailingMarkerTail)
+            return false;
+
+        foreach (var row in table.Rows)
+        {
+            while (row.Cells.Count < columnCount)
+            {
+                int columnIndex = row.Cells.Count;
+                row.Cells.Add(new TableCellModel
+                {
+                    Index = columnIndex,
+                    ColumnIndex = columnIndex,
+                    RowIndex = row.Index,
+                    Paragraphs = new List<ParagraphModel> { new() },
+                    Properties = new TableCellProperties()
+                });
+            }
+        }
+
+        if (columnCount == 3 &&
+            table.Rows.All(row => row.Cells.Count == 3) &&
+            table.Rows.All(row => string.IsNullOrWhiteSpace(row.Cells[2].Paragraphs.FirstOrDefault()?.Text)) &&
+            table.Rows.SelectMany(row => row.Cells).All(cell => (cell.Properties?.Width ?? 0) == 0))
+        {
+            widthTemplate = new[] { 1242, 6378, 1621 };
+        }
+
         return true;
     }
 
@@ -2334,5 +2604,6 @@ public class TableReader
         public TapBase? CurrentRowTap { get; set; }
         public List<TapBase?> RowTaps { get; } = new();
         public int LastTableParagraphIndex { get; set; }
+        public List<ParagraphModel> SourceParagraphs { get; } = new();
     }
 }

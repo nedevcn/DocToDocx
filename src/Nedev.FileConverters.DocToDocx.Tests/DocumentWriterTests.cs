@@ -1730,6 +1730,120 @@ namespace Nedev.FileConverters.DocToDocx.Tests
         }
 
         [Fact]
+        public void SampleTableDoc_LoadDocument_PreservesFirstTableFirstColumnAlignment()
+        {
+            var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+            var inputPath = Path.Combine(repoRoot, "samples", "table.doc");
+
+            var document = DocToDocxConverter.LoadDocument(inputPath);
+            var firstTable = document.Tables.Where(table => table.ParentTableIndex == null).OrderBy(table => table.StartParagraphIndex).First();
+
+            Assert.Equal("D", firstTable.Rows[1].Cells[0].Paragraphs[0].Text);
+            Assert.Equal(ParagraphAlignment.Center, firstTable.Rows[1].Cells[0].Paragraphs[0].Properties?.Alignment);
+            Assert.Equal("中文1", firstTable.Rows[2].Cells[0].Paragraphs[0].Text);
+            Assert.Equal(ParagraphAlignment.Right, firstTable.Rows[2].Cells[0].Paragraphs[0].Properties?.Alignment);
+        }
+
+        [Fact]
+        public void SampleTableDoc_Conversion_PreservesFirstTableFirstColumnAlignment()
+        {
+            var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+            var inputPath = Path.Combine(repoRoot, "samples", "table.doc");
+            var outputPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".docx");
+
+            try
+            {
+                DocToDocxConverter.Convert(inputPath, outputPath);
+
+                using var archive = new ZipArchive(File.OpenRead(outputPath), ZipArchiveMode.Read);
+                var documentXml = new StreamReader(archive.GetEntry("word/document.xml").Open()).ReadToEnd();
+                var xDocument = XDocument.Parse(documentXml);
+                XNamespace w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+                var firstTable = xDocument
+                    .Descendants(w + "tbl")
+                    .Where(tbl => !tbl.Ancestors(w + "tbl").Any())
+                    .First();
+                var rows = firstTable.Elements(w + "tr").ToList();
+
+                Assert.True(rows.Count >= 3, "Expected the first top-level table to have at least three rows.");
+
+                var secondRowFirstCellParagraph = rows[1].Elements(w + "tc").First().Elements(w + "p").First();
+                var thirdRowFirstCellParagraph = rows[2].Elements(w + "tc").First().Elements(w + "p").First();
+
+                var secondRowText = string.Concat(secondRowFirstCellParagraph.Descendants(w + "t").Select(text => text.Value));
+                var thirdRowText = string.Concat(thirdRowFirstCellParagraph.Descendants(w + "t").Select(text => text.Value));
+                var secondRowAlignment = secondRowFirstCellParagraph.Element(w + "pPr")?.Element(w + "jc")?.Attribute(w + "val")?.Value ?? "(none)";
+                var thirdRowAlignment = thirdRowFirstCellParagraph.Element(w + "pPr")?.Element(w + "jc")?.Attribute(w + "val")?.Value ?? "(none)";
+
+                Assert.Equal("D", secondRowText);
+                Assert.Equal("中文1", thirdRowText);
+                Assert.Equal("center", secondRowAlignment);
+                Assert.Equal("right", thirdRowAlignment);
+            }
+            finally
+            {
+                if (File.Exists(outputPath))
+                    File.Delete(outputPath);
+            }
+        }
+
+        [Fact]
+        public void SampleTableDoc_LoadDocument_PreservesThirdTopLevelTableFixedColumnWidths()
+        {
+            var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+            var inputPath = Path.Combine(repoRoot, "samples", "table.doc");
+
+            var document = DocToDocxConverter.LoadDocument(inputPath);
+            var topLevelTables = document.Tables
+                .Where(table => table.ParentTableIndex == null)
+                .OrderBy(table => table.StartParagraphIndex)
+                .ToList();
+            var thirdTable = topLevelTables.Skip(2).First();
+
+            Assert.Equal(3, thirdTable.ColumnCount);
+            Assert.True(thirdTable.Rows.Count > 0, "Expected the fixed-width table to contain at least one row.");
+            Assert.Equal(3, thirdTable.Rows[0].Cells.Count);
+            AssertTwipsClose(CmToTwips(2.19), thirdTable.Rows[0].Cells[0].Properties?.Width ?? 0);
+            AssertTwipsClose(CmToTwips(11.25), thirdTable.Rows[0].Cells[1].Properties?.Width ?? 0);
+            AssertTwipsClose(CmToTwips(2.86), thirdTable.Rows[0].Cells[2].Properties?.Width ?? 0);
+        }
+
+        [Fact]
+        public void SampleTableDoc_Conversion_PreservesThirdTopLevelTableFixedColumnWidths()
+        {
+            var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+            var inputPath = Path.Combine(repoRoot, "samples", "table.doc");
+            var outputPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".docx");
+
+            try
+            {
+                DocToDocxConverter.Convert(inputPath, outputPath);
+
+                using var archive = new ZipArchive(File.OpenRead(outputPath), ZipArchiveMode.Read);
+                var documentXml = new StreamReader(archive.GetEntry("word/document.xml").Open()).ReadToEnd();
+                var xDocument = XDocument.Parse(documentXml);
+                XNamespace w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+                var thirdTable = xDocument
+                    .Descendants(w + "tbl")
+                    .Where(tbl => !tbl.Ancestors(w + "tbl").Any())
+                    .Skip(2)
+                    .First();
+
+                var gridColumns = thirdTable.Elements(w + "tblGrid").Elements(w + "gridCol").ToList();
+
+                Assert.Equal(3, gridColumns.Count);
+                AssertTwipsClose(CmToTwips(2.19), (int?)gridColumns[0].Attribute(w + "w") ?? 0);
+                AssertTwipsClose(CmToTwips(11.25), (int?)gridColumns[1].Attribute(w + "w") ?? 0);
+                AssertTwipsClose(CmToTwips(2.86), (int?)gridColumns[2].Attribute(w + "w") ?? 0);
+            }
+            finally
+            {
+                if (File.Exists(outputPath))
+                    File.Delete(outputPath);
+            }
+        }
+
+        [Fact]
         public void SampleTableDoc_Conversion_PreservesSecondTopLevelTableWithoutMergingFirstRowSecondCell()
         {
             var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
@@ -1809,7 +1923,6 @@ namespace Nedev.FileConverters.DocToDocx.Tests
                     xDocument.Descendants(w + "tc").Any(tc => tc.Descendants(w + "tbl").Any()),
                     "Expected at least one nested table in the sample output.");
                 Assert.True(Regex.Matches(documentXml, "<w:tblBorders\\b").Count >= 6, "Expected parent and child tables to emit visible borders.");
-                Assert.DoesNotContain("<w:jc w:val=\"center\"", documentXml, StringComparison.Ordinal);
             }
             finally
             {
@@ -2075,6 +2188,16 @@ namespace Nedev.FileConverters.DocToDocx.Tests
             return document
                 .Descendants(w + "p")
                 .First(paragraph => string.Concat(paragraph.Descendants(w + "t").Select(t => t.Value)).Contains(text, StringComparison.Ordinal));
+        }
+
+        private static int CmToTwips(double centimeters)
+        {
+            return (int)Math.Round((centimeters / 2.54d) * 1440d, MidpointRounding.AwayFromZero);
+        }
+
+        private static void AssertTwipsClose(int expected, int actual, int tolerance = 24)
+        {
+            Assert.InRange(actual, expected - tolerance, expected + tolerance);
         }
     }
 }
