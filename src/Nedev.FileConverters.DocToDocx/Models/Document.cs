@@ -168,6 +168,8 @@ public class HeaderFooterInfo
 public class ParagraphModel
 {
     public int Index { get; set; }
+    public int StartCp { get; set; } = -1;
+    public int EndCp { get; set; } = -1;
     public List<RunModel> Runs { get; set; } = new();
     public string RawText { get; set; } = string.Empty;
     public ParagraphProperties? Properties { get; set; }

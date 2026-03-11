@@ -128,69 +128,7 @@ public partial class DocumentWriter
             }
         }
 
-        if (columnWidths.All(width => width == 0) && TryInferCalendarColumnWidths(table, out var inferredColumnWidths))
-        {
-            return inferredColumnWidths;
-        }
-
         return columnWidths;
-    }
-        
-    private bool TryInferCalendarColumnWidths(TableModel table, out int[] columnWidths)
-    {
-        columnWidths = Array.Empty<int>();
-
-        if (table.ColumnCount != 13 || table.Rows.Count < 2 || table.Rows[0].Cells.Count != 1 || table.Rows[1].Cells.Count != 13)
-            return false;
-
-        var title = table.Rows[0].Cells[0].Paragraphs.FirstOrDefault()?.Text;
-        if (string.IsNullOrWhiteSpace(title) || !System.Text.RegularExpressions.Regex.IsMatch(title.Trim(), "^(January|February|March|April|May|June|July|August|September|October|November|December)\\s+\\d{4}$", System.Text.RegularExpressions.RegexOptions.IgnoreCase))
-            return false;
-
-        string[] expectedDays = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
-        var headerTexts = table.Rows[1].Cells.Select(cell => cell.Paragraphs.FirstOrDefault()?.Text ?? string.Empty).ToList();
-        if (!headerTexts.Where((_, index) => index % 2 == 0).SequenceEqual(expectedDays, StringComparer.OrdinalIgnoreCase))
-            return false;
-
-        if (headerTexts.Where((_, index) => index % 2 == 1).Any(text => !string.IsNullOrWhiteSpace(text)))
-            return false;
-
-        int pageWidth = _document?.Properties.PageWidth ?? 12240;
-        int marginLeft = _document?.Properties.MarginLeft ?? 1440;
-        int marginRight = _document?.Properties.MarginRight ?? 1440;
-        int preferredWidth = table.Properties?.PreferredWidth > 0
-            ? table.Properties.PreferredWidth
-            : Math.Max(1, pageWidth - marginLeft - marginRight);
-        preferredWidth = Math.Max(1, preferredWidth);
-
-        int separatorCount = 6;
-        int contentCount = 7;
-        int separatorWidth = table.Properties?.CellSpacing ?? 0;
-        if (separatorWidth <= 0)
-        {
-            separatorWidth = Math.Max(1, preferredWidth / Math.Max(1, (contentCount * 4) + separatorCount));
-        }
-
-        int contentWidth = Math.Max(1, (preferredWidth - (separatorCount * separatorWidth)) / contentCount);
-        int remaining = preferredWidth - (contentWidth * contentCount) - (separatorWidth * separatorCount);
-
-        columnWidths = new int[13];
-        for (int index = 0; index < columnWidths.Length; index++)
-        {
-            columnWidths[index] = index % 2 == 0 ? contentWidth : separatorWidth;
-        }
-
-        for (int index = 1; index < columnWidths.Length && remaining > 0; index += 2, remaining--)
-        {
-            columnWidths[index]++;
-        }
-
-        for (int index = 0; index < columnWidths.Length && remaining > 0; index += 2, remaining--)
-        {
-            columnWidths[index]++;
-        }
-
-        return columnWidths.All(width => width > 0);
     }
 
     /// <summary>

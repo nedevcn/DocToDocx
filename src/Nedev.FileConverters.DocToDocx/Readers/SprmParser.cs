@@ -445,9 +445,9 @@ public class SprmParser
 
     private void ApplyTapSprm(Sprm sprm, TapBase tap)
     {
-        var sprmCode = sprm.Code & 0x03FF;
+        var sprmCode = sprm.Code & 0x01FF;
         var sgc = (sprm.Code >> 10) & 0x07;
-        if (sgc != 3) return;
+        if (sgc != 3 && sgc != 5) return;
         switch (sprmCode)
         {
             // Table indent from left margin (sprmTDxaLeft)
@@ -504,7 +504,21 @@ public class SprmParser
                 }
                 break;
             case 0x06: tap.Justification = (byte)sprm.Operand; break; // sprmTJc
-            case 0x07: break;
+            case 0x07:
+            {
+                var rowHeight = (int)(short)sprm.Operand;
+                if (rowHeight < 0)
+                {
+                    tap.RowHeight = Math.Abs(rowHeight);
+                    tap.HeightIsExact = true;
+                }
+                else if (rowHeight > 0)
+                {
+                    tap.RowHeight = rowHeight;
+                    tap.HeightIsExact = true;
+                }
+                break;
+            }
             case 0x08: // sprmTDefTable - cell boundaries and TC (cell) descriptors
                 if (sprm.VariableOperand != null && sprm.VariableOperand.Length > 0)
                 {
@@ -597,7 +611,20 @@ public class SprmParser
                 break;
             case 0x0E: break;
             case 0x0F: break;
-            case 0x10: tap.RowHeight = (int)sprm.Operand; break;
+            case 0x10:
+            {
+                var rowHeight = (int)(short)sprm.Operand;
+                if (rowHeight < 0)
+                {
+                    tap.RowHeight = Math.Abs(rowHeight);
+                    tap.HeightIsExact = true;
+                }
+                else
+                {
+                    tap.RowHeight = rowHeight;
+                }
+                break;
+            }
             case 0x11: tap.HeightIsExact = sprm.Operand != 0; break;
             case 0x12: break;
             case 0x13: tap.CellSpacing = (int)(short)sprm.Operand; break;

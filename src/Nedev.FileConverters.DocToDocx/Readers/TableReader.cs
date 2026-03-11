@@ -43,11 +43,23 @@ public class TableReader
     private const int MaxNestingDepth = 20;
     private const int MaxRowsPerTable = 10000;
     private static readonly string _debugLogPath = Path.Combine(Path.GetTempPath(), "table_reader_debug.log");
+    private DocumentProperties? _documentProperties;
+    private readonly List<(int AfterParagraphIndex, List<ParagraphModel> Paragraphs)> _pendingRecoveredParagraphInsertions = new();
     private sealed class RecoveredCell
     {
         public string Text { get; set; } = string.Empty;
         public ParagraphModel? SourceParagraph { get; set; }
         public List<RunModel> SourceRuns { get; } = new();
+    }
+
+    private sealed class CompactGridParseResult
+    {
+        public int BaseGap { get; set; }
+        public int SlotCount { get; set; }
+        public int ColumnCount { get; set; }
+        public List<Dictionary<int, RecoveredCell>> Rows { get; } = new();
+        public RecoveredCell? TitleCell { get; set; }
+        public List<ParagraphModel> TrailingParagraphs { get; } = new();
     }
 
     private readonly BinaryReader _wordDocReader;
@@ -65,6 +77,8 @@ public class TableReader
 
     public void ParseTables(DocumentModel document)
     {
+        _documentProperties = document.Properties;
+        _pendingRecoveredParagraphInsertions.Clear();
         try { File.Delete(_debugLogPath); }
         catch (Exception ex) { Logger.Debug($"Failed to delete table-reader debug log '{_debugLogPath}': {ex.Message}"); }
         Log("ParseTables START");
@@ -230,6 +244,14 @@ public class TableReader
 
             if (isRowEnd)
             {
+                if (activeCtx.CurrentCellParagraphs.Count == 0 &&
+                    activeCtx.CellsInCurrentRow.Count == 0 &&
+                    tapForParagraph != null &&
+                    activeCtx.Table.Rows.Count > 0)
+                {
+                    ApplyDeferredRowTap(activeCtx, tapForParagraph);
+                }
+
                 FlushCurrentCell(activeCtx);
                 FlushCurrentRow(activeCtx);
             }
@@ -305,6 +327,12 @@ public class TableReader
         }
 
         Log($"TopLevelTables={topLevelTables.Count}");
+
+        if (_pendingRecoveredParagraphInsertions.Count > 0)
+        {
+            ApplyPendingRecoveredParagraphInsertions(document);
+        }
+
         document.Tables = topLevelTables;
         Log($"Assigned document.Tables count={document.Tables?.Count ?? 0}");
 
@@ -331,6 +359,24 @@ public class TableReader
         ApplyFallbackHeaderShading(document);
 
         Log("ParseTables END");
+    }
+
+    private void ApplyPendingRecoveredParagraphInsertions(DocumentModel document)
+    {
+        int insertedCount = 0;
+        foreach (var pendingInsertion in _pendingRecoveredParagraphInsertions
+            .OrderBy(insertion => insertion.AfterParagraphIndex)
+            .ThenBy(insertion => insertion.Paragraphs.Count))
+        {
+            int insertIndex = Math.Clamp(pendingInsertion.AfterParagraphIndex + 1 + insertedCount, 0, document.Paragraphs.Count);
+            document.Paragraphs.InsertRange(insertIndex, pendingInsertion.Paragraphs);
+            insertedCount += pendingInsertion.Paragraphs.Count;
+        }
+
+        for (int index = 0; index < document.Paragraphs.Count; index++)
+        {
+            document.Paragraphs[index].Index = index;
+        }
     }
 
     private static void ApplyFallbackHeaderShading(DocumentModel document)
@@ -1064,6 +1110,9 @@ public class TableReader
         if (ctx.CurrentCellParagraphs.Count > 0 || ctx.CellsInCurrentRow.Count > 0)
             return false;
 
+        if (TryConsumeStructuredCompactGridParagraph(paragraph, ctx, tapForParagraph))
+            return true;
+
         var rowCandidates = BuildRecoveredCellRows(paragraph, GetRowCandidates(paragraph).ToList());
 
         if (rowCandidates.Count == 0)
@@ -1080,11 +1129,44 @@ public class TableReader
         }
 
         var recoveredRowAlignments = GetCompactRowAlignments(paragraph, rowCandidates.Count);
+        var recoveredRowTaps = GetCompactRowTaps(paragraph, rowCandidates.Count, tapForParagraph);
+        int compactColumnCount = Math.Max(
+            inferredCompactColumnCount,
+            rowCandidates.Select(cells => cells.Count).DefaultIfEmpty(0).Max());
+        bool canUseDocumentWidthFallback = rowCandidates.Count > 1;
+        var widthTemplate = GetWidthTemplate(recoveredRowTaps, compactColumnCount)
+            ?? (canUseDocumentWidthFallback ? BuildCompactWidthTemplate(tapForParagraph, compactColumnCount, _documentProperties) : null);
+        if (widthTemplate != null && widthTemplate.Length > 0)
+        {
+            foreach (var rowTap in recoveredRowTaps)
+            {
+                ApplyCompactGridWidthTemplate(rowTap, widthTemplate);
+            }
+
+            ctx.Table.Properties ??= new TableProperties();
+            if (ctx.Table.Properties.PreferredWidth <= compactColumnCount)
+            {
+                ctx.Table.Properties.PreferredWidth = widthTemplate.Sum();
+            }
+        }
+
+        if (tapForParagraph?.RowHeight > 0 && rowCandidates.Count > 0)
+        {
+            while (recoveredRowTaps.Count < rowCandidates.Count)
+            {
+                recoveredRowTaps.Add(CloneTapBase(recoveredRowTaps.LastOrDefault()) ?? CloneTapBase(tapForParagraph));
+            }
+
+            int lastRecoveredRowIndex = rowCandidates.Count - 1;
+            recoveredRowTaps[lastRecoveredRowIndex] = MergeDeferredRowTap(recoveredRowTaps[lastRecoveredRowIndex], tapForParagraph);
+        }
         int recoveredRowIndex = 0;
 
         foreach (var recoveredCells in rowCandidates)
         {
-            ctx.CurrentRowTap = tapForParagraph;
+            ctx.CurrentRowTap = recoveredRowIndex < recoveredRowTaps.Count
+                ? recoveredRowTaps[recoveredRowIndex]
+                : tapForParagraph;
 
             while (inferredCompactColumnCount > 0 && recoveredCells.Count < inferredCompactColumnCount)
             {
@@ -1109,6 +1191,456 @@ public class TableReader
         }
 
         return true;
+    }
+
+    private bool TryConsumeStructuredCompactGridParagraph(ParagraphModel paragraph, TableContext ctx, TapBase? tapForParagraph)
+    {
+        if (!TryParseCompactGridParagraph(paragraph, out var grid))
+            return false;
+
+        var rowAlignments = GetCompactRowAlignments(paragraph, grid.Rows.Count + (grid.TitleCell != null ? 1 : 0));
+        var rowTaps = GetCompactRowTaps(paragraph, grid.Rows.Count + (grid.TitleCell != null ? 1 : 0), tapForParagraph);
+        var widthTemplate = BuildCompactGridWidthTemplate(tapForParagraph, grid.ColumnCount, grid.BaseGap, grid.SlotCount);
+
+        int targetRowIndex = 0;
+        if (grid.TitleCell != null)
+        {
+            var titleTap = targetRowIndex < rowTaps.Count ? CloneTapBase(rowTaps[targetRowIndex]) : CloneTapBase(tapForParagraph);
+            ApplyCompactGridWidthTemplate(titleTap, widthTemplate);
+            ctx.Table.Rows.Add(BuildCompactGridTitleRow(grid.TitleCell, targetRowIndex, grid.ColumnCount, titleTap, rowAlignments.ElementAtOrDefault(targetRowIndex)));
+            ctx.RowTaps.Add(titleTap);
+            targetRowIndex++;
+        }
+
+        foreach (var rowCells in grid.Rows)
+        {
+            var rowTap = targetRowIndex < rowTaps.Count ? CloneTapBase(rowTaps[targetRowIndex]) : CloneTapBase(tapForParagraph);
+            ApplyCompactGridWidthTemplate(rowTap, widthTemplate);
+            ctx.Table.Rows.Add(BuildCompactGridRow(rowCells, targetRowIndex, grid.ColumnCount, rowTap, rowAlignments.ElementAtOrDefault(targetRowIndex)));
+            ctx.RowTaps.Add(rowTap);
+            targetRowIndex++;
+        }
+
+        ctx.RowIndex = ctx.Table.Rows.Count;
+
+        if (widthTemplate.Length > 0)
+        {
+            ctx.Table.Properties ??= new TableProperties();
+            if (ctx.Table.Properties.PreferredWidth <= 0)
+            {
+                ctx.Table.Properties.PreferredWidth = widthTemplate.Sum();
+            }
+        }
+
+        if (grid.TrailingParagraphs.Count > 0)
+        {
+            _pendingRecoveredParagraphInsertions.Add((paragraph.Index, grid.TrailingParagraphs));
+        }
+
+        return true;
+    }
+
+    private bool TryParseCompactGridParagraph(ParagraphModel paragraph, out CompactGridParseResult result)
+    {
+        result = new CompactGridParseResult();
+
+        if (string.IsNullOrEmpty(paragraph.RawText))
+            return false;
+
+        var tokens = Regex.Split(paragraph.RawText, "\\x07+")
+            .Where(token => !string.IsNullOrWhiteSpace(token))
+            .ToList();
+        var gaps = Regex.Matches(paragraph.RawText, "\\x07+")
+            .Cast<Match>()
+            .Select(match => match.Length)
+            .ToList();
+
+        if (tokens.Count < 4 || gaps.Count < tokens.Count - 1)
+            return false;
+
+        int baseGap = gaps.Where(gap => gap > 0).DefaultIfEmpty(0).Min();
+        if (baseGap <= 1)
+            return false;
+
+        var recoveredCells = BuildRecoveredCells(paragraph, tokens);
+        int gridTokenStart = 0;
+        if (gaps[0] != baseGap)
+        {
+            result.TitleCell = recoveredCells[0];
+            gridTokenStart = 1;
+        }
+
+        int slotCount = 1;
+        for (int gapIndex = gridTokenStart; gapIndex < gaps.Count; gapIndex++)
+        {
+            if (gaps[gapIndex] != baseGap)
+                break;
+
+            slotCount++;
+        }
+
+        if (slotCount < 2)
+            return false;
+
+        result.BaseGap = baseGap;
+        result.SlotCount = slotCount;
+        result.ColumnCount = ((slotCount - 1) * baseGap) + 1;
+
+        int slotIndex = 0;
+        AddCompactGridPlacement(result.Rows, 0, 0, recoveredCells[gridTokenStart]);
+
+        for (int tokenIndex = gridTokenStart + 1; tokenIndex < recoveredCells.Count; tokenIndex++)
+        {
+            int gap = gaps[tokenIndex - 1];
+            if (gap % baseGap != 0)
+                return false;
+
+            slotIndex += gap / baseGap;
+            int rowIndex = slotIndex / slotCount;
+            int columnIndex = (slotIndex % slotCount) * baseGap;
+            AddCompactGridPlacement(result.Rows, rowIndex, columnIndex, recoveredCells[tokenIndex]);
+        }
+
+        if (result.Rows.Count == 0)
+            return false;
+
+        while (TryExtractTrailingCompactGridParagraph(result.Rows, result.ColumnCount, out var trailingCell))
+        {
+            result.TrailingParagraphs.Insert(0, BuildRecoveredParagraph(trailingCell));
+        }
+
+        return result.Rows.Count > 0;
+    }
+
+    private static void AddCompactGridPlacement(List<Dictionary<int, RecoveredCell>> rows, int rowIndex, int columnIndex, RecoveredCell recoveredCell)
+    {
+        while (rows.Count <= rowIndex)
+        {
+            rows.Add(new Dictionary<int, RecoveredCell>());
+        }
+
+        rows[rowIndex][columnIndex] = recoveredCell;
+    }
+
+    private static bool TryExtractTrailingCompactGridParagraph(List<Dictionary<int, RecoveredCell>> rows, int columnCount, out RecoveredCell trailingCell)
+    {
+        trailingCell = new RecoveredCell();
+        if (rows.Count == 0)
+            return false;
+
+        var lastRow = rows[^1];
+        if (lastRow.Count != 1)
+            return false;
+
+        if (!lastRow.TryGetValue(0, out var candidate) || string.IsNullOrWhiteSpace(candidate.Text))
+            return false;
+
+        bool precedingRowHasMultipleSignals = rows.Count >= 2 && rows[^2].Count > 0;
+        bool rowStartsNewLogicalBlock = rows.Count >= 2 && rows[^2].Keys.Max() < columnCount - 1;
+        if (!precedingRowHasMultipleSignals || !rowStartsNewLogicalBlock)
+            return false;
+
+        trailingCell = candidate;
+        rows.RemoveAt(rows.Count - 1);
+        return true;
+    }
+
+    private static int[] BuildCompactGridWidthTemplate(TapBase? tap, int columnCount, int baseGap, int slotCount)
+    {
+        if (tap?.CellWidths != null && tap.CellWidths.Length == columnCount)
+            return tap.CellWidths.ToArray();
+
+        if (tap?.CellWidths != null && tap.CellWidths.Length == columnCount + 2)
+            return tap.CellWidths.Skip(1).Take(columnCount).ToArray();
+
+        int preferredWidth = tap?.TableWidth ?? 0;
+        if (preferredWidth <= 0)
+        {
+            preferredWidth = 9360;
+        }
+
+        int spacerColumnCount = columnCount - slotCount;
+        int spacerWidth = spacerColumnCount > 0
+            ? Math.Max(1, preferredWidth / Math.Max(1, (slotCount * 4) + spacerColumnCount))
+            : 0;
+        int contentWidth = Math.Max(1, (preferredWidth - (spacerWidth * spacerColumnCount)) / Math.Max(1, slotCount));
+
+        var widths = new int[columnCount];
+        for (int columnIndex = 0; columnIndex < columnCount; columnIndex++)
+        {
+            widths[columnIndex] = columnIndex % baseGap == 0 ? contentWidth : spacerWidth;
+        }
+
+        return widths;
+    }
+
+    private static int[]? BuildCompactWidthTemplate(TapBase? tap, int columnCount, DocumentProperties? documentProperties)
+    {
+        if (columnCount <= 0)
+            return null;
+
+        if (tap?.CellWidths != null && tap.CellWidths.Length == columnCount)
+            return tap.CellWidths.ToArray();
+
+        if (tap?.CellWidths != null && tap.CellWidths.Length == columnCount + 2)
+            return tap.CellWidths.Skip(1).Take(columnCount).ToArray();
+
+        int preferredWidth = tap?.TableWidth ?? 0;
+        if (preferredWidth > columnCount)
+            return DistributeWidthAcrossColumns(preferredWidth, columnCount);
+
+        int documentColumnWidth = documentProperties?.DxaColumns ?? 0;
+        if (documentColumnWidth > 0)
+        {
+            var widths = new int[columnCount];
+            Array.Fill(widths, documentColumnWidth);
+            return widths;
+        }
+
+        int contentWidth = 0;
+        if (documentProperties != null)
+        {
+            contentWidth = Math.Max(0, documentProperties.PageWidth - documentProperties.MarginLeft - documentProperties.MarginRight);
+        }
+
+        int cellSpacing = tap?.CellSpacing != 0
+            ? tap.CellSpacing
+            : (tap?.GapHalf ?? 0) * 2;
+
+        if (contentWidth > 0 && cellSpacing > 0)
+        {
+            contentWidth += cellSpacing;
+        }
+
+        return contentWidth > 0
+            ? DistributeWidthAcrossColumns(contentWidth, columnCount)
+            : null;
+    }
+
+    private static int[] DistributeWidthAcrossColumns(int totalWidth, int columnCount)
+    {
+        int baseWidth = totalWidth / columnCount;
+        int remainder = totalWidth % columnCount;
+        var widths = new int[columnCount];
+        for (int columnIndex = 0; columnIndex < columnCount; columnIndex++)
+        {
+            widths[columnIndex] = baseWidth + (columnIndex < remainder ? 1 : 0);
+        }
+
+        return widths;
+    }
+
+    private static void ApplyCompactGridWidthTemplate(TapBase? tap, int[] widthTemplate)
+    {
+        if (tap == null || widthTemplate.Length == 0)
+            return;
+
+        tap.CellWidths = widthTemplate.ToArray();
+        if (tap.TableWidth <= 0)
+        {
+            tap.TableWidth = widthTemplate.Sum();
+        }
+    }
+
+    private TableRowModel BuildCompactGridTitleRow(RecoveredCell titleCell, int rowIndex, int columnCount, TapBase? rowTap, ParagraphAlignment alignment)
+    {
+        var row = new TableRowModel
+        {
+            Index = rowIndex,
+            Properties = rowTap == null ? null : new TableRowProperties
+            {
+                Height = rowTap.RowHeight,
+                HeightIsExact = rowTap.HeightIsExact,
+                IsHeaderRow = rowTap.IsHeaderRow,
+                AllowBreakAcrossPages = !rowTap.CantSplit
+            }
+        };
+
+        var paragraph = BuildRecoveredParagraph(titleCell);
+        paragraph.Properties ??= new ParagraphProperties();
+        paragraph.Properties.Alignment = alignment;
+
+        var cell = new TableCellModel
+        {
+            Index = 0,
+            RowIndex = rowIndex,
+            ColumnIndex = 0,
+            ColumnSpan = columnCount,
+            Paragraphs = new List<ParagraphModel> { paragraph },
+            Properties = new TableCellProperties()
+        };
+
+        ConfigureCompactGridCell(cell, rowTap, 0, columnCount);
+        row.Cells.Add(cell);
+        return row;
+    }
+
+    private TableRowModel BuildCompactGridRow(Dictionary<int, RecoveredCell> rowCells, int rowIndex, int columnCount, TapBase? rowTap, ParagraphAlignment alignment)
+    {
+        var row = new TableRowModel
+        {
+            Index = rowIndex,
+            Properties = rowTap == null ? null : new TableRowProperties
+            {
+                Height = rowTap.RowHeight,
+                HeightIsExact = rowTap.HeightIsExact,
+                IsHeaderRow = rowTap.IsHeaderRow,
+                AllowBreakAcrossPages = !rowTap.CantSplit
+            }
+        };
+
+        for (int columnIndex = 0; columnIndex < columnCount; columnIndex++)
+        {
+            ParagraphModel paragraph;
+            if (rowCells.TryGetValue(columnIndex, out var recoveredCell))
+            {
+                paragraph = BuildRecoveredParagraph(recoveredCell);
+            }
+            else
+            {
+                paragraph = new ParagraphModel
+                {
+                    Type = ParagraphType.Normal,
+                    Properties = new ParagraphProperties(),
+                    Runs = new List<RunModel>()
+                };
+            }
+
+            paragraph.Properties ??= new ParagraphProperties();
+            paragraph.Properties.Alignment = alignment;
+
+            var cell = new TableCellModel
+            {
+                Index = columnIndex,
+                RowIndex = rowIndex,
+                ColumnIndex = columnIndex,
+                Paragraphs = new List<ParagraphModel> { paragraph },
+                Properties = new TableCellProperties()
+            };
+
+            ConfigureCompactGridCell(cell, rowTap, columnIndex, 1);
+            row.Cells.Add(cell);
+        }
+
+        return row;
+    }
+
+    private static void ConfigureCompactGridCell(TableCellModel cell, TapBase? rowTap, int columnIndex, int columnSpan)
+    {
+        cell.ColumnSpan = Math.Max(1, columnSpan);
+        if (rowTap?.CellWidths == null || rowTap.CellWidths.Length <= columnIndex)
+            return;
+
+        cell.Properties ??= new TableCellProperties();
+        int width = 0;
+        for (int offset = 0; offset < cell.ColumnSpan && columnIndex + offset < rowTap.CellWidths.Length; offset++)
+        {
+            width += rowTap.CellWidths[columnIndex + offset];
+        }
+
+        if (width > 0)
+        {
+            cell.Properties.Width = width;
+        }
+    }
+
+    private List<TapBase?> GetCompactRowTaps(ParagraphModel paragraph, int expectedRowCount, TapBase? fallbackTap)
+    {
+        var rowTaps = new List<TapBase?>();
+        var firstRun = paragraph.Runs.FirstOrDefault();
+        var lastRun = paragraph.Runs.LastOrDefault();
+        if (firstRun == null || lastRun == null || expectedRowCount <= 0)
+        {
+            FillMissingCompactRowTaps(rowTaps, expectedRowCount, fallbackTap);
+            return rowTaps;
+        }
+
+        int startCp = firstRun.CharacterPosition;
+        int endCp = lastRun.CharacterPosition + Math.Max(1, lastRun.CharacterLength);
+        TapBase? previousTap = null;
+
+        for (int cp = startCp; cp <= endCp; cp++)
+        {
+            var currentTap = _fkpParser.GetPapAtCp(cp)?.Tap;
+            if (AreEquivalentCompactRowTaps(previousTap, currentTap))
+                continue;
+
+            previousTap = CloneTapBase(currentTap);
+            rowTaps.Add(CloneTapBase(currentTap));
+        }
+
+        FillMissingCompactRowTaps(rowTaps, expectedRowCount, fallbackTap);
+        return rowTaps;
+    }
+
+    private static void FillMissingCompactRowTaps(List<TapBase?> rowTaps, int expectedRowCount, TapBase? fallbackTap)
+    {
+        if (rowTaps.Count == 0)
+        {
+            rowTaps.Add(CloneTapBase(fallbackTap));
+        }
+
+        while (rowTaps.Count < expectedRowCount)
+        {
+            rowTaps.Add(CloneTapBase(rowTaps.LastOrDefault()) ?? CloneTapBase(fallbackTap));
+        }
+    }
+
+    private static bool AreEquivalentCompactRowTaps(TapBase? left, TapBase? right)
+    {
+        if (left == null && right == null)
+            return true;
+
+        if (left == null || right == null)
+            return false;
+
+        return left.RowHeight == right.RowHeight &&
+               left.HeightIsExact == right.HeightIsExact &&
+               left.CantSplit == right.CantSplit &&
+               left.IsHeaderRow == right.IsHeaderRow &&
+               left.Justification == right.Justification &&
+               left.TableWidth == right.TableWidth &&
+               left.IndentLeft == right.IndentLeft &&
+               left.CellSpacing == right.CellSpacing &&
+               ((left.CellWidths == null && right.CellWidths == null) ||
+                (left.CellWidths != null && right.CellWidths != null && left.CellWidths.SequenceEqual(right.CellWidths)));
+    }
+
+    private static TapBase? CloneTapBase(TapBase? source)
+    {
+        if (source == null)
+            return null;
+
+        return new TapBase
+        {
+            RowHeight = source.RowHeight,
+            HeightIsExact = source.HeightIsExact,
+            Justification = source.Justification,
+            IsHeaderRow = source.IsHeaderRow,
+            CellSpacing = source.CellSpacing,
+            TableWidth = source.TableWidth,
+            IndentLeft = source.IndentLeft,
+            GapHalf = source.GapHalf,
+            CellWidths = source.CellWidths?.ToArray(),
+            CantSplit = source.CantSplit,
+            CellMerges = source.CellMerges?.Select(flags => new CellMergeFlags
+            {
+                HorizFirst = flags.HorizFirst,
+                HorizMerged = flags.HorizMerged,
+                VertFirst = flags.VertFirst,
+                VertMerged = flags.VertMerged
+            }).ToArray(),
+            BorderTop = source.BorderTop,
+            BorderBottom = source.BorderBottom,
+            BorderLeft = source.BorderLeft,
+            BorderRight = source.BorderRight,
+            BorderInsideH = source.BorderInsideH,
+            BorderInsideV = source.BorderInsideV,
+            Shading = source.Shading,
+            CellBorders = source.CellBorders?.ToArray(),
+            CellShadings = source.CellShadings?.ToArray(),
+            CellVerticalAlignments = source.CellVerticalAlignments?.ToArray()
+        };
     }
 
     private static int InferCompactTrailingEmptyColumnCount(ParagraphModel paragraph)
@@ -1301,37 +1833,91 @@ public class TableReader
 
     private TapBase? ResolveParagraphTap(ParagraphModel paragraph)
     {
-        TapBase? bestTap = null;
-        int bestScore = -1;
+        TapBase? bestRunTap = null;
+        int bestRunScore = -1;
+        TapBase? bestParagraphTap = null;
+        int bestParagraphScore = -1;
+        var candidateTaps = new List<TapBase>();
 
-        void ConsiderTap(TapBase? tap)
+        void ConsiderTap(TapBase? tap, bool preferForGeometry)
         {
             if (tap == null)
                 return;
 
-            int score = GetTapScore(tap);
-            if (score <= bestScore)
+            var clonedTap = CloneTapBase(tap);
+            if (clonedTap == null)
                 return;
 
-            bestTap = tap;
-            bestScore = score;
+            candidateTaps.Add(clonedTap);
+
+            int score = GetTapScore(tap);
+            if (preferForGeometry)
+            {
+                if (score <= bestRunScore)
+                    return;
+
+                bestRunTap = CloneTapBase(tap);
+                bestRunScore = score;
+                return;
+            }
+
+            if (score <= bestParagraphScore)
+                return;
+
+            bestParagraphTap = CloneTapBase(tap);
+            bestParagraphScore = score;
         }
 
         foreach (var run in paragraph.Runs)
         {
             var pap = _fkpParser.GetPapAtCp(run.CharacterPosition);
-            ConsiderTap(pap?.Tap);
+            ConsiderTap(pap?.Tap, preferForGeometry: true);
         }
 
         var firstRun = paragraph.Runs.FirstOrDefault();
+        int paragraphStartCp = -1;
+        int paragraphEndCp = -1;
+
         if (firstRun != null && !string.IsNullOrEmpty(paragraph.RawText))
         {
-            int paragraphStartCp = firstRun.CharacterPosition;
-            int paragraphEndCp = paragraphStartCp + Math.Max(0, paragraph.RawText.Length - 1);
+            paragraphStartCp = firstRun.CharacterPosition;
+            paragraphEndCp = paragraphStartCp + Math.Max(0, paragraph.RawText.Length - 1);
+        }
+        else if (paragraph.StartCp >= 0)
+        {
+            paragraphStartCp = paragraph.StartCp;
+            paragraphEndCp = paragraph.EndCp >= paragraph.StartCp
+                ? paragraph.EndCp
+                : paragraph.StartCp + Math.Max(0, paragraph.RawText.Length - 1);
+        }
+
+        if (paragraphStartCp >= 0 && paragraphEndCp >= paragraphStartCp)
+        {
             for (int cp = paragraphStartCp; cp <= paragraphEndCp; cp++)
             {
                 var pap = _fkpParser.GetPapAtCp(cp);
-                ConsiderTap(pap?.Tap);
+                ConsiderTap(pap?.Tap, preferForGeometry: false);
+            }
+
+            if (bestRunTap == null && bestParagraphTap == null)
+            {
+                int probeStartCp = Math.Max(0, paragraphStartCp - 16);
+                for (int cp = paragraphStartCp - 1; cp >= probeStartCp; cp--)
+                {
+                    var pap = _fkpParser.GetPapAtCp(cp);
+                    ConsiderTap(pap?.Tap, preferForGeometry: false);
+                    if (bestParagraphTap != null && bestParagraphScore > 0)
+                        break;
+                }
+            }
+        }
+
+        var bestTap = bestRunTap ?? bestParagraphTap;
+        if (bestTap != null && candidateTaps.Count > 1)
+        {
+            foreach (var candidateTap in candidateTaps)
+            {
+                bestTap = MergeDeferredRowTap(bestTap, candidateTap);
             }
         }
 
@@ -1901,6 +2487,54 @@ public class TableReader
         Log($"FlushCurrentRow DONE level={ctx.Level} tableRows={ctx.Table.Rows.Count}");
     }
 
+    private static void ApplyDeferredRowTap(TableContext ctx, TapBase tap)
+    {
+        var lastRow = ctx.Table.Rows.LastOrDefault();
+        if (lastRow == null)
+            return;
+
+        lastRow.Properties ??= new TableRowProperties();
+        if (tap.RowHeight > 0)
+        {
+            lastRow.Properties.Height = tap.RowHeight;
+            lastRow.Properties.HeightIsExact = tap.HeightIsExact;
+        }
+
+        if (tap.IsHeaderRow)
+        {
+            lastRow.Properties.IsHeaderRow = true;
+        }
+
+        lastRow.Properties.AllowBreakAcrossPages = !tap.CantSplit;
+
+        if (ctx.RowTaps.Count == 0)
+            return;
+
+        ctx.RowTaps[^1] = MergeDeferredRowTap(ctx.RowTaps[^1], tap);
+    }
+
+    private static TapBase MergeDeferredRowTap(TapBase? existingTap, TapBase deferredTap)
+    {
+        if (existingTap == null)
+            return deferredTap;
+
+        if (existingTap.RowHeight <= 0 && deferredTap.RowHeight > 0)
+        {
+            existingTap.RowHeight = deferredTap.RowHeight;
+            existingTap.HeightIsExact = deferredTap.HeightIsExact;
+        }
+        else if (deferredTap.RowHeight > 0)
+        {
+            existingTap.RowHeight = deferredTap.RowHeight;
+            existingTap.HeightIsExact = deferredTap.HeightIsExact;
+        }
+
+        existingTap.IsHeaderRow |= deferredTap.IsHeaderRow;
+        existingTap.CantSplit |= deferredTap.CantSplit;
+
+        return existingTap;
+    }
+
     private void FinalizeTable(TableContext ctx)
     {
         Log($"FinalizeTable START level={ctx.Level} rows={ctx.Table.Rows.Count}");
@@ -1913,20 +2547,10 @@ public class TableReader
             .Select(tap => tap?.CellWidths?.Length ?? 0)
             .DefaultIfEmpty(0)
             .Max();
+
         var widthTemplate = GetWidthTemplate(effectiveRowTaps, tapColumnCount);
 
-        if (tapColumnCount < 2)
-        {
-            tapColumnCount = InferSequentialSingleCellColumnCount(table);
-        }
-
-        if (TryRebuildCalendarMonthTable(table, effectiveRowTaps, tapColumnCount, out var rebuiltCalendarRowTaps, out var calendarEndParagraphIndex))
-        {
-            effectiveRowTaps = rebuiltCalendarRowTaps;
-            rebuiltEndParagraphIndex = calendarEndParagraphIndex;
-            widthTemplate ??= GetWidthTemplate(effectiveRowTaps, tapColumnCount);
-        }
-        else if (TryRebuildSequentialSingleCellTable(table, effectiveRowTaps, tapColumnCount, out var rebuiltRowTaps))
+        if (TryRebuildSequentialSingleCellTable(table, effectiveRowTaps, tapColumnCount, out var rebuiltRowTaps))
         {
             effectiveRowTaps = rebuiltRowTaps;
             widthTemplate ??= GetWidthTemplate(effectiveRowTaps, tapColumnCount);
@@ -1981,14 +2605,7 @@ public class TableReader
             }
         }
 
-        bool forceWidthTemplate = false;
-        if (widthTemplate == null && TryInferCalendarMonthWidthTemplate(table, out var inferredWidthTemplate))
-        {
-            widthTemplate = inferredWidthTemplate;
-            forceWidthTemplate = true;
-        }
-
-        ApplyWidthTemplate(table, widthTemplate, forceWidthTemplate);
+        ApplyWidthTemplate(table, widthTemplate);
 
         // Only set header row when the TAP data explicitly flags it.
         // Do NOT force all first rows to be headers — that's wrong for most tables.
@@ -2065,108 +2682,6 @@ public class TableReader
         Log($"FinalizeTable DONE level={ctx.Level} rows={table.RowCount} cols={table.ColumnCount}");
     }
 
-    private static bool TryRebuildCalendarMonthTable(
-        TableModel table,
-        List<TapBase?> rowTaps,
-        int tapColumnCount,
-        out List<TapBase?> rebuiltRowTaps,
-        out int? rebuiltEndParagraphIndex)
-    {
-        rebuiltRowTaps = rowTaps;
-        rebuiltEndParagraphIndex = null;
-
-        if (tapColumnCount != 13 || table.Rows.Count < 39 || table.Rows.Any(row => row.Cells.Count != 1))
-            return false;
-
-        var flattenedCells = table.Rows.Select(row => row.Cells[0]).ToList();
-        var texts = flattenedCells
-            .Select(cell => cell.Paragraphs.FirstOrDefault()?.Text?.Trim() ?? string.Empty)
-            .ToList();
-
-        if (!TryParseMonthYear(texts.FirstOrDefault(), out int month, out int year))
-            return false;
-
-        string[] expectedDays = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
-        if (texts.Count < 8 || !texts.Skip(1).Take(expectedDays.Length).SequenceEqual(expectedDays, StringComparer.OrdinalIgnoreCase))
-            return false;
-
-        int daysInMonth = DateTime.DaysInMonth(year, month);
-        int requiredCells = 1 + expectedDays.Length + daysInMonth;
-        if (flattenedCells.Count < requiredCells)
-            return false;
-
-        var dateTexts = texts.Skip(1 + expectedDays.Length).Take(daysInMonth).ToList();
-        if (!dateTexts.Select((text, index) => string.Equals(text, (index + 1).ToString(CultureInfo.InvariantCulture), StringComparison.Ordinal)).All(match => match))
-            return false;
-
-        var rebuiltRows = new List<TableRowModel>();
-        var effectiveTaps = new List<TapBase?>();
-
-        var titleCell = flattenedCells[0];
-        ConfigureRebuiltCell(titleCell, rowTaps.ElementAtOrDefault(0), 0, tapColumnCount);
-        titleCell.ColumnSpan = tapColumnCount;
-        rebuiltRows.Add(new TableRowModel
-        {
-            Index = 0,
-            Properties = table.Rows[0].Properties,
-            Cells = new List<TableCellModel> { titleCell }
-        });
-        effectiveTaps.Add(rowTaps.ElementAtOrDefault(0));
-
-        var headerRow = CreateCalendarRow(1, rowTaps.ElementAtOrDefault(1));
-        for (int dayIndex = 0; dayIndex < expectedDays.Length; dayIndex++)
-        {
-            int cellIndex = 1 + dayIndex;
-            int columnIndex = dayIndex * 2;
-            var headerCell = flattenedCells[cellIndex];
-            ConfigureRebuiltCell(headerCell, rowTaps.ElementAtOrDefault(cellIndex), columnIndex, 1);
-            headerRow.Cells[columnIndex] = headerCell;
-        }
-        rebuiltRows.Add(headerRow);
-        effectiveTaps.Add(rowTaps.ElementAtOrDefault(1));
-
-        int firstDayOfWeek = (int)new DateTime(year, month, 1).DayOfWeek;
-        int dateStartIndex = 1 + expectedDays.Length;
-        for (int weekIndex = 0; weekIndex < 6; weekIndex++)
-        {
-            int dateRowIndex = 2 + (weekIndex * 2);
-            var dateRowTap = rowTaps.ElementAtOrDefault(Math.Min(dateStartIndex + (weekIndex * 7), rowTaps.Count - 1));
-            var dateRow = CreateCalendarRow(dateRowIndex, dateRowTap);
-
-            rebuiltRows.Add(dateRow);
-            effectiveTaps.Add(dateRowTap);
-
-            if (dateRowIndex < 12)
-            {
-                rebuiltRows.Add(CreateCalendarRow(dateRowIndex + 1, dateRowTap));
-                effectiveTaps.Add(dateRowTap);
-            }
-        }
-
-        for (int day = 1; day <= daysInMonth; day++)
-        {
-            int weekIndex = (firstDayOfWeek + day - 1) / 7;
-            int dayOfWeekIndex = (firstDayOfWeek + day - 1) % 7;
-            int rowIndex = 2 + (weekIndex * 2);
-            int columnIndex = dayOfWeekIndex * 2;
-            int sourceCellIndex = dateStartIndex + (day - 1);
-
-            var dateCell = flattenedCells[sourceCellIndex];
-            ConfigureRebuiltCell(dateCell, rowTaps.ElementAtOrDefault(sourceCellIndex), columnIndex, 1);
-            rebuiltRows[rowIndex].Cells[columnIndex] = dateCell;
-        }
-
-        table.Rows = rebuiltRows;
-        rebuiltRowTaps = effectiveTaps;
-        rebuiltEndParagraphIndex = flattenedCells
-            .Take(requiredCells)
-            .SelectMany(cell => cell.Paragraphs)
-            .Select(paragraph => paragraph.Index)
-            .DefaultIfEmpty(table.EndParagraphIndex)
-            .Max();
-        return true;
-    }
-
     private static bool TryRebuildSequentialSingleCellTable(
         TableModel table,
         List<TapBase?> rowTaps,
@@ -2187,10 +2702,6 @@ public class TableReader
 
         int leadingSpan = GetLeadingHorizontalSpan(rowTaps.FirstOrDefault(), tapColumnCount);
         bool hasMergedLeadingCell = leadingSpan == tapColumnCount && flattenedCells.Count > tapColumnCount;
-        if (!hasMergedLeadingCell && LooksLikeMergedCalendarTitle(flattenedCells, tapColumnCount))
-        {
-            hasMergedLeadingCell = true;
-        }
         var rebuiltRows = new List<TableRowModel>();
         var effectiveTaps = new List<TapBase?>();
         int cellCursor = 0;
@@ -2332,178 +2843,29 @@ public class TableReader
         return trailingBoundaryMatch.Success ? trailingBoundaryMatch.Length : 0;
     }
 
-    private static bool TryInferCalendarMonthWidthTemplate(TableModel table, out int[]? widthTemplate)
+    private static bool TryFlattenSparseSequentialCells(TableModel table, out List<TableCellModel> flattenedCells)
     {
-        widthTemplate = null;
+        flattenedCells = new List<TableCellModel>(table.Rows.Count);
 
-        if (!TryGetCalendarMonthColumnPattern(table, out var contentColumns, out var separatorColumns))
-            return false;
-
-        int preferredWidth = table.Properties?.PreferredWidth > 0 ? table.Properties.PreferredWidth : 0;
-        if (preferredWidth <= 0)
+        foreach (var row in table.Rows)
         {
-            preferredWidth = table.Rows[0].Cells.FirstOrDefault()?.Properties?.Width ?? 0;
-        }
+            if (row.Cells.Count == 0)
+                return false;
 
-        if (preferredWidth <= 0 || contentColumns.Count == 0)
-            return false;
+            var contentCells = row.Cells.Where(CellHasContent).ToList();
+            if (contentCells.Count > 1)
+                return false;
 
-        int separatorWidth = InferCalendarSeparatorWidth(table, preferredWidth, contentColumns.Count, separatorColumns.Count);
-        int contentWidth = Math.Max(1, (preferredWidth - (separatorColumns.Count * separatorWidth)) / contentColumns.Count);
-        int remainingWidth = preferredWidth - (contentWidth * contentColumns.Count) - (separatorWidth * separatorColumns.Count);
-
-        var inferred = new int[table.ColumnCount];
-        foreach (var column in contentColumns)
-        {
-            inferred[column] = contentWidth;
-        }
-
-        foreach (var column in separatorColumns)
-        {
-            inferred[column] = separatorWidth;
-        }
-
-        var distributionColumns = separatorColumns.Count > 0 ? separatorColumns : contentColumns;
-        for (int index = 0; index < distributionColumns.Count && remainingWidth > 0; index++, remainingWidth--)
-        {
-            inferred[distributionColumns[index]]++;
-        }
-
-        widthTemplate = inferred;
-        return true;
-    }
-
-    private static bool TryGetCalendarMonthColumnPattern(TableModel table, out List<int> contentColumns, out List<int> separatorColumns)
-    {
-        contentColumns = new List<int>();
-        separatorColumns = new List<int>();
-
-        if (table.ColumnCount != 13 || table.Rows.Count != 13)
-            return false;
-
-        var title = table.Rows[0].Cells.FirstOrDefault()?.Paragraphs.FirstOrDefault()?.Text;
-        if (!LooksLikeMonthYear(title))
-            return false;
-
-        if (table.Rows.Count < 2 || table.Rows[1].Cells.Count != 13)
-            return false;
-
-        string[] expectedDays = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
-        var headerTexts = table.Rows[1].Cells.Select(cell => cell.Paragraphs.FirstOrDefault()?.Text ?? string.Empty).ToList();
-        if (!headerTexts.Where((_, index) => index % 2 == 0).SequenceEqual(expectedDays, StringComparer.OrdinalIgnoreCase))
-            return false;
-
-        if (headerTexts.Where((_, index) => index % 2 == 1).Any(text => !string.IsNullOrWhiteSpace(text)))
-            return false;
-
-        for (int index = 0; index < table.ColumnCount; index++)
-        {
-            if (index % 2 == 0)
+            if (contentCells.Count == 1)
             {
-                contentColumns.Add(index);
+                flattenedCells.Add(contentCells[0]);
+                continue;
             }
-            else
-            {
-                separatorColumns.Add(index);
-            }
+
+            flattenedCells.Add(row.Cells[0]);
         }
 
-        return true;
-    }
-
-    private static int InferCalendarSeparatorWidth(TableModel table, int preferredWidth, int contentColumnCount, int separatorColumnCount)
-    {
-        if (separatorColumnCount == 0)
-            return 0;
-
-        if ((table.Properties?.CellSpacing ?? 0) > 0)
-        {
-            return Math.Clamp(table.Properties!.CellSpacing, 1, preferredWidth / Math.Max(1, table.ColumnCount));
-        }
-
-        int defaultSeparatorWidth = Math.Max(1, preferredWidth / Math.Max(1, (contentColumnCount * 4) + separatorColumnCount));
-        int maxSeparatorWidth = Math.Max(1, (preferredWidth - contentColumnCount) / Math.Max(1, contentColumnCount + separatorColumnCount));
-        return Math.Min(defaultSeparatorWidth, maxSeparatorWidth);
-    }
-
-    private static int InferSequentialSingleCellColumnCount(TableModel table)
-    {
-        if (table.Rows.Count < 10 || table.Rows.Any(row => row.Cells.Count != 1))
-            return 0;
-
-        var texts = table.Rows
-            .Select(row => row.Cells[0].Paragraphs.FirstOrDefault()?.Text?.Trim() ?? string.Empty)
-            .ToList();
-
-        if (texts.Count < 8 || !LooksLikeMonthYear(texts[0]))
-            return 0;
-
-        string[] expectedDays = { "Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat" };
-        if (!texts.Skip(1).Take(expectedDays.Length).SequenceEqual(expectedDays, StringComparer.OrdinalIgnoreCase))
-            return 0;
-
-        return 13;
-    }
-
-    private static bool LooksLikeMergedCalendarTitle(List<TableCellModel> flattenedCells, int tapColumnCount)
-    {
-        if (tapColumnCount != 13 || flattenedCells.Count <= tapColumnCount)
-            return false;
-
-        var title = flattenedCells[0].Paragraphs.FirstOrDefault()?.Text?.Trim();
-        return LooksLikeMonthYear(title);
-    }
-
-    private static bool LooksLikeMonthYear(string? text)
-    {
-        if (string.IsNullOrWhiteSpace(text))
-            return false;
-
-        return Regex.IsMatch(text, "^(January|February|March|April|May|June|July|August|September|October|November|December)\\s+\\d{4}$", RegexOptions.IgnoreCase);
-    }
-
-    private static bool TryParseMonthYear(string? text, out int month, out int year)
-    {
-        month = 0;
-        year = 0;
-
-        if (string.IsNullOrWhiteSpace(text))
-            return false;
-
-        if (!DateTime.TryParseExact(text.Trim(), "MMMM yyyy", CultureInfo.InvariantCulture, DateTimeStyles.None, out var parsed))
-            return false;
-
-        month = parsed.Month;
-        year = parsed.Year;
-        return true;
-    }
-
-    private static TableRowModel CreateCalendarRow(int rowIndex, TapBase? rowTap)
-    {
-        var row = new TableRowModel
-        {
-            Index = rowIndex,
-            Properties = rowTap == null ? null : new TableRowProperties
-            {
-                Height = rowTap.RowHeight,
-                HeightIsExact = rowTap.HeightIsExact,
-                IsHeaderRow = rowTap.IsHeaderRow,
-                AllowBreakAcrossPages = !rowTap.CantSplit
-            }
-        };
-
-        for (int columnIndex = 0; columnIndex < 13; columnIndex++)
-        {
-            var emptyCell = new TableCellModel
-            {
-                Paragraphs = new List<ParagraphModel> { new() },
-                Properties = new TableCellProperties()
-            };
-            ConfigureRebuiltCell(emptyCell, rowTap, columnIndex, 1);
-            row.Cells.Add(emptyCell);
-        }
-
-        return row;
+        return flattenedCells.Count > 0;
     }
 
     private static void ConfigureRebuiltCell(TableCellModel cell, TapBase? rowTap, int columnIndex, int columnSpan)

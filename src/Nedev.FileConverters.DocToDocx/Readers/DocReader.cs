@@ -929,6 +929,8 @@ public class DocReader : IDisposable
             var paragraph = new ParagraphModel
             {
                 Index = paragraphIndex++,
+                StartCp = paraStartCp,
+                EndCp = paraText.Length > 0 ? paraStartCp + paraText.Length - 1 : paraStartCp,
                 RawText = paraText,
                 Type = ParagraphType.Normal,
                 Properties = pap != null 
@@ -1677,6 +1679,16 @@ public class DocReader : IDisposable
         foreach (var sec in sectionInfos)
         {
             sec.StartParagraphIndex = GetParagraphIndexAtCp(sec.StartCp);
+
+            // A gutter margin is only meaningful when mirror/facing page
+            // layout is enabled. Word's binary section SPRMs can carry a
+            // non-zero gutter operand even when the document layout does not
+            // use mirrored margins, in which case the effective gutter should
+            // be treated as zero.
+            if (!Document.Properties.FMirrorMargins && !Document.Properties.FFacingPages)
+            {
+                sec.Gutter = 0;
+            }
         }
         
         Document.Properties.Sections = sectionInfos;

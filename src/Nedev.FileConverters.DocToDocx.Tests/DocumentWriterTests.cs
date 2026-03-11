@@ -1745,6 +1745,145 @@ namespace Nedev.FileConverters.DocToDocx.Tests
         }
 
         [Fact]
+        public void SampleTableDoc_Conversion_PreservesFirstTableDimensions()
+        {
+            var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+            var inputPath = Path.Combine(repoRoot, "samples", "table.doc");
+            var outputPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".docx");
+
+            try
+            {
+                DocToDocxConverter.Convert(inputPath, outputPath);
+
+                using var archive = new ZipArchive(File.OpenRead(outputPath), ZipArchiveMode.Read);
+                var documentXml = new StreamReader(archive.GetEntry("word/document.xml").Open()).ReadToEnd();
+                var xDocument = XDocument.Parse(documentXml);
+                XNamespace w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+                var firstTable = xDocument
+                    .Descendants(w + "tbl")
+                    .Where(tbl => !tbl.Ancestors(w + "tbl").Any())
+                    .First();
+
+                var rows = firstTable.Elements(w + "tr").ToList();
+                var gridColumns = firstTable.Element(w + "tblGrid")?.Elements(w + "gridCol").ToList();
+
+                Assert.Equal(4, rows.Count);
+                Assert.NotNull(gridColumns);
+                Assert.Equal(3, gridColumns!.Count);
+                Assert.All(rows, row => Assert.Equal(3, row.Elements(w + "tc").Count()));
+
+                var firstRowTexts = rows[0]
+                    .Elements(w + "tc")
+                    .Select(cell => string.Concat(cell.Descendants(w + "t").Select(text => text.Value)))
+                    .ToList();
+
+                Assert.Equal(new[] { "a", "b", "c" }, firstRowTexts);
+            }
+            finally
+            {
+                if (File.Exists(outputPath))
+                    File.Delete(outputPath);
+            }
+        }
+
+        [Fact]
+        public void SampleTableDoc_LoadDocument_PreservesFirstTableEqualColumnWidths()
+        {
+            var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+            var inputPath = Path.Combine(repoRoot, "samples", "table.doc");
+
+            var document = DocToDocxConverter.LoadDocument(inputPath);
+            var firstTable = document.Tables
+                .Where(table => table.ParentTableIndex == null)
+                .OrderBy(table => table.StartParagraphIndex)
+                .First();
+
+            Assert.Equal(3, firstTable.ColumnCount);
+            Assert.True(firstTable.Rows.Count > 0, "Expected the first top-level table to contain at least one row.");
+            Assert.Equal(3, firstTable.Rows[0].Cells.Count);
+            AssertTwipsClose(CmToTwips(5.43), firstTable.Rows[0].Cells[0].Properties?.Width ?? 0);
+            AssertTwipsClose(CmToTwips(5.43), firstTable.Rows[0].Cells[1].Properties?.Width ?? 0);
+            AssertTwipsClose(CmToTwips(5.43), firstTable.Rows[0].Cells[2].Properties?.Width ?? 0);
+        }
+
+        [Fact]
+        public void SampleTableDoc_Conversion_PreservesFirstTableEqualColumnWidths()
+        {
+            var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+            var inputPath = Path.Combine(repoRoot, "samples", "table.doc");
+            var outputPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".docx");
+
+            try
+            {
+                DocToDocxConverter.Convert(inputPath, outputPath);
+
+                using var archive = new ZipArchive(File.OpenRead(outputPath), ZipArchiveMode.Read);
+                var documentXml = new StreamReader(archive.GetEntry("word/document.xml").Open()).ReadToEnd();
+                var xDocument = XDocument.Parse(documentXml);
+                XNamespace w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+                var firstTable = xDocument
+                    .Descendants(w + "tbl")
+                    .Where(tbl => !tbl.Ancestors(w + "tbl").Any())
+                    .First();
+
+                var gridColumns = firstTable.Element(w + "tblGrid")?.Elements(w + "gridCol").ToList();
+
+                Assert.NotNull(gridColumns);
+                Assert.Equal(3, gridColumns!.Count);
+                AssertTwipsClose(CmToTwips(5.43), (int?)gridColumns[0].Attribute(w + "w") ?? 0);
+                AssertTwipsClose(CmToTwips(5.43), (int?)gridColumns[1].Attribute(w + "w") ?? 0);
+                AssertTwipsClose(CmToTwips(5.43), (int?)gridColumns[2].Attribute(w + "w") ?? 0);
+            }
+            finally
+            {
+                if (File.Exists(outputPath))
+                    File.Delete(outputPath);
+            }
+        }
+
+        [Fact]
+        public void SampleTableDoc_LoadDocument_PreservesZeroSectionGutter()
+        {
+            var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+            var inputPath = Path.Combine(repoRoot, "samples", "table.doc");
+
+            var document = DocToDocxConverter.LoadDocument(inputPath);
+
+            Assert.NotEmpty(document.Properties.Sections);
+            Assert.All(document.Properties.Sections, section => Assert.Equal(0, section.Gutter));
+        }
+
+        [Fact]
+        public void SampleTableDoc_Conversion_PreservesZeroSectionGutter()
+        {
+            var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+            var inputPath = Path.Combine(repoRoot, "samples", "table.doc");
+            var outputPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".docx");
+
+            try
+            {
+                DocToDocxConverter.Convert(inputPath, outputPath);
+
+                using var archive = new ZipArchive(File.OpenRead(outputPath), ZipArchiveMode.Read);
+                var documentXml = new StreamReader(archive.GetEntry("word/document.xml").Open()).ReadToEnd();
+                var xDocument = XDocument.Parse(documentXml);
+                XNamespace w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+                var margins = xDocument
+                    .Descendants(w + "sectPr")
+                    .Elements(w + "pgMar")
+                    .ToList();
+
+                Assert.NotEmpty(margins);
+                Assert.All(margins, margin => Assert.Equal(0, (int?)margin.Attribute(w + "gutter") ?? -1));
+            }
+            finally
+            {
+                if (File.Exists(outputPath))
+                    File.Delete(outputPath);
+            }
+        }
+
+        [Fact]
         public void SampleTableDoc_Conversion_PreservesFirstTableFirstColumnAlignment()
         {
             var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
@@ -1861,6 +2000,9 @@ namespace Nedev.FileConverters.DocToDocx.Tests
             Assert.All(fixedRowHeightTable.Rows, row => Assert.Equal(3, row.Cells.Count));
             Assert.Equal("Afdasfdsfdsfvscer测试自动换行", fixedRowHeightTable.Rows[0].Cells[0].Paragraphs[0].Text);
             Assert.Equal("固定行高", fixedRowHeightTable.Rows[1].Cells[0].Paragraphs[0].Text);
+            Assert.NotNull(fixedRowHeightTable.Rows[1].Properties);
+            AssertTwipsClose(CmToTwips(2.79), fixedRowHeightTable.Rows[1].Properties!.Height);
+            Assert.True(fixedRowHeightTable.Rows[1].Properties.HeightIsExact);
             Assert.All(fixedRowHeightTable.Rows.SelectMany(row => row.Cells.Skip(1)), cell =>
                 Assert.True(string.IsNullOrWhiteSpace(cell.Paragraphs[0].Text)));
         }
@@ -1892,6 +2034,11 @@ namespace Nedev.FileConverters.DocToDocx.Tests
                 Assert.Equal(2, rows.Count);
                 Assert.Equal(3, gridColumns.Count);
                 Assert.All(rows, row => Assert.Equal(3, row.Elements(w + "tc").Count()));
+
+                var secondRowHeight = rows[1].Element(w + "trPr")?.Element(w + "trHeight");
+                Assert.NotNull(secondRowHeight);
+                Assert.Equal("exact", secondRowHeight!.Attribute(w + "hRule")?.Value);
+                AssertTwipsClose(CmToTwips(2.79), (int?)secondRowHeight.Attribute(w + "val") ?? 0);
             }
             finally
             {
