@@ -26,17 +26,18 @@ public partial class DocumentWriter
         }
         
         _writer.WriteStartElement("w", "tbl", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
-        
-        // Write table properties
-        WriteTableProperties(table);
-        
-        _writer.WriteStartElement("w", "tblGrid", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+
         int columnCount = table.ColumnCount > 0
             ? table.ColumnCount
             : (table.Rows.Any() ? table.Rows.Max(r => r.Cells.Count) : 0);
-        
+
         var columnWidths = CalculateColumnWidths(table, columnCount);
         
+        // Write table properties
+        WriteTableProperties(table, columnWidths);
+        
+        _writer.WriteStartElement("w", "tblGrid", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+
         for (int i = 0; i < columnCount; i++)
         {
             _writer.WriteStartElement("w", "gridCol", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
@@ -134,7 +135,7 @@ public partial class DocumentWriter
     /// <summary>
     /// Writes table properties (tblPr).
     /// </summary>
-    private void WriteTableProperties(TableModel table)
+    private void WriteTableProperties(TableModel table, int[] columnWidths)
     {
         var tableProperties = ResolveEffectiveTableProperties(table);
 
@@ -148,6 +149,18 @@ public partial class DocumentWriter
             
             _writer.WriteStartElement("w", "tblStyle", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
             _writer.WriteAttributeString("w", "val", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", styleId);
+            _writer.WriteEndElement();
+        }
+
+        if (ShouldWriteNeutralTableLook(tableProperties))
+        {
+            _writer.WriteStartElement("w", "tblLook", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+            _writer.WriteAttributeString("w", "firstRow", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", "0");
+            _writer.WriteAttributeString("w", "lastRow", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", "0");
+            _writer.WriteAttributeString("w", "firstColumn", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", "0");
+            _writer.WriteAttributeString("w", "lastColumn", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", "0");
+            _writer.WriteAttributeString("w", "noHBand", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", "1");
+            _writer.WriteAttributeString("w", "noVBand", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", "1");
             _writer.WriteEndElement();
         }
         
@@ -167,7 +180,35 @@ public partial class DocumentWriter
             _writer.WriteAttributeString("w", "type", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", "auto");
         }
         _writer.WriteEndElement();
-        
+
+        if (ShouldUseFixedTableLayout(table, tableProperties, columnWidths))
+        {
+            _writer.WriteStartElement("w", "tblLayout", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+            _writer.WriteAttributeString("w", "type", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", "fixed");
+            _writer.WriteEndElement();
+        }
+
+        if (tableProperties?.Floating?.HasPositioning == true)
+        {
+            _writer.WriteStartElement("w", "tblpPr", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+            _writer.WriteAttributeString("w", "leftFromText", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", Math.Max(0, tableProperties.Floating.LeftFromText).ToString());
+            _writer.WriteAttributeString("w", "rightFromText", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", Math.Max(0, tableProperties.Floating.RightFromText).ToString());
+            _writer.WriteAttributeString("w", "topFromText", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", Math.Max(0, tableProperties.Floating.TopFromText).ToString());
+            _writer.WriteAttributeString("w", "bottomFromText", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", Math.Max(0, tableProperties.Floating.BottomFromText).ToString());
+            _writer.WriteAttributeString("w", "horzAnchor", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", "margin");
+            _writer.WriteAttributeString("w", "vertAnchor", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", "text");
+            _writer.WriteAttributeString("w", "tblpX", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", tableProperties.Floating.HorizontalPosition.ToString());
+            _writer.WriteAttributeString("w", "tblpY", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", tableProperties.Floating.VerticalPosition.ToString());
+            _writer.WriteEndElement();
+
+            if (!tableProperties.Floating.AllowOverlap)
+            {
+                _writer.WriteStartElement("w", "tblOverlap", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+                _writer.WriteAttributeString("w", "val", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", "never");
+                _writer.WriteEndElement();
+            }
+        }
+
         // Table justification (alignment)
         if (tableProperties != null && tableProperties.Alignment != TableAlignment.Left)
         {
@@ -404,6 +445,7 @@ public partial class DocumentWriter
             CellSpacing = source.CellSpacing,
             Indent = source.Indent,
             Alignment = source.Alignment,
+            Floating = CloneTableFloatingProperties(source.Floating),
             PreferredWidth = source.PreferredWidth,
             BorderTop = source.BorderTop,
             BorderBottom = source.BorderBottom,
@@ -412,6 +454,41 @@ public partial class DocumentWriter
             BorderInsideH = source.BorderInsideH,
             BorderInsideV = source.BorderInsideV,
             Shading = source.Shading
+        };
+    }
+
+    private static bool ShouldUseFixedTableLayout(TableModel table, TableProperties? tableProperties, int[] columnWidths)
+    {
+        if (columnWidths.Length == 0 || columnWidths.Any(width => width <= 0))
+            return false;
+
+        if (tableProperties?.PreferredWidth > 0)
+            return true;
+
+        return table.Rows
+            .SelectMany(row => row.Cells)
+            .Any(cell => cell.Properties?.Width > 0);
+    }
+
+    private static bool ShouldWriteNeutralTableLook(TableProperties? tableProperties)
+    {
+        return tableProperties?.StyleIndex < 0;
+    }
+
+    private static TableFloatingProperties? CloneTableFloatingProperties(TableFloatingProperties? source)
+    {
+        if (source == null)
+            return null;
+
+        return new TableFloatingProperties
+        {
+            HorizontalPosition = source.HorizontalPosition,
+            VerticalPosition = source.VerticalPosition,
+            LeftFromText = source.LeftFromText,
+            RightFromText = source.RightFromText,
+            TopFromText = source.TopFromText,
+            BottomFromText = source.BottomFromText,
+            AllowOverlap = source.AllowOverlap
         };
     }
 

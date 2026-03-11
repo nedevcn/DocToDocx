@@ -792,6 +792,24 @@ public class StylesWriter
         const string wNs = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
         _writer.WriteStartElement("w", "pPr", wNs);
 
+        if (props.KeepWithNext)
+        {
+            _writer.WriteStartElement("w", "keepNext", wNs);
+            _writer.WriteEndElement();
+        }
+
+        if (props.KeepTogether)
+        {
+            _writer.WriteStartElement("w", "keepLines", wNs);
+            _writer.WriteEndElement();
+        }
+
+        if (props.PageBreakBefore)
+        {
+            _writer.WriteStartElement("w", "pageBreakBefore", wNs);
+            _writer.WriteEndElement();
+        }
+
         if (props.BorderTop != null || props.BorderBottom != null || props.BorderLeft != null || props.BorderRight != null)
         {
             _writer.WriteStartElement("w", "pBdr", wNs);
@@ -981,7 +999,7 @@ public class StylesWriter
 
     private void WriteStyleBorder(string position, BorderInfo border)
     {
-        if (border.Style == BorderStyle.None) return;
+        if (border.Style == BorderStyle.None || IsLikelyMalformedBorder(border)) return;
 
         const string wNs = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
         string? themeColor = ColorHelper.GetThemeColorName(border.Color);
@@ -996,6 +1014,11 @@ public class StylesWriter
             _writer.WriteAttributeString("w", "themeColor", wNs, themeColor);
         }
         _writer.WriteEndElement();
+    }
+
+    private static bool IsLikelyMalformedBorder(BorderInfo border)
+    {
+        return border.Width > 96 && border.Color == 255;
     }
 
     private void WriteStyleShading(ShadingInfo shading)

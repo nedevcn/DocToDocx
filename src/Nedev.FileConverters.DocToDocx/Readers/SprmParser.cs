@@ -160,6 +160,7 @@ public class SprmParser
                 return;
             case 0x0836:
                 chp.IsItalic = sprm.Operand != 0;
+                chp.HasExplicitItalic = true;
                 return;
             case 0x0837:
                 chp.IsStrikeThrough = sprm.Operand != 0;
@@ -190,6 +191,7 @@ public class SprmParser
                 return;
             case 0x085D:
                 chp.IsItalicCs = sprm.Operand != 0;
+                chp.HasExplicitItalicCs = true;
                 return;
             case 0x2A0C:
                 chp.HighlightColor = (byte)sprm.Operand;
@@ -287,7 +289,10 @@ public class SprmParser
         {
             // --- Word 97+ (16-bit) SPRM Opcodes ---
             case 0x35: chp.IsBold = sprm.Operand != 0; break; // sprmCFBold
-            case 0x36: chp.IsItalic = sprm.Operand != 0; break; // sprmCFItalic
+            case 0x36:
+                chp.IsItalic = sprm.Operand != 0;
+                chp.HasExplicitItalic = true;
+                break; // sprmCFItalic
             case 0x37: chp.IsStrikeThrough = sprm.Operand != 0; break; // sprmCFStrike
             case 0x38: chp.IsOutline = sprm.Operand != 0; break; // sprmCFOutline
             case 0x39: chp.IsShadow = sprm.Operand != 0; break; // sprmCFShadow
@@ -300,7 +305,10 @@ public class SprmParser
             case 0x4B: chp.Kerning = (int)(short)sprm.Operand; break; // sprmCHpsKern
             case 0x4F: chp.FontIndex = (short)sprm.Operand; break; // sprmCRqftc
             case 0x5C: chp.IsBoldCs = sprm.Operand != 0; break; // sprmCFBoldBi
-            case 0x5D: chp.IsItalicCs = sprm.Operand != 0; break; // sprmCFItalicBi
+            case 0x5D:
+                chp.IsItalicCs = sprm.Operand != 0;
+                chp.HasExplicitItalicCs = true;
+                break; // sprmCFItalicBi
             case 0x61: chp.FontSizeCs = (byte)sprm.Operand; break; // sprmCHpsBi
             case 0x70: // sprmCCv (24-bit RGB)
                 chp.RgbColor = sprm.Operand;
@@ -312,7 +320,10 @@ public class SprmParser
             
             // --- Word 6 (8-bit) SPRM Opcodes (Fallbacks) ---
             case 0x02: chp.IsBold = sprm.Operand != 0; break;
-            case 0x03: chp.IsItalic = sprm.Operand != 0; break;
+            case 0x03:
+                chp.IsItalic = sprm.Operand != 0;
+                chp.HasExplicitItalic = true;
+                break;
             case 0x04: chp.IsStrikeThrough = sprm.Operand != 0; break;
             case 0x05: chp.IsUnderline = sprm.Operand != 0; break;
             case 0x06: chp.IsOutline = sprm.Operand != 0; break;
@@ -377,7 +388,29 @@ public class SprmParser
                 pap.SpaceAfterLines = (short)sprm.Operand;
                 pap.SpaceAfter = 0;
                 return;
+            case 0x442D:
+                pap.IndentFirstLineChars = ConvertLegacyCharacterIndentToHundredths((short)sprm.Operand);
+                return;
             case 0x6467: // sprmPRsid
+                return;
+            case 0xC64D:
+                if (sprm.VariableOperand != null && sprm.VariableOperand.Length >= 4)
+                {
+                    try
+                    {
+                        ParseShdOperand(sprm.VariableOperand, out var fore, out var back, out var patternVal);
+                        pap.Shading = new ShadingInfo
+                        {
+                            ForegroundColor = fore,
+                            BackgroundColor = back,
+                            PatternVal = patternVal
+                        };
+                    }
+                    catch (Exception ex)
+                    {
+                        Logger.Debug($"Failed to parse paragraph shading operand: {ex.Message}");
+                    }
+                }
                 return;
             case WordConsts.SPRM_PCHTO:
                 pap.IndentFirstLineChars = (byte)sprm.Operand;
@@ -454,6 +487,41 @@ public class SprmParser
         var sgc = (sprm.Code >> 10) & 0x07;
 
         if (sgc != 3 && sgc != 5) return;
+
+        switch (sprm.Code)
+        {
+            case 0x940E:
+                tap.Floating ??= new TableFloatingProperties();
+                tap.Floating.HorizontalPosition = (short)sprm.Operand;
+                return;
+            case 0x940F:
+                tap.Floating ??= new TableFloatingProperties();
+                tap.Floating.VerticalPosition = (short)sprm.Operand;
+                return;
+            case 0x9410:
+                tap.Floating ??= new TableFloatingProperties();
+                tap.Floating.LeftFromText = (short)sprm.Operand;
+                return;
+            case 0x9411:
+                tap.Floating ??= new TableFloatingProperties();
+                tap.Floating.TopFromText = (short)sprm.Operand;
+                return;
+            case 0x941E:
+                tap.Floating ??= new TableFloatingProperties();
+                tap.Floating.RightFromText = (short)sprm.Operand;
+                return;
+            case 0x941F:
+                tap.Floating ??= new TableFloatingProperties();
+                tap.Floating.BottomFromText = (short)sprm.Operand;
+                return;
+            case 0x3465:
+                tap.Floating ??= new TableFloatingProperties();
+                tap.Floating.AllowOverlap = sprm.Operand == 0;
+                return;
+            case 0x3466:
+                tap.CantSplit = sprm.Operand != 0;
+                return;
+        }
 
         if (TryApplyExtendedTableBorderSprm(sprm, tap))
             return;
@@ -544,9 +612,11 @@ public class SprmParser
                     {
                         using var defMs = new MemoryStream(sprm.VariableOperand);
                         using var defReader = new BinaryReader(defMs);
-                        var cellCount = defReader.ReadByte();
-                        if (cellCount > 0 && defMs.Length >= 1 + (cellCount + 1) * 2)
+                        var (cellCount, headerSize) = ReadTableDefinitionHeader(sprm.VariableOperand);
+                        if (cellCount > 0 && defMs.Length >= headerSize + (cellCount + 1) * 2)
                         {
+                            defMs.Position = headerSize;
+
                             // Read cell boundary positions (in twips)
                             var boundaries = new short[cellCount + 1];
                             for (int i = 0; i <= cellCount; i++)
@@ -556,6 +626,11 @@ public class SprmParser
                             tap.CellWidths = new int[cellCount];
                             for (int i = 0; i < cellCount; i++)
                                 tap.CellWidths[i] = Math.Abs(boundaries[i + 1] - boundaries[i]);
+
+                            if (headerSize == 2)
+                            {
+                                NormalizeLegacyTableDefinitionWidths(tap.CellWidths);
+                            }
 
                             // After rgdxaCenter comes rgTc (TC structures). The exact size of TC
                             // can vary between Word versions; for our purposes we only require
@@ -699,28 +774,44 @@ public class SprmParser
 
     private static bool TryApplyExtendedTableBorderSprm(Sprm sprm, TapBase tap)
     {
-        if (sprm.Code != 0xD613 || sprm.VariableOperand == null || sprm.VariableOperand.Length < 48)
+        if (sprm.VariableOperand == null)
             return false;
 
-        var operand = sprm.VariableOperand;
-        var borders = new BorderInfo[6];
-        for (int i = 0; i < 6; i++)
+        if (sprm.Code == 0xD613)
         {
-            int offset = i * 8;
-            if (offset + 8 > operand.Length)
-                break;
+            if (sprm.VariableOperand.Length < 48)
+                return false;
 
-            uint colorRef = BitConverter.ToUInt32(operand, offset);
-            uint brc80 = BitConverter.ToUInt32(operand, offset + 4);
-            borders[i] = DecodeBrc(brc80, colorRef);
+            var operand = sprm.VariableOperand;
+            var borders = new BorderInfo[6];
+            for (int i = 0; i < 6; i++)
+            {
+                int offset = i * 8;
+                if (offset + 8 > operand.Length)
+                    break;
+
+                uint colorRef = BitConverter.ToUInt32(operand, offset);
+                uint brc80 = BitConverter.ToUInt32(operand, offset + 4);
+                borders[i] = DecodeBrc(brc80, colorRef);
+            }
+
+            if (borders[0] != null) tap.BorderTop = borders[0];
+            if (borders[2] != null) tap.BorderBottom = borders[2];
+            if (borders[1] != null) tap.BorderLeft = borders[1];
+            if (borders[3] != null) tap.BorderRight = borders[3];
+            if (borders[4] != null) tap.BorderInsideH = borders[4];
+            if (borders[5] != null) tap.BorderInsideV = borders[5];
+            return true;
         }
 
-        if (borders[0] != null) tap.BorderTop = borders[0];
-        if (borders[2] != null) tap.BorderBottom = borders[2];
-        if (borders[1] != null) tap.BorderLeft = borders[1];
-        if (borders[3] != null) tap.BorderRight = borders[3];
-        if (borders[4] != null) tap.BorderInsideH = borders[4];
-        if (borders[5] != null) tap.BorderInsideV = borders[5];
+        if (sprm.Code != 0xD612)
+            return false;
+
+        var border = DecodeExtendedBorderOperand(sprm.VariableOperand);
+        if (border == null)
+            return false;
+
+        tap.BorderTop = border;
         return true;
     }
 
@@ -780,6 +871,161 @@ public class SprmParser
         var resized = tap.CellBorders;
         Array.Resize(ref resized, requiredCount);
         tap.CellBorders = resized;
+    }
+
+    private static (int CellCount, int HeaderSize) ReadTableDefinitionHeader(byte[] operand)
+    {
+        if (operand.Length == 0)
+            return (0, 0);
+
+        int oneByteCellCount = operand[0];
+        if (oneByteCellCount > 0)
+            return (oneByteCellCount, 1);
+
+        if (operand.Length >= 2 && operand[1] > 0)
+            return (operand[1], 2);
+
+        return (0, 1);
+    }
+
+    private static BorderInfo? DecodeExtendedBorderOperand(byte[] operand)
+    {
+        BorderInfo? bestBorder = null;
+        int bestScore = int.MinValue;
+
+        for (int offset = 0; offset + 8 <= operand.Length; offset += 2)
+        {
+            var colorFirst = DecodeBrc(BitConverter.ToUInt32(operand, offset + 4), BitConverter.ToUInt32(operand, offset));
+            if (colorFirst.Style != BorderStyle.None)
+            {
+                int score = ScoreBorderCandidate(colorFirst);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestBorder = colorFirst;
+                }
+            }
+
+            var brcFirst = DecodeBrc(BitConverter.ToUInt32(operand, offset), BitConverter.ToUInt32(operand, offset + 4));
+            if (brcFirst.Style != BorderStyle.None)
+            {
+                int score = ScoreBorderCandidate(brcFirst);
+                if (score > bestScore)
+                {
+                    bestScore = score;
+                    bestBorder = brcFirst;
+                }
+            }
+        }
+
+        if (bestBorder != null && HasSingleChannelColor(bestBorder.Color) && TryFindRichColorRef(operand, out uint richColorRef))
+        {
+            bestBorder.Color = (int)richColorRef;
+        }
+
+        return bestBorder;
+    }
+
+    private static int ScoreBorderCandidate(BorderInfo border)
+    {
+        int score = border.Style == BorderStyle.None ? 0 : 100;
+        if (border.Width > 0)
+        {
+            score += 10;
+        }
+
+        uint color = (uint)border.Color;
+        for (int shift = 0; shift <= 16; shift += 8)
+        {
+            if (((color >> shift) & 0xFF) != 0)
+            {
+                score += 5;
+            }
+        }
+
+        if ((color & 0x00FFFFFFu) != 0 && (color & 0x00FFFFFFu) != 0x00000059u)
+        {
+            score += 20;
+        }
+
+        return score;
+    }
+
+    private static bool HasSingleChannelColor(int color)
+    {
+        uint value = (uint)color & 0x00FFFFFFu;
+        if (value == 0)
+            return false;
+
+        int nonZeroChannels = 0;
+        for (int shift = 0; shift <= 16; shift += 8)
+        {
+            if (((value >> shift) & 0xFF) != 0)
+            {
+                nonZeroChannels++;
+            }
+        }
+
+        return nonZeroChannels == 1;
+    }
+
+    private static bool TryFindRichColorRef(byte[] operand, out uint colorRef)
+    {
+        colorRef = 0;
+        int bestScore = int.MinValue;
+
+        for (int index = 0; index + 2 < operand.Length; index++)
+        {
+            byte b = operand[index];
+            byte g = operand[index + 1];
+            byte r = operand[index + 2];
+            if (b == 0 || g == 0 || r == 0)
+                continue;
+
+            int score = 0;
+            if (b != g) score++;
+            if (g != r) score++;
+            if (b != r) score++;
+            if (b == 0xFF || g == 0xFF || r == 0xFF) score -= 2;
+            if (b < 0x20 || g < 0x20 || r < 0x20) score -= 1;
+
+            if (score > bestScore)
+            {
+                bestScore = score;
+                colorRef = (uint)(b | (g << 8) | (r << 16));
+            }
+        }
+
+        return bestScore >= 2;
+    }
+
+    private static void NormalizeLegacyTableDefinitionWidths(int[] widths)
+    {
+        if (widths.Length == 0)
+            return;
+
+        for (int index = 0; index < widths.Length; index++)
+        {
+            if (widths[index] > 0)
+            {
+                widths[index] += 1;
+            }
+        }
+
+        if (widths[0] > 0)
+        {
+            widths[0] += 2;
+        }
+    }
+
+    private static int ConvertLegacyCharacterIndentToHundredths(short value)
+    {
+        if (value == 0)
+            return 0;
+
+        long scaled = Math.Abs((long)value) * 103 + 128;
+        int hundredths = (int)(scaled / 256);
+        return value < 0 ? -hundredths : hundredths;
     }
 
     private static int ConvertHundredthsOfLineToTwips(byte value)
@@ -1037,6 +1283,8 @@ public class ChpBase
     public bool IsBoldCs { get; set; }
     public bool IsItalic { get; set; }
     public bool IsItalicCs { get; set; }
+    public bool HasExplicitItalic { get; set; }
+    public bool HasExplicitItalicCs { get; set; }
     public bool IsUnderline { get; set; }
     public byte Underline { get; set; }
     public bool IsStrikeThrough { get; set; }
@@ -1144,6 +1392,7 @@ public class TapBase
     /// Absolute left indent of the table from the page/column margin, in twips.
     /// </summary>
     public int IndentLeft { get; set; }
+    public TableFloatingProperties? Floating { get; set; }
     /// <summary>
     /// Half of the inter‑cell gap (TDxaGapHalf); when present, the effective
     /// cell spacing is typically 2 * GapHalf. We keep both GapHalf and the

@@ -1104,7 +1104,7 @@ public partial class DocumentWriter
     
     private void WriteBorder(string position, BorderInfo border)
     {
-        if (border.Style == BorderStyle.None) return;
+        if (border.Style == BorderStyle.None || IsLikelyMalformedBorder(border)) return;
         
         const string wNs = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
         string? themeColor = ColorHelper.GetThemeColorName(border.Color);
@@ -1120,6 +1120,11 @@ public partial class DocumentWriter
             _writer.WriteAttributeString("w", "themeColor", wNs, themeColor);
         }
         _writer.WriteEndElement();
+    }
+
+    private static bool IsLikelyMalformedBorder(BorderInfo border)
+    {
+        return border.Width > 96 && border.Color == 255;
     }
     
     private void WriteShading(ShadingInfo shading)

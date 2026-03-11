@@ -65,6 +65,7 @@ public class TableProperties
     public int CellSpacing { get; set; }
     public int Indent { get; set; }
     public TableAlignment Alignment { get; set; } = TableAlignment.Left;
+    public TableFloatingProperties? Floating { get; set; }
     
     /// <summary>
     /// Preferred table width in twips when specified by the TAP. A value of 0
@@ -92,6 +93,7 @@ public class TableProperties
         if (Indent == 0 && baseProps.Indent != 0) Indent = baseProps.Indent;
         if (Alignment == TableAlignment.Left && baseProps.Alignment != TableAlignment.Left) Alignment = baseProps.Alignment;
         if (PreferredWidth == 0 && baseProps.PreferredWidth != 0) PreferredWidth = baseProps.PreferredWidth;
+        Floating ??= baseProps.Floating;
 
         BorderTop ??= baseProps.BorderTop;
         BorderBottom ??= baseProps.BorderBottom;
@@ -108,6 +110,26 @@ public enum TableAlignment
     Left,
     Center,
     Right
+}
+
+public class TableFloatingProperties
+{
+    public int HorizontalPosition { get; set; }
+    public int VerticalPosition { get; set; }
+    public int LeftFromText { get; set; }
+    public int RightFromText { get; set; }
+    public int TopFromText { get; set; }
+    public int BottomFromText { get; set; }
+    public bool AllowOverlap { get; set; } = true;
+
+    public bool HasPositioning =>
+        HorizontalPosition != 0 ||
+        VerticalPosition != 0 ||
+        LeftFromText != 0 ||
+        RightFromText != 0 ||
+        TopFromText != 0 ||
+        BottomFromText != 0 ||
+        !AllowOverlap;
 }
 
 /// <summary>

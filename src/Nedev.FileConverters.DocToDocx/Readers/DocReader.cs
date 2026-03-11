@@ -1511,7 +1511,9 @@ public class DocReader : IDisposable
              a.IsBold == b.IsBold &&
              a.IsBoldCs == b.IsBoldCs &&
              a.IsItalic == b.IsItalic &&
+             a.HasExplicitItalic == b.HasExplicitItalic &&
              a.IsItalicCs == b.IsItalicCs &&
+             a.HasExplicitItalicCs == b.HasExplicitItalicCs &&
                          a.IsSuperscript == b.IsSuperscript &&
                          a.IsSubscript == b.IsSubscript &&
                a.IsStrikeThrough == b.IsStrikeThrough &&
@@ -1562,6 +1564,8 @@ public class DocReader : IDisposable
             IsBoldCs = source.IsBoldCs,
             IsItalic = source.IsItalic,
             IsItalicCs = source.IsItalicCs,
+            HasExplicitItalic = source.HasExplicitItalic,
+            HasExplicitItalicCs = source.HasExplicitItalicCs,
             IsUnderline = source.IsUnderline,
             Underline = source.Underline,
             IsStrikeThrough = source.IsStrikeThrough,
@@ -1617,8 +1621,25 @@ public class DocReader : IDisposable
         if (overlay.FontSizeCs != 24) target.FontSizeCs = overlay.FontSizeCs;
         target.IsBold |= overlay.IsBold;
         target.IsBoldCs |= overlay.IsBoldCs;
-        target.IsItalic |= overlay.IsItalic;
-        target.IsItalicCs |= overlay.IsItalicCs;
+        if (overlay.HasExplicitItalic)
+        {
+            target.IsItalic = overlay.IsItalic;
+            target.HasExplicitItalic = true;
+        }
+        else
+        {
+            target.IsItalic |= overlay.IsItalic;
+        }
+
+        if (overlay.HasExplicitItalicCs)
+        {
+            target.IsItalicCs = overlay.IsItalicCs;
+            target.HasExplicitItalicCs = true;
+        }
+        else
+        {
+            target.IsItalicCs |= overlay.IsItalicCs;
+        }
         target.IsUnderline |= overlay.IsUnderline;
         if (overlay.Underline != 0) target.Underline = overlay.Underline;
         target.IsStrikeThrough |= overlay.IsStrikeThrough;
@@ -1742,6 +1763,17 @@ public class DocReader : IDisposable
 
         var directProps = _fkpParser!.ConvertToRunProperties(directChp, Document.Styles);
         runProps = MergeRunProperties(runProps, directProps);
+
+        if (directChp.HasExplicitItalic)
+        {
+            runProps.IsItalic = directProps.IsItalic;
+        }
+
+        if (directChp.HasExplicitItalicCs)
+        {
+            runProps.IsItalicCs = directProps.IsItalicCs;
+        }
+
         return runProps;
     }
 
@@ -2011,6 +2043,15 @@ public class DocReader : IDisposable
             if (paragraphProps.SpaceAfter == 0 && paragraphProps.SpaceAfterLines == 0 && sp.SpaceAfterLines != 0)
                 paragraphProps.SpaceAfterLines = sp.SpaceAfterLines;
 
+            if (!paragraphProps.KeepWithNext && sp.KeepWithNext)
+                paragraphProps.KeepWithNext = true;
+
+            if (!paragraphProps.KeepTogether && sp.KeepTogether)
+                paragraphProps.KeepTogether = true;
+
+            if (!paragraphProps.PageBreakBefore && sp.PageBreakBefore)
+                paragraphProps.PageBreakBefore = true;
+
             paragraphProps.BorderTop ??= sp.BorderTop;
             paragraphProps.BorderBottom ??= sp.BorderBottom;
             paragraphProps.BorderLeft ??= sp.BorderLeft;
@@ -2029,8 +2070,9 @@ public class DocReader : IDisposable
             }
         }
 
-        // Run-level defaults: apply style run properties to each run when
-        // the run hasn't specified its own font/color/etc.
+        // Visible text runs already receive paragraph-style defaults during CHP
+        // extraction. Reapplying boolean defaults here can incorrectly force
+        // style formatting like italic back onto runs that explicitly clear it.
         if (style.RunProperties == null || paragraph.Runs == null || paragraph.Runs.Count == 0)
             return;
 
@@ -2038,41 +2080,12 @@ public class DocReader : IDisposable
 
         foreach (var run in paragraph.Runs)
         {
-            run.Properties ??= new RunProperties();
-            var rp = run.Properties;
-
-            // Font name
-            if (string.IsNullOrEmpty(rp.FontName) && !string.IsNullOrEmpty(sr.FontName))
-                rp.FontName = sr.FontName;
-
-            // Font size (24 half-points = 12pt default)
-            if (rp.FontSize == 24 && sr.FontSize != 24)
-                rp.FontSize = sr.FontSize;
-
-            // Bold / italic
-            if (!rp.IsBold && sr.IsBold)
-                rp.IsBold = true;
-            if (!rp.IsItalic && sr.IsItalic)
-                rp.IsItalic = true;
-
-            // Color / RGB color: 0 + !HasRgbColor = "auto"
-            if (!rp.HasRgbColor && rp.Color == 0)
+            if (run.Properties == null)
             {
-                if (sr.HasRgbColor)
-                {
-                    rp.RgbColor = sr.RgbColor;
-                    rp.HasRgbColor = true;
-                }
-                else if (sr.Color != 0)
-                {
-                    rp.Color = sr.Color;
-                }
+                run.Properties = CloneRunProperties(sr);
             }
 
-            // Highlight
-            if (rp.HighlightColor == 0 && sr.HighlightColor != 0)
-                rp.HighlightColor = sr.HighlightColor;
-
+            var rp = run.Properties;
             ApplyEastAsiaDefaultFont(run, rp);
         }
     }

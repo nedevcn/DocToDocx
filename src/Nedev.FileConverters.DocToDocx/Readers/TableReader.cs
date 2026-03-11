@@ -218,6 +218,8 @@ public class TableReader
                     props.PreferredWidth = tapForParagraph.TableWidth;
                 }
 
+                props.Floating = MergeFloatingTableProperties(props.Floating, tapForParagraph.Floating);
+
                 // Borders - only set if not already present
                 props.BorderTop ??= tapForParagraph.BorderTop;
                 props.BorderBottom ??= tapForParagraph.BorderBottom;
@@ -381,21 +383,21 @@ public class TableReader
 
     private static void ApplyFallbackHeaderShading(DocumentModel document)
     {
-        var fallbackShading = CreateFallbackHeaderShading(document.Theme);
-        if (fallbackShading == null)
-            return;
-
         foreach (var table in document.Tables)
         {
-            ApplyFallbackHeaderShading(table, fallbackShading);
+            ApplyFallbackHeaderShading(table, document.Theme);
         }
     }
 
-    private static void ApplyFallbackHeaderShading(TableModel table, ShadingInfo fallbackShading)
+    private static void ApplyFallbackHeaderShading(TableModel table, ThemeModel theme)
     {
         foreach (var row in table.Rows)
         {
             if (!NeedsFallbackHeaderShading(row))
+                continue;
+
+            var fallbackShading = CreateFallbackHeaderShading(row, table, theme);
+            if (fallbackShading == null)
                 continue;
 
             foreach (var cell in row.Cells)
@@ -413,7 +415,7 @@ public class TableReader
                 {
                     if (paragraph.NestedTable != null)
                     {
-                        ApplyFallbackHeaderShading(paragraph.NestedTable, fallbackShading);
+                        ApplyFallbackHeaderShading(paragraph.NestedTable, theme);
                     }
                 }
             }
@@ -469,14 +471,9 @@ public class TableReader
         return props.Color == 8;
     }
 
-    private static ShadingInfo? CreateFallbackHeaderShading(ThemeModel theme)
+    private static ShadingInfo? CreateFallbackHeaderShading(TableRowModel row, TableModel table, ThemeModel theme)
     {
-        // Prefer the document theme accent so missing table-style fills still match
-        // the rest of the document palette when the binary source only preserves
-        // inverse-video text.
-        int backgroundColor = theme.ColorMap.ContainsKey("accent1")
-            ? 0x01000004
-            : 0x00BD814F;
+        int backgroundColor = ResolveFallbackHeaderBackgroundColor(row, table, theme);
 
         return new ShadingInfo
         {
@@ -484,6 +481,77 @@ public class TableReader
             PatternVal = "clear",
             BackgroundColor = backgroundColor
         };
+    }
+
+    private static int ResolveFallbackHeaderBackgroundColor(TableRowModel row, TableModel table, ThemeModel theme)
+    {
+        var borderColor = FindDominantBorderColor(row, table);
+        if (borderColor != 0)
+            return borderColor;
+
+        // Fall back to the theme accent only when the table itself does not expose
+        // a stronger color signal in its borders.
+        return theme.ColorMap.ContainsKey("accent1")
+            ? 0x01000004
+            : 0x00BD814F;
+    }
+
+    private static int FindDominantBorderColor(TableRowModel row, TableModel table)
+    {
+        var candidates = row.Cells
+            .SelectMany(GetBorderCandidates)
+            .Concat(GetBorderCandidates(table.Properties))
+            .Where(color => color != 0)
+            .GroupBy(color => color)
+            .OrderByDescending(group => group.Count())
+            .ThenByDescending(group => group.Key)
+            .Select(group => group.Key)
+            .FirstOrDefault();
+
+        return candidates;
+    }
+
+    private static IEnumerable<int> GetBorderCandidates(TableCellModel cell)
+    {
+        if (cell.Properties == null)
+            yield break;
+
+        foreach (var color in GetBorderCandidates(cell.Properties))
+            yield return color;
+    }
+
+    private static IEnumerable<int> GetBorderCandidates(TableCellProperties? properties)
+    {
+        if (properties == null)
+            yield break;
+
+        if (properties.BorderTop?.Color is int top && top != 0)
+            yield return top;
+        if (properties.BorderBottom?.Color is int bottom && bottom != 0)
+            yield return bottom;
+        if (properties.BorderLeft?.Color is int left && left != 0)
+            yield return left;
+        if (properties.BorderRight?.Color is int right && right != 0)
+            yield return right;
+    }
+
+    private static IEnumerable<int> GetBorderCandidates(TableProperties? properties)
+    {
+        if (properties == null)
+            yield break;
+
+        if (properties.BorderTop?.Color is int top && top != 0)
+            yield return top;
+        if (properties.BorderBottom?.Color is int bottom && bottom != 0)
+            yield return bottom;
+        if (properties.BorderLeft?.Color is int left && left != 0)
+            yield return left;
+        if (properties.BorderRight?.Color is int right && right != 0)
+            yield return right;
+        if (properties.BorderInsideH?.Color is int insideH && insideH != 0)
+            yield return insideH;
+        if (properties.BorderInsideV?.Color is int insideV && insideV != 0)
+            yield return insideV;
     }
 
     private static ShadingInfo CloneShading(ShadingInfo shading)
@@ -1160,6 +1228,20 @@ public class TableReader
             int lastRecoveredRowIndex = rowCandidates.Count - 1;
             recoveredRowTaps[lastRecoveredRowIndex] = MergeDeferredRowTap(recoveredRowTaps[lastRecoveredRowIndex], tapForParagraph);
         }
+
+        while (TryExtractTrailingCompactRowParagraph(rowCandidates, compactColumnCount, out var trailingCell))
+        {
+            _pendingRecoveredParagraphInsertions.Add((paragraph.Index, new List<ParagraphModel> { BuildRecoveredParagraph(trailingCell) }));
+            if (recoveredRowTaps.Count > rowCandidates.Count)
+            {
+                recoveredRowTaps.RemoveAt(recoveredRowTaps.Count - 1);
+            }
+            if (recoveredRowAlignments.Count > rowCandidates.Count)
+            {
+                recoveredRowAlignments.RemoveAt(recoveredRowAlignments.Count - 1);
+            }
+        }
+
         int recoveredRowIndex = 0;
 
         foreach (var recoveredCells in rowCandidates)
@@ -1193,6 +1275,28 @@ public class TableReader
         return true;
     }
 
+    private static bool TryExtractTrailingCompactRowParagraph(List<List<RecoveredCell>> rowCandidates, int columnCount, out RecoveredCell trailingCell)
+    {
+        trailingCell = new RecoveredCell();
+        if (rowCandidates.Count == 0 || columnCount <= 1)
+            return false;
+
+        var lastRow = rowCandidates[^1];
+        if (lastRow.Count != 1 || string.IsNullOrWhiteSpace(lastRow[0].Text))
+            return false;
+
+        if (rowCandidates.Count < 2)
+            return false;
+
+        var previousRow = rowCandidates[^2];
+        if (previousRow.Count < columnCount)
+            return false;
+
+        trailingCell = lastRow[0];
+        rowCandidates.RemoveAt(rowCandidates.Count - 1);
+        return true;
+    }
+
     private bool TryConsumeStructuredCompactGridParagraph(ParagraphModel paragraph, TableContext ctx, TapBase? tapForParagraph)
     {
         if (!TryParseCompactGridParagraph(paragraph, out var grid))
@@ -1201,6 +1305,21 @@ public class TableReader
         var rowAlignments = GetCompactRowAlignments(paragraph, grid.Rows.Count + (grid.TitleCell != null ? 1 : 0));
         var rowTaps = GetCompactRowTaps(paragraph, grid.Rows.Count + (grid.TitleCell != null ? 1 : 0), tapForParagraph);
         var widthTemplate = BuildCompactGridWidthTemplate(tapForParagraph, grid.ColumnCount, grid.BaseGap, grid.SlotCount);
+
+        // Compact-grid tables are synthesized from a flattened paragraph stream.
+        // Paragraph-level TAP borders/shading are often row-scoped formatting, not
+        // reliable whole-table properties, so clear any speculative table-level
+        // border/shading that may have been pre-populated before compact parsing.
+        if (ctx.Table.Properties != null)
+        {
+            ctx.Table.Properties.BorderTop = null;
+            ctx.Table.Properties.BorderBottom = null;
+            ctx.Table.Properties.BorderLeft = null;
+            ctx.Table.Properties.BorderRight = null;
+            ctx.Table.Properties.BorderInsideH = null;
+            ctx.Table.Properties.BorderInsideV = null;
+            ctx.Table.Properties.Shading = null;
+        }
 
         int targetRowIndex = 0;
         if (grid.TitleCell != null)
@@ -1557,6 +1676,20 @@ public class TableReader
                 cell.Properties.BorderRight = cellBorders.Right;
             }
         }
+
+        if (rowTap?.CellShadings != null && rowTap.CellShadings.Length > columnIndex)
+        {
+            var shading = rowTap.CellShadings[columnIndex];
+            if (shading != null)
+            {
+                cell.Properties.Shading = shading;
+            }
+        }
+
+        if (rowTap?.CellVerticalAlignments != null && rowTap.CellVerticalAlignments.Length > columnIndex)
+        {
+            cell.Properties.VerticalAlignment = (VerticalAlignment)rowTap.CellVerticalAlignments[columnIndex];
+        }
     }
 
     private static void ApplyCompactGridTableProperties(TableModel table, TapBase? rowTap)
@@ -1593,13 +1726,8 @@ public class TableReader
             table.Properties.PreferredWidth = rowTap.TableWidth;
         }
 
-        table.Properties.BorderTop ??= rowTap.BorderTop;
-        table.Properties.BorderBottom ??= rowTap.BorderBottom;
-        table.Properties.BorderLeft ??= rowTap.BorderLeft;
-        table.Properties.BorderRight ??= rowTap.BorderRight;
-        table.Properties.BorderInsideH ??= rowTap.BorderInsideH;
-        table.Properties.BorderInsideV ??= rowTap.BorderInsideV;
-        table.Properties.Shading ??= rowTap.Shading;
+        table.Properties.Floating = MergeFloatingTableProperties(table.Properties.Floating, rowTap.Floating);
+
     }
 
     private List<TapBase?> GetCompactRowTaps(ParagraphModel paragraph, int expectedRowCount, TapBase? fallbackTap)
@@ -1660,6 +1788,7 @@ public class TableReader
                left.TableWidth == right.TableWidth &&
                left.IndentLeft == right.IndentLeft &&
                left.CellSpacing == right.CellSpacing &&
+             FloatingEqual(left.Floating, right.Floating) &&
                BordersEqual(left.BorderTop, right.BorderTop) &&
                BordersEqual(left.BorderBottom, right.BorderBottom) &&
                BordersEqual(left.BorderLeft, right.BorderLeft) &&
@@ -1683,6 +1812,23 @@ public class TableReader
                left.Width == right.Width &&
                left.Space == right.Space &&
                left.Color == right.Color;
+    }
+
+    private static bool FloatingEqual(TableFloatingProperties? left, TableFloatingProperties? right)
+    {
+        if (ReferenceEquals(left, right))
+            return true;
+
+        if (left == null || right == null)
+            return false;
+
+        return left.HorizontalPosition == right.HorizontalPosition &&
+               left.VerticalPosition == right.VerticalPosition &&
+               left.LeftFromText == right.LeftFromText &&
+               left.RightFromText == right.RightFromText &&
+               left.TopFromText == right.TopFromText &&
+               left.BottomFromText == right.BottomFromText &&
+               left.AllowOverlap == right.AllowOverlap;
     }
 
     private static bool CellBordersEqual(CellBorderInfo?[]? left, CellBorderInfo?[]? right)
@@ -1730,6 +1876,7 @@ public class TableReader
             CellSpacing = source.CellSpacing,
             TableWidth = source.TableWidth,
             IndentLeft = source.IndentLeft,
+            Floating = CloneFloatingTableProperties(source.Floating),
             GapHalf = source.GapHalf,
             CellWidths = source.CellWidths?.ToArray(),
             CantSplit = source.CantSplit,
@@ -1963,7 +2110,7 @@ public class TableReader
             int score = GetTapScore(tap);
             if (preferForGeometry)
             {
-                if (score <= bestRunScore)
+                if (score < bestRunScore)
                     return;
 
                 bestRunTap = CloneTapBase(tap);
@@ -1971,7 +2118,7 @@ public class TableReader
                 return;
             }
 
-            if (score <= bestParagraphScore)
+            if (score < bestParagraphScore)
                 return;
 
             bestParagraphTap = CloneTapBase(tap);
@@ -2003,21 +2150,35 @@ public class TableReader
 
         if (paragraphStartCp >= 0 && paragraphEndCp >= paragraphStartCp)
         {
+            bool foundTapInParagraphRange = false;
             for (int cp = paragraphStartCp; cp <= paragraphEndCp; cp++)
             {
                 var pap = _fkpParser.GetPapAtCp(cp);
+                foundTapInParagraphRange |= pap?.Tap != null;
                 ConsiderTap(pap?.Tap, preferForGeometry: false);
             }
 
-            if (bestRunTap == null && bestParagraphTap == null)
+            if (!foundTapInParagraphRange)
             {
-                int probeStartCp = Math.Max(0, paragraphStartCp - 16);
-                for (int cp = paragraphStartCp - 1; cp >= probeStartCp; cp--)
+                int probeEndCp = paragraphEndCp + 64;
+                for (int cp = paragraphEndCp + 1; cp <= probeEndCp; cp++)
                 {
                     var pap = _fkpParser.GetPapAtCp(cp);
                     ConsiderTap(pap?.Tap, preferForGeometry: false);
                     if (bestParagraphTap != null && bestParagraphScore > 0)
                         break;
+                }
+
+                if (bestRunTap == null && bestParagraphTap == null)
+                {
+                    int probeStartCp = Math.Max(0, paragraphStartCp - 16);
+                    for (int cp = paragraphStartCp - 1; cp >= probeStartCp; cp--)
+                    {
+                        var pap = _fkpParser.GetPapAtCp(cp);
+                        ConsiderTap(pap?.Tap, preferForGeometry: false);
+                        if (bestParagraphTap != null && bestParagraphScore > 0)
+                            break;
+                    }
                 }
             }
         }
@@ -2616,11 +2777,62 @@ public class TableReader
         }
 
         lastRow.Properties.AllowBreakAcrossPages = !tap.CantSplit;
+        ApplyTapCellProperties(lastRow, tap);
 
         if (ctx.RowTaps.Count == 0)
             return;
 
         ctx.RowTaps[^1] = MergeDeferredRowTap(ctx.RowTaps[^1], tap);
+    }
+
+    private static void ApplyTapCellProperties(TableRowModel row, TapBase rowTap)
+    {
+        foreach (var cell in row.Cells)
+        {
+            int columnIndex = Math.Max(0, cell.ColumnIndex);
+            cell.Properties ??= new TableCellProperties();
+
+            if (rowTap.CellWidths != null && rowTap.CellWidths.Length > columnIndex)
+            {
+                int width = 0;
+                int columnSpan = Math.Max(1, cell.ColumnSpan);
+                for (int offset = 0; offset < columnSpan && columnIndex + offset < rowTap.CellWidths.Length; offset++)
+                {
+                    width += rowTap.CellWidths[columnIndex + offset];
+                }
+
+                if (width > 0)
+                {
+                    cell.Properties.Width = width;
+                }
+            }
+
+            if (rowTap.CellBorders != null && rowTap.CellBorders.Length > columnIndex)
+            {
+                var cellBorders = rowTap.CellBorders[columnIndex];
+                if (cellBorders != null)
+                {
+                    cell.Properties.BorderTop = cellBorders.Top;
+                    cell.Properties.BorderBottom = cellBorders.Bottom;
+                    cell.Properties.BorderLeft = cellBorders.Left;
+                    cell.Properties.BorderRight = cellBorders.Right;
+                }
+            }
+
+            if (rowTap.CellShadings != null && rowTap.CellShadings.Length > columnIndex)
+            {
+                var shading = rowTap.CellShadings[columnIndex];
+                if (shading != null)
+                {
+                    cell.Properties.Shading = shading;
+                }
+            }
+
+            if (rowTap.CellVerticalAlignments != null && rowTap.CellVerticalAlignments.Length > columnIndex)
+            {
+                cell.Properties.VerticalAlignment = (VerticalAlignment)rowTap.CellVerticalAlignments[columnIndex];
+            }
+        }
     }
 
     private static TapBase MergeDeferredRowTap(TapBase? existingTap, TapBase deferredTap)
@@ -2663,7 +2875,123 @@ public class TableReader
             }
         }
 
+        if (deferredTap.CellWidths != null && deferredTap.CellWidths.Any(width => width > 0))
+        {
+            existingTap.CellWidths = deferredTap.CellWidths.ToArray();
+        }
+
+        if (existingTap.TableWidth == 0 && deferredTap.TableWidth != 0)
+        {
+            existingTap.TableWidth = deferredTap.TableWidth;
+        }
+
+        if (existingTap.IndentLeft == 0 && deferredTap.IndentLeft != 0)
+        {
+            existingTap.IndentLeft = deferredTap.IndentLeft;
+        }
+
+        existingTap.Floating = MergeFloatingTableProperties(existingTap.Floating, deferredTap.Floating);
+
+        if (existingTap.CellSpacing == 0 && deferredTap.CellSpacing != 0)
+        {
+            existingTap.CellSpacing = deferredTap.CellSpacing;
+        }
+
+        if (existingTap.GapHalf == 0 && deferredTap.GapHalf != 0)
+        {
+            existingTap.GapHalf = deferredTap.GapHalf;
+        }
+
+        if (existingTap.Justification == 0 && deferredTap.Justification != 0)
+        {
+            existingTap.Justification = deferredTap.Justification;
+        }
+
+        existingTap.Shading ??= deferredTap.Shading;
+
+        if (deferredTap.CellShadings != null)
+        {
+            if (existingTap.CellShadings == null || existingTap.CellShadings.Length < deferredTap.CellShadings.Length)
+            {
+                existingTap.CellShadings = deferredTap.CellShadings.ToArray();
+            }
+            else
+            {
+                for (int i = 0; i < deferredTap.CellShadings.Length; i++)
+                {
+                    existingTap.CellShadings[i] ??= deferredTap.CellShadings[i];
+                }
+            }
+        }
+
+        if (deferredTap.CellVerticalAlignments != null)
+        {
+            if (existingTap.CellVerticalAlignments == null || existingTap.CellVerticalAlignments.Length < deferredTap.CellVerticalAlignments.Length)
+            {
+                existingTap.CellVerticalAlignments = deferredTap.CellVerticalAlignments.ToArray();
+            }
+            else
+            {
+                for (int i = 0; i < deferredTap.CellVerticalAlignments.Length; i++)
+                {
+                    if (existingTap.CellVerticalAlignments[i] == 0 && deferredTap.CellVerticalAlignments[i] != 0)
+                    {
+                        existingTap.CellVerticalAlignments[i] = deferredTap.CellVerticalAlignments[i];
+                    }
+                }
+            }
+        }
+
         return existingTap;
+    }
+
+    private static TableFloatingProperties? CloneFloatingTableProperties(TableFloatingProperties? source)
+    {
+        if (source == null)
+            return null;
+
+        return new TableFloatingProperties
+        {
+            HorizontalPosition = source.HorizontalPosition,
+            VerticalPosition = source.VerticalPosition,
+            LeftFromText = source.LeftFromText,
+            RightFromText = source.RightFromText,
+            TopFromText = source.TopFromText,
+            BottomFromText = source.BottomFromText,
+            AllowOverlap = source.AllowOverlap
+        };
+    }
+
+    private static TableFloatingProperties? MergeFloatingTableProperties(TableFloatingProperties? existing, TableFloatingProperties? incoming)
+    {
+        if (incoming == null)
+            return existing;
+
+        if (existing == null)
+            return CloneFloatingTableProperties(incoming);
+
+        if (existing.HorizontalPosition == 0 && incoming.HorizontalPosition != 0)
+            existing.HorizontalPosition = incoming.HorizontalPosition;
+
+        if (existing.VerticalPosition == 0 && incoming.VerticalPosition != 0)
+            existing.VerticalPosition = incoming.VerticalPosition;
+
+        if (existing.LeftFromText == 0 && incoming.LeftFromText != 0)
+            existing.LeftFromText = incoming.LeftFromText;
+
+        if (existing.RightFromText == 0 && incoming.RightFromText != 0)
+            existing.RightFromText = incoming.RightFromText;
+
+        if (existing.TopFromText == 0 && incoming.TopFromText != 0)
+            existing.TopFromText = incoming.TopFromText;
+
+        if (existing.BottomFromText == 0 && incoming.BottomFromText != 0)
+            existing.BottomFromText = incoming.BottomFromText;
+
+        if (!incoming.AllowOverlap)
+            existing.AllowOverlap = false;
+
+        return existing;
     }
 
     private static BorderInfo? MergeBorder(BorderInfo? existingBorder, BorderInfo? deferredBorder)
@@ -2731,6 +3059,23 @@ public class TableReader
             .DefaultIfEmpty(0)
             .Max();
 
+        if (table.Rows.Count == ctx.SourceParagraphs.Count)
+        {
+            for (int rowIndex = 0; rowIndex < table.Rows.Count; rowIndex++)
+            {
+                var sourceParagraph = ctx.SourceParagraphs[rowIndex];
+                var sourceTap = ResolveParagraphExactTap(sourceParagraph);
+                if (rowIndex < effectiveRowTaps.Count && sourceTap?.CellWidths?.Length > (effectiveRowTaps[rowIndex]?.CellWidths?.Length ?? 0))
+                {
+                    effectiveRowTaps[rowIndex] = MergeDeferredRowTap(effectiveRowTaps[rowIndex], sourceTap);
+                }
+
+                tapColumnCount = Math.Max(
+                    tapColumnCount,
+                    sourceTap?.CellWidths?.Length ?? 0);
+            }
+        }
+
         var widthTemplate = GetWidthTemplate(effectiveRowTaps, tapColumnCount);
 
         if (TryRebuildSequentialSingleCellTable(table, effectiveRowTaps, tapColumnCount, out var rebuiltRowTaps))
@@ -2750,6 +3095,22 @@ public class TableReader
                 {
                     table.Properties.PreferredWidth = compactWidthTemplate.Sum();
                 }
+            }
+        }
+
+        foreach (var row in table.Rows)
+        {
+            while (row.Cells.Count < tapColumnCount)
+            {
+                int columnIndex = row.Cells.Count;
+                row.Cells.Add(new TableCellModel
+                {
+                    Index = columnIndex,
+                    ColumnIndex = columnIndex,
+                    RowIndex = row.Index,
+                    Paragraphs = new List<ParagraphModel> { new() },
+                    Properties = new TableCellProperties()
+                });
             }
         }
 
@@ -2796,7 +3157,7 @@ public class TableReader
         ApplyWidthTemplate(table, widthTemplate);
 
         // Only set header row when the TAP data explicitly flags it.
-        // Do NOT force all first rows to be headers — that's wrong for most tables.
+        // Do NOT force all first rows to be headers - that's wrong for most tables.
         var firstRow = table.Rows.FirstOrDefault();
         var firstTap = effectiveRowTaps.Count > 0 ? effectiveRowTaps[0] : null;
         if (firstRow != null && firstTap != null && firstTap.IsHeaderRow)
@@ -2867,7 +3228,34 @@ public class TableReader
                 }
             }
         }
+
+        RemoveHorizontallyMergedContinuationCells(table);
+
         Log($"FinalizeTable DONE level={ctx.Level} rows={table.RowCount} cols={table.ColumnCount}");
+    }
+
+    private static void RemoveHorizontallyMergedContinuationCells(TableModel table)
+    {
+        foreach (var row in table.Rows)
+        {
+            if (row.Cells.Count <= 1)
+                continue;
+
+            var filteredCells = new List<TableCellModel>(row.Cells.Count);
+            foreach (var cell in row.Cells.OrderBy(cell => cell.ColumnIndex))
+            {
+                bool coveredByPreviousSpan = filteredCells.Any(existingCell =>
+                    existingCell.ColumnIndex < cell.ColumnIndex &&
+                    existingCell.ColumnIndex + Math.Max(1, existingCell.ColumnSpan) > cell.ColumnIndex);
+
+                if (!coveredByPreviousSpan)
+                {
+                    filteredCells.Add(cell);
+                }
+            }
+
+            row.Cells = filteredCells;
+        }
     }
 
     private static bool TryRebuildSequentialSingleCellTable(
@@ -2949,6 +3337,36 @@ public class TableReader
         table.Rows = rebuiltRows;
         rebuiltRowTaps = effectiveTaps;
         return true;
+    }
+
+    private TapBase? ResolveParagraphExactTap(ParagraphModel paragraph)
+    {
+        TapBase? bestTap = null;
+        int bestScore = -1;
+
+        int paragraphStartCp = paragraph.StartCp;
+        int paragraphEndCp = paragraph.EndCp >= paragraphStartCp
+            ? paragraph.EndCp
+            : paragraphStartCp + Math.Max(0, paragraph.RawText.Length - 1);
+
+        if (paragraphStartCp < 0 || paragraphEndCp < paragraphStartCp)
+            return null;
+
+        for (int cp = paragraphStartCp; cp <= paragraphEndCp; cp++)
+        {
+            var tap = _fkpParser.GetPapAtCp(cp)?.Tap;
+            if (tap == null)
+                continue;
+
+            int score = GetTapScore(tap);
+            if (score < bestScore)
+                continue;
+
+            bestTap = CloneTapBase(tap);
+            bestScore = score;
+        }
+
+        return bestTap;
     }
 
     private static bool TryRebuildCompactTrailingEmptyColumnTable(
@@ -3090,6 +3508,20 @@ public class TableReader
                 cell.Properties.BorderRight = cellBorders.Right;
             }
         }
+
+        if (rowTap?.CellShadings != null && rowTap.CellShadings.Length > columnIndex)
+        {
+            var shading = rowTap.CellShadings[columnIndex];
+            if (shading != null)
+            {
+                cell.Properties.Shading = shading;
+            }
+        }
+
+        if (rowTap?.CellVerticalAlignments != null && rowTap.CellVerticalAlignments.Length > columnIndex)
+        {
+            cell.Properties.VerticalAlignment = (VerticalAlignment)rowTap.CellVerticalAlignments[columnIndex];
+        }
     }
 
     private static int[]? GetWidthTemplate(List<TapBase?> rowTaps, int tapColumnCount)
@@ -3141,7 +3573,7 @@ public class TableReader
             return;
 
         table.Properties ??= new TableProperties();
-        if (table.Properties.PreferredWidth <= 0)
+        if (table.Properties.PreferredWidth <= 0 || table.Properties.PreferredWidth < preferredWidth)
         {
             table.Properties.PreferredWidth = preferredWidth;
         }

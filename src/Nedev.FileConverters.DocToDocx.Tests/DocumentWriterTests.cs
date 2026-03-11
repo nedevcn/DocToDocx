@@ -2003,11 +2003,21 @@ namespace Nedev.FileConverters.DocToDocx.Tests
             var inputPath = Path.Combine(repoRoot, "samples", "table.doc");
 
             var document = DocToDocxConverter.LoadDocument(inputPath);
-            var topLevelTables = document.Tables
-                .Where(table => table.ParentTableIndex == null)
+            var markerParagraph = document.Paragraphs.FirstOrDefault(paragraph =>
+                paragraph.Text.Contains("固定列宽", StringComparison.Ordinal));
+
+            Assert.NotNull(markerParagraph);
+
+            var thirdTable = document.Tables
+                .Where(table => table.ParentTableIndex == null && table.StartParagraphIndex > markerParagraph!.Index)
                 .OrderBy(table => table.StartParagraphIndex)
-                .ToList();
-            var thirdTable = topLevelTables.Skip(2).First();
+                .First(table =>
+                    table.Rows.Count > 0 &&
+                    table.Rows[0].Cells.Count >= 2 &&
+                    string.Equals(
+                        string.Concat(table.Rows[0].Cells[0].Paragraphs.SelectMany(paragraph => paragraph.Runs).Select(run => run.Text)).Trim(),
+                        "固定列宽",
+                        StringComparison.Ordinal));
 
             Assert.Equal(3, thirdTable.ColumnCount);
             Assert.True(thirdTable.Rows.Count > 0, "Expected the fixed-width table to contain at least one row.");
@@ -2015,6 +2025,38 @@ namespace Nedev.FileConverters.DocToDocx.Tests
             AssertTwipsClose(CmToTwips(2.19), thirdTable.Rows[0].Cells[0].Properties?.Width ?? 0);
             AssertTwipsClose(CmToTwips(11.25), thirdTable.Rows[0].Cells[1].Properties?.Width ?? 0);
             AssertTwipsClose(CmToTwips(2.86), thirdTable.Rows[0].Cells[2].Properties?.Width ?? 0);
+            AssertTwipsClose(CmToTwips(16.30), thirdTable.Properties?.PreferredWidth ?? 0);
+        }
+
+        [Fact]
+        public void SampleTableDoc_LoadDocument_PreservesFixedColumnWidthsForTableAfterMarkerParagraph()
+        {
+            var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+            var inputPath = Path.Combine(repoRoot, "samples", "table.doc");
+
+            var document = DocToDocxConverter.LoadDocument(inputPath);
+            var markerParagraph = document.Paragraphs.FirstOrDefault(paragraph =>
+                paragraph.Text.Contains("固定列宽", StringComparison.Ordinal));
+
+            Assert.NotNull(markerParagraph);
+
+            var targetTable = document.Tables
+                .Where(table => table.ParentTableIndex == null && table.StartParagraphIndex > markerParagraph!.Index)
+                .OrderBy(table => table.StartParagraphIndex)
+                .FirstOrDefault(table =>
+                    table.Rows.Count > 0 &&
+                    table.Rows[0].Cells.Count == 3 &&
+                    string.Equals(
+                        string.Concat(table.Rows[0].Cells[0].Paragraphs.SelectMany(paragraph => paragraph.Runs).Select(run => run.Text)).Trim(),
+                        "固定列宽",
+                        StringComparison.Ordinal));
+
+            Assert.NotNull(targetTable);
+            Assert.Equal(3, targetTable!.ColumnCount);
+            AssertTwipsClose(CmToTwips(2.19), targetTable.Rows[0].Cells[0].Properties?.Width ?? 0);
+            AssertTwipsClose(CmToTwips(11.25), targetTable.Rows[0].Cells[1].Properties?.Width ?? 0);
+            AssertTwipsClose(CmToTwips(2.86), targetTable.Rows[0].Cells[2].Properties?.Width ?? 0);
+            AssertTwipsClose(CmToTwips(16.30), targetTable.Properties?.PreferredWidth ?? 0);
         }
 
         [Fact]
@@ -2035,8 +2077,22 @@ namespace Nedev.FileConverters.DocToDocx.Tests
                 var thirdTable = xDocument
                     .Descendants(w + "tbl")
                     .Where(tbl => !tbl.Ancestors(w + "tbl").Any())
-                    .Skip(2)
-                    .First();
+                    .First(tbl =>
+                    {
+                        var firstCellParagraph = tbl
+                            .Elements(w + "tr")
+                            .FirstOrDefault()?
+                            .Elements(w + "tc")
+                            .FirstOrDefault()?
+                            .Elements(w + "p")
+                            .FirstOrDefault();
+
+                        var firstCellText = firstCellParagraph == null
+                            ? string.Empty
+                            : string.Concat(firstCellParagraph.Descendants(w + "t").Select(text => text.Value)).Trim();
+
+                        return string.Equals(firstCellText, "固定列宽", StringComparison.Ordinal);
+                    });
 
                 var gridColumns = thirdTable.Elements(w + "tblGrid").Elements(w + "gridCol").ToList();
 
@@ -2044,6 +2100,8 @@ namespace Nedev.FileConverters.DocToDocx.Tests
                 AssertTwipsClose(CmToTwips(2.19), (int?)gridColumns[0].Attribute(w + "w") ?? 0);
                 AssertTwipsClose(CmToTwips(11.25), (int?)gridColumns[1].Attribute(w + "w") ?? 0);
                 AssertTwipsClose(CmToTwips(2.86), (int?)gridColumns[2].Attribute(w + "w") ?? 0);
+                AssertTwipsClose(CmToTwips(16.30), (int?)thirdTable.Element(w + "tblPr")?.Element(w + "tblW")?.Attribute(w + "w") ?? 0);
+                Assert.Equal("fixed", (string?)thirdTable.Element(w + "tblPr")?.Element(w + "tblLayout")?.Attribute(w + "type"));
             }
             finally
             {
