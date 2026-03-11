@@ -12,6 +12,9 @@ namespace Nedev.FileConverters.DocToDocx.Readers;
 
 public static class OfficeArtMapper
 {
+    private const int SpFlagFlipHorizontal = 0x40;
+    private const int SpFlagFlipVertical = 0x80;
+
     // Escher record type constants (subset)
     private const ushort RecordTypeSpContainer = 0xF004;
     private const ushort RecordTypeSpgrContainer = 0xF003; // group container
@@ -148,6 +151,21 @@ public static class OfficeArtMapper
             {
                 shapeId = BitConverter.ToInt32(child.Data, 0);
                 mappedType = MapMsosptToShapeType(child.Instance);
+                if (child.Data.Length >= 8)
+                {
+                    var shapeFlags = BitConverter.ToInt32(child.Data, 4);
+                    if ((shapeFlags & SpFlagFlipHorizontal) != 0)
+                    {
+                        shape ??= new ShapeModel();
+                        shape.FlipHorizontal = true;
+                    }
+
+                    if ((shapeFlags & SpFlagFlipVertical) != 0)
+                    {
+                        shape ??= new ShapeModel();
+                        shape.FlipVertical = true;
+                    }
+                }
             }
             else if (child.Type == RecordTypeOpt || child.Type == RecordTypeTertiaryOpt)
             {
@@ -173,7 +191,9 @@ public static class OfficeArtMapper
             Id = shapeId.Value,
             Type = mappedType,
             ImageIndex = imageIndex,
-            IsLineVisible = true
+            IsLineVisible = true,
+            FlipHorizontal = shape?.FlipHorizontal ?? false,
+            FlipVertical = shape?.FlipVertical ?? false
         };
 
         // Parse OPT properties if present

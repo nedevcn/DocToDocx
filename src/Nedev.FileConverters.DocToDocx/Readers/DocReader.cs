@@ -1232,7 +1232,9 @@ public class DocReader : IDisposable
             CropTop = run.CropTop,
             CropBottom = run.CropBottom,
             CropLeft = run.CropLeft,
-            CropRight = run.CropRight
+            CropRight = run.CropRight,
+            FlipHorizontal = run.FlipHorizontal,
+            FlipVertical = run.FlipVertical
         };
     }
 
@@ -2268,25 +2270,28 @@ public class DocReader : IDisposable
         if (document.Shapes == null || document.Shapes.Count == 0)
             return;
 
+        var pictureRuns = EnumeratePictureRuns(document)
+            .Where(run => run.ImageIndex >= 0)
+            .ToList();
+        if (pictureRuns.Count == 0)
+            return;
+
         var shapesByImageIndex = document.Shapes
             .Where(shape =>
                 shape.Type == ShapeType.Picture &&
-                shape.ImageIndex is not null &&
-                shape.Anchor != null &&
-                shape.Anchor.Width > 0 &&
-                shape.Anchor.Height > 0)
+                shape.ImageIndex is not null)
             .GroupBy(shape => shape.ImageIndex!.Value)
             .ToDictionary(
                 group => group.Key,
                 group => new Queue<ShapeModel>(group
-                    .OrderBy(shape => shape.Anchor!.ParagraphIndex >= 0 ? shape.Anchor.ParagraphIndex : shape.ParagraphIndexHint)
-                    .ThenBy(shape => shape.Anchor!.ZOrder)
+                    .OrderBy(shape => shape.Anchor?.ParagraphIndex >= 0 ? shape.Anchor.ParagraphIndex : shape.ParagraphIndexHint)
+                    .ThenBy(shape => shape.Anchor?.ZOrder ?? int.MaxValue)
                     .ThenBy(shape => shape.Id)));
 
         if (shapesByImageIndex.Count == 0)
             return;
 
-        foreach (var run in EnumeratePictureRuns(document))
+        foreach (var run in pictureRuns)
         {
             if (run.ImageIndex < 0)
                 continue;
@@ -2295,8 +2300,41 @@ public class DocReader : IDisposable
                 continue;
 
             var shape = shapes.Dequeue();
-            run.DisplayWidthTwips = shape.Anchor!.Width;
-            run.DisplayHeightTwips = shape.Anchor.Height;
+            if (shape.Anchor != null && shape.Anchor.Width > 0 && shape.Anchor.Height > 0)
+            {
+                run.DisplayWidthTwips = shape.Anchor.Width;
+                run.DisplayHeightTwips = shape.Anchor.Height;
+            }
+
+            run.FlipHorizontal = run.FlipHorizontal || shape.FlipHorizontal;
+            run.FlipVertical = run.FlipVertical || shape.FlipVertical;
+        }
+
+        var orderedShapes = document.Shapes
+            .Where(shape => shape.Type == ShapeType.Picture)
+            .OrderBy(shape => shape.ParagraphIndexHint >= 0 ? shape.ParagraphIndexHint : int.MaxValue)
+            .ThenBy(shape => shape.Anchor?.ParagraphIndex ?? int.MaxValue)
+            .ThenBy(shape => shape.Anchor?.ZOrder ?? int.MaxValue)
+            .ThenBy(shape => shape.Id)
+            .ToList();
+
+        if (orderedShapes.Count != pictureRuns.Count)
+            return;
+
+        for (int index = 0; index < pictureRuns.Count; index++)
+        {
+            var run = pictureRuns[index];
+            var shape = orderedShapes[index];
+
+            run.FlipHorizontal = run.FlipHorizontal || shape.FlipHorizontal;
+            run.FlipVertical = run.FlipVertical || shape.FlipVertical;
+
+            if ((run.DisplayWidthTwips <= 0 || run.DisplayHeightTwips <= 0) &&
+                shape.Anchor != null && shape.Anchor.Width > 0 && shape.Anchor.Height > 0)
+            {
+                run.DisplayWidthTwips = shape.Anchor.Width;
+                run.DisplayHeightTwips = shape.Anchor.Height;
+            }
         }
     }
 
@@ -2869,18 +2907,22 @@ public class ImageReader
             if (!run.IsPicture || !TryFcPicToBufferOffset(run.FcPic, buffer.Length, out int offset))
                 continue;
 
-            if (!TryReadPicfDisplaySize(buffer, offset, maxContentWidthTwips, out int widthTwips, out int heightTwips))
+            if (!TryReadPicfDisplaySize(buffer, offset, maxContentWidthTwips, out int widthTwips, out int heightTwips, out bool flipHorizontal, out bool flipVertical))
                 continue;
 
             run.DisplayWidthTwips = widthTwips;
             run.DisplayHeightTwips = heightTwips;
+            run.FlipHorizontal = flipHorizontal;
+            run.FlipVertical = flipVertical;
         }
     }
 
-    private static bool TryReadPicfDisplaySize(byte[] buffer, int offset, int maxContentWidthTwips, out int widthTwips, out int heightTwips)
+    private static bool TryReadPicfDisplaySize(byte[] buffer, int offset, int maxContentWidthTwips, out int widthTwips, out int heightTwips, out bool flipHorizontal, out bool flipVertical)
     {
         widthTwips = 0;
         heightTwips = 0;
+        flipHorizontal = false;
+        flipVertical = false;
 
         if (offset < 0 || offset + 36 > buffer.Length)
             return false;
@@ -2891,8 +2933,8 @@ public class ImageReader
 
         int dxaGoal = BitConverter.ToUInt16(buffer, offset + 28);
         int dyaGoal = BitConverter.ToUInt16(buffer, offset + 30);
-        int mx = BitConverter.ToUInt16(buffer, offset + 32);
-        int my = BitConverter.ToUInt16(buffer, offset + 34);
+        int mx = BitConverter.ToInt16(buffer, offset + 32);
+        int my = BitConverter.ToInt16(buffer, offset + 34);
 
         if (dxaGoal <= 0 || dyaGoal <= 0)
             return false;
@@ -2900,10 +2942,22 @@ public class ImageReader
         double width = dxaGoal;
         double height = dyaGoal;
 
-        if (mx > 0 && mx != 1000)
-            width = width * mx / 1000d;
-        if (my > 0 && my != 1000)
-            height = height * my / 1000d;
+        if (mx < 0)
+        {
+            flipHorizontal = true;
+        }
+        if (my < 0)
+        {
+            flipVertical = true;
+        }
+
+        int scaleX = Math.Abs(mx);
+        int scaleY = Math.Abs(my);
+
+        if (scaleX > 0 && scaleX != 1000)
+            width = width * scaleX / 1000d;
+        if (scaleY > 0 && scaleY != 1000)
+            height = height * scaleY / 1000d;
 
         if (maxContentWidthTwips > 0 && width > maxContentWidthTwips)
             width = maxContentWidthTwips;

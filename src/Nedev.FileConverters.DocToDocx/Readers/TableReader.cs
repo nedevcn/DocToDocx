@@ -1640,6 +1640,8 @@ public class TableReader
             CropBottom = source.CropBottom,
             CropLeft = source.CropLeft,
             CropRight = source.CropRight,
+            FlipHorizontal = source.FlipHorizontal,
+            FlipVertical = source.FlipVertical,
             Properties = CloneRunProperties(source.Properties)
         };
     }

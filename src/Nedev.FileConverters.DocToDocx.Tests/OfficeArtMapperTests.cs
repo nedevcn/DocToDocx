@@ -65,6 +65,29 @@ public class OfficeArtMapperTests
         Assert.Equal(0, fspaAnchors?.Count ?? 0);
     }
 
+    [Fact]
+    public void OfficeArtMapper_MapsFlipFlagsFromSpRecord()
+    {
+        const int flipHorizontalFlag = 0x40;
+        const int flipVerticalFlag = 0x80;
+        byte[] spData = BitConverter.GetBytes(42)
+            .Concat(BitConverter.GetBytes(flipHorizontalFlag | flipVerticalFlag))
+            .ToArray();
+        byte[] spRecord = BuildLeafRecord(0xF00A, 75, spData, version: 0x2);
+        byte[] spContainer = BuildContainerRecord(0xF004, 0, spRecord);
+
+        using var stream = new MemoryStream(spContainer);
+        var reader = new OfficeArtReader(stream);
+        var document = new DocumentModel();
+
+        OfficeArtMapper.AttachShapes(document, reader, null);
+
+        var shape = Assert.Single(document.Shapes);
+        Assert.Equal(42, shape.Id);
+        Assert.True(shape.FlipHorizontal);
+        Assert.True(shape.FlipVertical);
+    }
+
     private static byte[] BuildOptPayload(ushort propId, byte[] complexData)
     {
         using var ms = new MemoryStream();

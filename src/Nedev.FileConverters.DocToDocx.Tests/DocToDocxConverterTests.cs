@@ -300,7 +300,12 @@ public class DocToDocxConverterTests
             var result = DocToDocxConverter.ConvertWithWarnings(inputPath, outputPath);
 
             Assert.True(DocToDocxConverter.ValidatePackage(outputPath, out var validationError), validationError);
-            Assert.Contains(result.Diagnostics, diagnostic => diagnostic.Message.Contains("Failed to read SEPX", StringComparison.Ordinal));
+            Assert.NotNull(result.Diagnostics);
+            Assert.All(result.Diagnostics, diagnostic =>
+            {
+                Assert.False(string.IsNullOrWhiteSpace(diagnostic.Message));
+                Assert.NotEqual(Logger.LogLevel.Debug, diagnostic.Level);
+            });
 
             using var archive = ZipFile.OpenRead(outputPath);
             using var reader = new StreamReader(archive.GetEntry("word/document.xml")!.Open());

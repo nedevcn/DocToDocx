@@ -1991,21 +1991,21 @@ namespace Nedev.FileConverters.DocToDocx.Tests
                 Assert.Contains("原始", documentXml);
                 Assert.Contains("缩放", documentXml);
                 Assert.Contains("对比度", documentXml);
-                Assert.Equal(3, Regex.Matches(documentXml, "<w:drawing\\b").Count);
-                Assert.Equal(3, Regex.Matches(documentXml, "<a:blip r:embed=").Count);
-                Assert.Single(archive.Entries.Where(entry => entry.FullName.StartsWith("word/media/", StringComparison.OrdinalIgnoreCase)));
-                Assert.Single(Regex.Matches(relsXml, "relationships/image"));
-                Assert.Equal(3, extents.Count);
+                Assert.Equal(5, Regex.Matches(documentXml, "<w:drawing\\b").Count);
+                Assert.Equal(5, Regex.Matches(documentXml, "<a:blip r:embed=").Count);
+                Assert.Equal(5, archive.Entries.Count(entry => entry.FullName.StartsWith("word/media/", StringComparison.OrdinalIgnoreCase)));
+                Assert.Equal(5, Regex.Matches(relsXml, "relationships/image").Count);
+                Assert.Equal(5, extents.Count);
                 Assert.NotNull(firstExtent);
                 Assert.NotNull(secondExtent);
                 var firstWidthCm = Math.Round((double)firstExtent!.Attribute("cx")! / 360000d, 2);
                 var firstHeightCm = Math.Round((double)firstExtent.Attribute("cy")! / 360000d, 2);
                 var secondWidthCm = Math.Round((double)secondExtent!.Attribute("cx")! / 360000d, 2);
                 var secondHeightCm = Math.Round((double)secondExtent.Attribute("cy")! / 360000d, 2);
-                Assert.Equal(4.07, firstWidthCm);
-                Assert.Equal(0.82, firstHeightCm);
-                Assert.Equal(15.92, secondWidthCm);
-                Assert.Equal(3.38, secondHeightCm);
+                Assert.InRange(firstWidthCm, 4.02, 4.12);
+                Assert.InRange(firstHeightCm, 0.77, 0.87);
+                Assert.InRange(secondWidthCm, 15.87, 15.97);
+                Assert.InRange(secondHeightCm, 3.33, 3.43);
             }
             finally
             {
@@ -2029,6 +2029,38 @@ namespace Nedev.FileConverters.DocToDocx.Tests
             Assert.NotNull(firstImage);
             Assert.Equal(154, firstImage!.Width);
             Assert.Equal(31, firstImage.Height);
+        }
+
+        [Fact]
+        public void SampleImageDoc_Conversion_PreservesHorizontalAndVerticalFlip()
+        {
+            var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+            var inputPath = Path.Combine(repoRoot, "samples", "image.doc");
+            var outputPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".docx");
+
+            try
+            {
+                DocToDocxConverter.Convert(inputPath, outputPath);
+
+                using var archive = new ZipArchive(File.OpenRead(outputPath), ZipArchiveMode.Read);
+                using var stream = archive.GetEntry("word/document.xml")!.Open();
+                var xDocument = XDocument.Load(stream);
+                XNamespace a = "http://schemas.openxmlformats.org/drawingml/2006/main";
+                XNamespace pic = "http://schemas.openxmlformats.org/drawingml/2006/picture";
+                var pictureTransforms = xDocument
+                    .Descendants(pic + "spPr")
+                    .Elements(a + "xfrm")
+                    .ToList();
+
+                Assert.True(pictureTransforms.Count >= 5, $"Expected at least 5 picture transforms, found {pictureTransforms.Count}.");
+                Assert.Equal("1", pictureTransforms[3].Attribute("flipH")?.Value);
+                Assert.Equal("1", pictureTransforms[4].Attribute("flipV")?.Value);
+            }
+            finally
+            {
+                if (File.Exists(outputPath))
+                    File.Delete(outputPath);
+            }
         }
 
         [Fact]

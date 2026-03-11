@@ -1308,7 +1308,9 @@ public partial class DocumentWriter
                         CropTop = run.CropTop,
                         CropBottom = run.CropBottom,
                         CropLeft = run.CropLeft,
-                        CropRight = run.CropRight
+                        CropRight = run.CropRight,
+                        FlipHorizontal = run.FlipHorizontal,
+                        FlipVertical = run.FlipVertical
                     };
                     WriteRun(prefix);
                     run.Text = after; // continue processing remaining text below
@@ -1765,6 +1767,7 @@ public partial class DocumentWriter
         // Shape properties
         _writer.WriteStartElement("pic", "spPr", "http://schemas.openxmlformats.org/drawingml/2006/picture");
         _writer.WriteStartElement("a", "xfrm", "http://schemas.openxmlformats.org/drawingml/2006/main");
+        WriteTransformAttributes(run.FlipHorizontal, run.FlipVertical);
         _writer.WriteStartElement("a", "off", "http://schemas.openxmlformats.org/drawingml/2006/main");
         _writer.WriteAttributeString("x", "0");
         _writer.WriteAttributeString("y", "0");
@@ -1786,6 +1789,19 @@ public partial class DocumentWriter
         _writer.WriteEndElement(); // a:graphic
         _writer.WriteEndElement(); // wp:inline
         _writer.WriteEndElement(); // w:drawing
+    }
+
+    private void WriteTransformAttributes(bool flipHorizontal, bool flipVertical)
+    {
+        if (flipHorizontal)
+        {
+            _writer.WriteAttributeString("flipH", "1");
+        }
+
+        if (flipVertical)
+        {
+            _writer.WriteAttributeString("flipV", "1");
+        }
     }
 
     /// <summary>

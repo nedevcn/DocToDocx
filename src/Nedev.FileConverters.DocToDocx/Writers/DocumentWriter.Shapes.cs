@@ -253,6 +253,7 @@ public partial class DocumentWriter
         // spPr
         _writer.WriteStartElement("wps", "spPr", wpsNs);
         _writer.WriteStartElement("a", "xfrm", aNs);
+        WriteTransformAttributes(shape.FlipHorizontal, shape.FlipVertical);
         _writer.WriteStartElement("a", "off", aNs);
         _writer.WriteAttributeString("x", "0");
         _writer.WriteAttributeString("y", "0");
@@ -546,7 +547,9 @@ public partial class DocumentWriter
                 CropTop = shape.CropTop,
                 CropBottom = shape.CropBottom,
                 CropLeft = shape.CropLeft,
-                CropRight = shape.CropRight
+                CropRight = shape.CropRight,
+                FlipHorizontal = shape.FlipHorizontal,
+                FlipVertical = shape.FlipVertical
             };
 
             _writer.WriteStartElement("w", "p", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
@@ -762,6 +765,7 @@ public partial class DocumentWriter
         // Shape properties
         _writer.WriteStartElement("pic", "spPr", "http://schemas.openxmlformats.org/drawingml/2006/picture");
         _writer.WriteStartElement("a", "xfrm", "http://schemas.openxmlformats.org/drawingml/2006/main");
+        WriteTransformAttributes(shape.FlipHorizontal, shape.FlipVertical);
         _writer.WriteStartElement("a", "off", "http://schemas.openxmlformats.org/drawingml/2006/main");
         _writer.WriteAttributeString("x", "0");
         _writer.WriteAttributeString("y", "0");

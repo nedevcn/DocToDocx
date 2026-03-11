@@ -272,6 +272,8 @@ public class RunModel
     public int CropBottom { get; set; }
     public int CropLeft { get; set; }
     public int CropRight { get; set; }
+    public bool FlipHorizontal { get; set; }
+    public bool FlipVertical { get; set; }
 }
 
 /// <summary>
@@ -418,6 +420,8 @@ public class ShapeModel
     public ShapeAnchor? Anchor { get; set; }
     public int? ImageIndex { get; set; }
     public string? Text { get; set; }
+    public bool FlipHorizontal { get; set; }
+    public bool FlipVertical { get; set; }
     /// <summary>
     /// Hint for where this shape should be emitted relative to paragraphs.
     /// -1 means "no preference / fall back to document-level placement".

@@ -487,7 +487,7 @@ public class StyleReader
             if (cbUpx % 2 != 0) _tableReader.BaseStream.Seek(1, SeekOrigin.Current); // 2-byte alignment
         }
 
-        ApplyBuiltInStyleDefaults(style, sti);
+        ApplyBuiltInStyleDefaults(style, sti, cupx);
 
         // Skip to end of entry
         _tableReader.BaseStream.Seek(entryEnd, SeekOrigin.Begin);
@@ -567,15 +567,27 @@ public class StyleReader
         return trimmed;
     }
 
-    private static void ApplyBuiltInStyleDefaults(StyleDefinition style, int sti)
+    private static void ApplyBuiltInStyleDefaults(StyleDefinition style, int sti, int cupx)
     {
         if (style.Type != StyleType.Paragraph)
+            return;
+
+        if (cupx != 0)
             return;
 
         if (sti == 15 || string.Equals(style.Name, "Title", StringComparison.OrdinalIgnoreCase))
         {
             style.ParagraphProperties ??= new ParagraphProperties();
             style.RunProperties ??= new RunProperties();
+
+            if (style.ParagraphProperties.Alignment == ParagraphAlignment.Left)
+                style.ParagraphProperties.Alignment = ParagraphAlignment.Center;
+
+            style.RunProperties.IsBold = true;
+            if (style.RunProperties.FontSize == 24)
+                style.RunProperties.FontSize = 56;
+            if (style.RunProperties.FontSizeCs == 24)
+                style.RunProperties.FontSizeCs = 56;
         }
     }
 
