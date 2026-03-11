@@ -191,7 +191,8 @@ public class FkpParser
     public Dictionary<int, PapBase> ReadPapProperties()
     {
         var papMap = new Dictionary<int, PapBase>();
-        if (_fib.FcPlcfBtePapx == 0 || _fib.LcbPlcfBtePapx < 16) return papMap;
+        // A PAP BTE with a single entry is 12 bytes: 2 CPs and 1 PN.
+        if (_fib.FcPlcfBtePapx == 0 || _fib.LcbPlcfBtePapx < 12) return papMap;
 
         _tableReader.BaseStream.Seek(_fib.FcPlcfBtePapx, SeekOrigin.Begin);
         

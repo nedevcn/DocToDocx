@@ -289,6 +289,7 @@ public class DocReader : IDisposable
         Document.RevisionAuthors = SttbfHelper.ReadSttbf(_tableReader!, _fibReader.FcSttbfRgtlv, _fibReader.LcbSttbfRgtlv);
 
         // Step 2: Read list definitions
+        _listReader!.Styles = Document.Styles;
         _listReader!.Read();
         Document.NumberingDefinitions = _listReader.NumberingDefinitions;
         Document.ListFormats = _listReader.ListFormats;
@@ -1306,10 +1307,10 @@ public class DocReader : IDisposable
             {
                 var runText = paraText.Substring(runStart, i - runStart);
                 var cleanText = CleanSpecialChars(runText);
-                var isPicture = runText.Contains('\x01') || runText.Contains('\x08');
+                var hasPictureMarker = runText.Contains('\x01') || runText.Contains('\x08');
 
                 // Even if text is empty (special char stripped), preserve it if it's visual or structural (hyperlink/field)
-                if (!string.IsNullOrEmpty(cleanText) || isPicture || runText.Contains('\x13') || runText.Contains('\x14') || runText.Contains('\x15'))
+                if (!string.IsNullOrEmpty(cleanText) || hasPictureMarker || runText.Contains('\x13') || runText.Contains('\x14') || runText.Contains('\x15'))
                 {
                     var runProps = GetEffectiveRunPropertiesAtCp(papMap, paraStartCp + runStart, currentChp);
                     bool wasCollectingFieldCode = collectingFieldCode;
@@ -1325,6 +1326,7 @@ public class DocReader : IDisposable
                     run.FcPic = currentChp?.FcPic ?? 0;
 
                     var completedFieldCode = TryAdvanceFieldState(runText, activeFieldCode, ref collectingFieldCode, ref insideFieldResult);
+                    var isPicture = hasPictureMarker && !wasCollectingFieldCode && !collectingFieldCode && !insideFieldResult;
                     if ((wasCollectingFieldCode || runText.Contains(FieldReader.FieldStartChar)) && !insideFieldResult)
                     {
                         run.Text = string.Empty;
@@ -2052,6 +2054,16 @@ public class DocReader : IDisposable
             if (!paragraphProps.PageBreakBefore && sp.PageBreakBefore)
                 paragraphProps.PageBreakBefore = true;
 
+            if (paragraphProps.ListFormatId == 0 && sp.ListFormatId != 0)
+            {
+                paragraphProps.ListFormatId = sp.ListFormatId;
+                paragraphProps.ListLevel = sp.ListLevel;
+            }
+            else if (paragraphProps.ListFormatId != 0 && paragraphProps.ListLevel == 0 && sp.ListFormatId == paragraphProps.ListFormatId)
+            {
+                paragraphProps.ListLevel = sp.ListLevel;
+            }
+
             paragraphProps.BorderTop ??= sp.BorderTop;
             paragraphProps.BorderBottom ??= sp.BorderBottom;
             paragraphProps.BorderLeft ??= sp.BorderLeft;
@@ -2077,6 +2089,11 @@ public class DocReader : IDisposable
             return;
 
         var sr = style.RunProperties;
+
+        if (paragraph.ListFormatId == 0 && paragraphProps.ListFormatId != 0)
+            paragraph.ListFormatId = paragraphProps.ListFormatId;
+        if (paragraph.ListFormatId != 0)
+            paragraph.ListLevel = paragraphProps.ListLevel;
 
         foreach (var run in paragraph.Runs)
         {

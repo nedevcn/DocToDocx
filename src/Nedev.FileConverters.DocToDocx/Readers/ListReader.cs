@@ -6,9 +6,17 @@ namespace Nedev.FileConverters.DocToDocx.Readers;
 
 public class ListReader
 {
+    private static readonly (string Text, string FontName)[] DefaultBulletLevelSequence =
+    {
+        ("\uF0B7", "Symbol"),
+        ("o", "Courier New"),
+        ("\uF0A7", "Wingdings")
+    };
+
     private readonly BinaryReader _tableReader;
     private readonly FibReader _fib;
 
+    public StyleSheet? Styles { get; set; }
     public List<NumberingDefinition> NumberingDefinitions { get; private set; } = new();
     public List<ListFormat> ListFormats { get; private set; } = new();
 
@@ -86,10 +94,10 @@ public class ListReader
         _tableReader.BaseStream.Seek(_fib.FcPlcfLst, SeekOrigin.Begin);
         var endPos = _fib.FcPlcfLst + _fib.LcbPlcfLst;
 
-        if (endPos - _tableReader.BaseStream.Position < 4)
+        if (endPos - _tableReader.BaseStream.Position < 2)
             return;
 
-        var lstfCount = _tableReader.ReadInt32();
+        var lstfCount = _tableReader.ReadUInt16();
         if (lstfCount <= 0 || lstfCount > 1000)
             lstfCount = 64;
 
@@ -152,6 +160,9 @@ public class ListReader
             {
                 listFormat.Levels.Add(CreateDefaultLevel(lvl, listType));
             }
+
+            ApplyCharacterStyleFallbacks(listFormat);
+            ApplyBuiltInBulletFallbacks(listFormat);
 
             lists.Add(listFormat);
         }
@@ -244,8 +255,10 @@ public class ListReader
         if (cbGrpprlChpx > 0 && _tableReader.BaseStream.Position + cbGrpprlChpx <= endPos)
         {
             var chpxData = _tableReader.ReadBytes(cbGrpprlChpx);
-            // We could parse CHP SPRMs for font/color of the number, but skip for now
-            // to avoid complexity. The NumberingWriter handles basic run properties.
+            var chp = new ChpBase();
+            var sprmParser = new SprmParser(_tableReader, 0);
+            sprmParser.ApplyToChp(chpxData, chp);
+            level.RunProperties = ConvertToRunProperties(chp);
         }
 
         // Read xst (number text string)
@@ -295,11 +308,62 @@ public class ListReader
         return new ListLevel
         {
             Level = lvl,
-            NumberFormat = lvl == 0 && listType == ListType.Bullet ? NumberFormat.Bullet : NumberFormat.Decimal,
+            NumberFormat = listType == ListType.Bullet ? NumberFormat.Bullet : NumberFormat.Decimal,
             StartAt = 1,
             Indent = 720 * (lvl + 1),
-            NumberText = lvl == 0 && listType == ListType.Bullet ? "·" : "%" + (lvl + 1)
+            NumberText = listType == ListType.Bullet ? "·" : "%" + (lvl + 1)
         };
+    }
+
+    private void ApplyCharacterStyleFallbacks(ListFormat listFormat)
+    {
+        if (Styles?.Styles == null || Styles.Styles.Count == 0)
+            return;
+
+        foreach (var level in listFormat.Levels)
+        {
+            if (!string.IsNullOrWhiteSpace(level.RunProperties?.FontName))
+                continue;
+
+            var style = Styles.Styles.FirstOrDefault(candidate =>
+                candidate.Type == StyleType.Character &&
+                string.Equals(candidate.Name, $"WW8Num{listFormat.ListId}z{level.Level}", StringComparison.OrdinalIgnoreCase));
+
+            style ??= Styles.Styles.FirstOrDefault(candidate =>
+                candidate.Type == StyleType.Character &&
+                string.Equals(candidate.Name, $"WW8Num{listFormat.ListId}z0", StringComparison.OrdinalIgnoreCase));
+
+            if (style?.RunProperties == null)
+                continue;
+
+            level.RunProperties = CloneRunProperties(style.RunProperties);
+        }
+    }
+
+    private static void ApplyBuiltInBulletFallbacks(ListFormat listFormat)
+    {
+        if (listFormat.Type != ListType.Bullet || listFormat.Levels.Count == 0)
+            return;
+
+        bool hasExplicitGlyphs = listFormat.Levels.Any(level =>
+            !string.IsNullOrWhiteSpace(level.NumberText) &&
+            !string.Equals(level.NumberText, "\u00B7", StringComparison.Ordinal));
+
+        if (hasExplicitGlyphs)
+            return;
+
+        for (int index = 0; index < listFormat.Levels.Count; index++)
+        {
+            var level = listFormat.Levels[index];
+            if (!string.IsNullOrWhiteSpace(level.NumberText) && !string.Equals(level.NumberText, "\u00B7", StringComparison.Ordinal))
+                continue;
+
+            var fallback = DefaultBulletLevelSequence[index % DefaultBulletLevelSequence.Length];
+            level.NumberText = fallback.Text;
+            level.RunProperties ??= new RunProperties();
+            level.RunProperties.FontIndex = -1;
+            level.RunProperties.FontName = fallback.FontName;
+        }
     }
 
     /// <summary>
@@ -409,5 +473,220 @@ public class ListReader
     public int GetListLevel(ParagraphModel paragraph)
     {
         return paragraph.ListLevel;
+    }
+
+    private RunProperties ConvertToRunProperties(ChpBase chp)
+    {
+        RunProperties? baseProps = null;
+        if (chp.StyleId != 0)
+        {
+            baseProps = GetRunPropertiesFromCharacterStyle(chp.StyleId);
+        }
+
+        var props = new RunProperties
+        {
+            FontIndex = chp.FontIndex,
+            FontSize = chp.FontSize,
+            FontSizeCs = chp.FontSizeCs,
+            IsBold = chp.IsBold,
+            IsBoldCs = chp.IsBoldCs,
+            IsItalic = chp.IsItalic,
+            IsItalicCs = chp.IsItalicCs,
+            IsUnderline = chp.IsUnderline,
+            UnderlineType = (UnderlineType)chp.Underline,
+            IsStrikeThrough = chp.IsStrikeThrough,
+            IsDoubleStrikeThrough = chp.IsDoubleStrikeThrough,
+            IsSmallCaps = chp.IsSmallCaps,
+            IsAllCaps = chp.IsAllCaps,
+            IsHidden = chp.IsHidden,
+            IsSuperscript = chp.IsSuperscript,
+            IsSubscript = chp.IsSubscript,
+            Color = chp.Color,
+            CharacterSpacingAdjustment = chp.DxaOffset,
+            Language = chp.LanguageId,
+            HighlightColor = chp.HighlightColor,
+            RgbColor = chp.RgbColor,
+            HasRgbColor = chp.HasRgbColor,
+            IsOutline = chp.IsOutline,
+            IsShadow = chp.IsShadow,
+            IsEmboss = chp.IsEmboss,
+            IsImprint = chp.IsImprint,
+            Border = chp.Border,
+            Kerning = chp.Kerning,
+            Position = chp.Position,
+            CharacterScale = chp.Scale,
+            EastAsianLayoutType = chp.EastAsianLayoutType,
+            IsEastAsianVertical = chp.IsEastAsianVertical,
+            IsEastAsianVerticalCompress = chp.IsEastAsianVerticalCompress,
+            IsDeleted = chp.IsDeleted,
+            IsInserted = chp.IsInserted,
+            AuthorIndexDel = chp.AuthorIndexDel,
+            AuthorIndexIns = chp.AuthorIndexIns,
+            DateDel = chp.DateDel,
+            DateIns = chp.DateIns
+        };
+        props.FontName = ResolveFontName(chp.FontIndex);
+
+        return baseProps == null ? props : MergeRunProperties(baseProps, props);
+    }
+
+    private RunProperties? GetRunPropertiesFromCharacterStyle(ushort styleId)
+    {
+        if (Styles?.Styles == null || Styles.Styles.Count == 0)
+            return null;
+
+        var style = Styles.Styles.FirstOrDefault(s => s.Type == StyleType.Character && s.StyleId == styleId);
+        return style?.RunProperties == null ? null : CloneRunProperties(style.RunProperties);
+    }
+
+    private string? ResolveFontName(int fontIndex)
+    {
+        if (Styles == null || fontIndex < 0 || fontIndex >= Styles.Fonts.Count)
+            return null;
+
+        var font = Styles.Fonts[fontIndex];
+        if (!string.IsNullOrWhiteSpace(font.Name) &&
+            !string.Equals(font.Name, $"Font{font.Index}", StringComparison.OrdinalIgnoreCase))
+        {
+            return font.Name;
+        }
+
+        return string.IsNullOrWhiteSpace(font.AltName) ? null : font.AltName;
+    }
+
+    private static RunProperties CloneRunProperties(RunProperties source)
+    {
+        return new RunProperties
+        {
+            FontIndex = source.FontIndex,
+            FontName = source.FontName,
+            FontSize = source.FontSize,
+            FontSizeCs = source.FontSizeCs,
+            IsBold = source.IsBold,
+            IsBoldCs = source.IsBoldCs,
+            IsItalic = source.IsItalic,
+            IsItalicCs = source.IsItalicCs,
+            IsUnderline = source.IsUnderline,
+            UnderlineType = source.UnderlineType,
+            IsStrikeThrough = source.IsStrikeThrough,
+            IsDoubleStrikeThrough = source.IsDoubleStrikeThrough,
+            IsSmallCaps = source.IsSmallCaps,
+            IsAllCaps = source.IsAllCaps,
+            IsHidden = source.IsHidden,
+            IsSuperscript = source.IsSuperscript,
+            IsSubscript = source.IsSubscript,
+            Color = source.Color,
+            BgColor = source.BgColor,
+            CharacterSpacingAdjustment = source.CharacterSpacingAdjustment,
+            Language = source.Language,
+            LanguageAsia = source.LanguageAsia,
+            LanguageCs = source.LanguageCs,
+            HighlightColor = source.HighlightColor,
+            RgbColor = source.RgbColor,
+            HasRgbColor = source.HasRgbColor,
+            IsOutline = source.IsOutline,
+            IsShadow = source.IsShadow,
+            IsEmboss = source.IsEmboss,
+            IsImprint = source.IsImprint,
+            Border = source.Border,
+            Kerning = source.Kerning,
+            Position = source.Position,
+            CharacterScale = source.CharacterScale,
+            EastAsianLayoutType = source.EastAsianLayoutType,
+            IsEastAsianVertical = source.IsEastAsianVertical,
+            IsEastAsianVerticalCompress = source.IsEastAsianVerticalCompress,
+            SnapToGrid = source.SnapToGrid,
+            RubyText = source.RubyText,
+            IsDeleted = source.IsDeleted,
+            IsInserted = source.IsInserted,
+            AuthorIndexDel = source.AuthorIndexDel,
+            AuthorIndexIns = source.AuthorIndexIns,
+            DateDel = source.DateDel,
+            DateIns = source.DateIns
+        };
+    }
+
+    private static RunProperties MergeRunProperties(RunProperties baseProps, RunProperties directProps)
+    {
+        var merged = CloneRunProperties(baseProps);
+
+        if (directProps.FontIndex != -1)
+            merged.FontIndex = directProps.FontIndex;
+        if (!string.IsNullOrEmpty(directProps.FontName))
+            merged.FontName = directProps.FontName;
+        if (directProps.FontSize != 24)
+            merged.FontSize = directProps.FontSize;
+        if (directProps.FontSizeCs != 24)
+            merged.FontSizeCs = directProps.FontSizeCs;
+
+        merged.IsBold = directProps.IsBold || merged.IsBold;
+        merged.IsBoldCs = directProps.IsBoldCs || merged.IsBoldCs;
+        merged.IsItalic = directProps.IsItalic || merged.IsItalic;
+        merged.IsItalicCs = directProps.IsItalicCs || merged.IsItalicCs;
+        merged.IsUnderline = directProps.IsUnderline || merged.IsUnderline;
+        if (directProps.UnderlineType != UnderlineType.None)
+            merged.UnderlineType = directProps.UnderlineType;
+        merged.IsStrikeThrough = directProps.IsStrikeThrough || merged.IsStrikeThrough;
+        merged.IsDoubleStrikeThrough = directProps.IsDoubleStrikeThrough || merged.IsDoubleStrikeThrough;
+        merged.IsSmallCaps = directProps.IsSmallCaps || merged.IsSmallCaps;
+        merged.IsAllCaps = directProps.IsAllCaps || merged.IsAllCaps;
+        merged.IsHidden = directProps.IsHidden || merged.IsHidden;
+        merged.IsSuperscript = directProps.IsSuperscript || merged.IsSuperscript;
+        merged.IsSubscript = directProps.IsSubscript || merged.IsSubscript;
+        merged.IsOutline = directProps.IsOutline || merged.IsOutline;
+        merged.IsShadow = directProps.IsShadow || merged.IsShadow;
+        merged.IsEmboss = directProps.IsEmboss || merged.IsEmboss;
+        merged.IsImprint = directProps.IsImprint || merged.IsImprint;
+        if (directProps.Border != null)
+            merged.Border = directProps.Border;
+        if (directProps.HasRgbColor)
+        {
+            merged.RgbColor = directProps.RgbColor;
+            merged.HasRgbColor = true;
+            merged.Color = directProps.Color;
+        }
+        else if (directProps.Color != 0)
+        {
+            merged.Color = directProps.Color;
+        }
+
+        if (directProps.BgColor != -1)
+            merged.BgColor = directProps.BgColor;
+        if (directProps.HighlightColor != 0)
+            merged.HighlightColor = directProps.HighlightColor;
+        if (directProps.CharacterSpacingAdjustment != 0)
+            merged.CharacterSpacingAdjustment = directProps.CharacterSpacingAdjustment;
+        if (directProps.Kerning != 0)
+            merged.Kerning = directProps.Kerning;
+        if (directProps.Position != 0)
+            merged.Position = directProps.Position;
+        if (directProps.CharacterScale != 100)
+            merged.CharacterScale = directProps.CharacterScale;
+        if (directProps.EastAsianLayoutType != 0)
+            merged.EastAsianLayoutType = directProps.EastAsianLayoutType;
+        merged.IsEastAsianVertical = directProps.IsEastAsianVertical || merged.IsEastAsianVertical;
+        merged.IsEastAsianVerticalCompress = directProps.IsEastAsianVerticalCompress || merged.IsEastAsianVerticalCompress;
+        if (!directProps.SnapToGrid)
+            merged.SnapToGrid = false;
+        if (directProps.Language != 0)
+            merged.Language = directProps.Language;
+        if (!string.IsNullOrEmpty(directProps.LanguageAsia))
+            merged.LanguageAsia = directProps.LanguageAsia;
+        if (!string.IsNullOrEmpty(directProps.LanguageCs))
+            merged.LanguageCs = directProps.LanguageCs;
+        if (!string.IsNullOrEmpty(directProps.RubyText))
+            merged.RubyText = directProps.RubyText;
+        merged.IsDeleted = directProps.IsDeleted || merged.IsDeleted;
+        merged.IsInserted = directProps.IsInserted || merged.IsInserted;
+        if (directProps.AuthorIndexDel != 0)
+            merged.AuthorIndexDel = directProps.AuthorIndexDel;
+        if (directProps.AuthorIndexIns != 0)
+            merged.AuthorIndexIns = directProps.AuthorIndexIns;
+        if (directProps.DateDel != 0)
+            merged.DateDel = directProps.DateDel;
+        if (directProps.DateIns != 0)
+            merged.DateIns = directProps.DateIns;
+
+        return merged;
     }
 }

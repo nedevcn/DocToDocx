@@ -44,7 +44,7 @@ public partial class DocumentWriter
             
             int width = columnWidths[i];
             
-            if (width > 0)
+            if (!table.IsNested && width > 0)
             {
                 _writer.WriteAttributeString("w", "w", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", width.ToString());
             }
@@ -168,7 +168,7 @@ public partial class DocumentWriter
         // let Word auto-size based on content.
         _writer.WriteStartElement("w", "tblW", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
         var preferredWidth = tableProperties?.PreferredWidth ?? 0;
-        if (preferredWidth > 0)
+        if (!table.IsNested && preferredWidth > 0)
         {
             preferredWidth = Math.Clamp(preferredWidth, 1, 31680);
             _writer.WriteAttributeString("w", "w", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", preferredWidth.ToString());
@@ -459,6 +459,9 @@ public partial class DocumentWriter
 
     private static bool ShouldUseFixedTableLayout(TableModel table, TableProperties? tableProperties, int[] columnWidths)
     {
+        if (table.IsNested)
+            return false;
+
         if (columnWidths.Length == 0 || columnWidths.Any(width => width <= 0))
             return false;
 
@@ -573,6 +576,11 @@ public partial class DocumentWriter
             }
         }
 
+        if (table.IsNested)
+        {
+            effectiveCellWidth = 0;
+        }
+
         bool hasTcPr = effectiveCellWidth > 0 || cell.ColumnSpan > 1 || cell.RowSpan > 1 || isVmergeContinue ||
                        cell.Properties?.BorderTop != null || cell.Properties?.BorderBottom != null ||
                        cell.Properties?.BorderLeft != null || cell.Properties?.BorderRight != null ||
@@ -668,6 +676,16 @@ public partial class DocumentWriter
                 {
                     Logger.Debug($"WriteTableCell: Calling WriteParagraph, Type={para.Type}, Text='{para.Text}', NestedTable={para.NestedTable != null}");
                     WriteParagraph(para);
+                }
+
+                // A table cell must end with a paragraph. When the last emitted
+                // block is a nested table, Word repairs the cell on open and can
+                // distort sibling cells.
+                var lastParagraph = cell.Paragraphs[cell.Paragraphs.Count - 1];
+                if (lastParagraph.Type == ParagraphType.NestedTable && lastParagraph.NestedTable != null)
+                {
+                    _writer.WriteStartElement("w", "p", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+                    _writer.WriteEndElement();
                 }
             }
             else

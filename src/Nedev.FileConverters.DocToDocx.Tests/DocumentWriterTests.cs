@@ -577,6 +577,19 @@ namespace Nedev.FileConverters.DocToDocx.Tests
             int count = xml.Split("<w:tbl").Length - 1;
             Assert.True(count >= 2, "Expected at least two tables, got " + count);
             Assert.Contains("inner", xml);
+
+            var xDocument = XDocument.Parse(xml);
+            XNamespace w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+            var parentCell = xDocument
+                .Descendants(w + "tbl")
+                .Where(tbl => !tbl.Ancestors(w + "tbl").Any())
+                .Single()
+                .Descendants(w + "tc")
+                .Single();
+
+            Assert.Equal(
+                new[] { w + "tcPr", w + "tbl", w + "p" },
+                parentCell.Elements().Select(element => element.Name).ToArray());
         }
 
         [Fact]
@@ -932,6 +945,116 @@ namespace Nedev.FileConverters.DocToDocx.Tests
             Assert.Contains("anchor=\"targetBookmark\"", documentXml);
             Assert.Contains("themeColor=\"accent1\"", documentXml);
             Assert.Contains("val=\"4472C4\"", documentXml);
+        }
+
+        [Fact]
+        public void HyperlinkRun_PreservesTabSeparators()
+        {
+            var doc = new DocumentModel();
+            var para = new ParagraphModel();
+            para.Runs.Add(new RunModel
+            {
+                Text = "Entry\t12",
+                IsHyperlink = true,
+                HyperlinkBookmark = "tocTarget"
+            });
+            doc.Paragraphs.Add(para);
+
+            byte[] pkg;
+            using (var ms = new MemoryStream())
+            {
+                var zw = new ZipWriter(ms);
+                zw.WriteDocument(doc);
+                zw.Dispose();
+                pkg = ms.ToArray();
+            }
+
+            using var zip = new System.IO.Compression.ZipArchive(new MemoryStream(pkg), System.IO.Compression.ZipArchiveMode.Read);
+            var documentXml = new StreamReader(zip.GetEntry("word/document.xml").Open()).ReadToEnd();
+
+            Assert.Contains("anchor=\"tocTarget\"", documentXml);
+            Assert.Contains("<w:tab", documentXml, StringComparison.Ordinal);
+            Assert.DoesNotContain(">Entry 12<", documentXml, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void TocStyle_WritesRightAlignedDotLeaderTabStop()
+        {
+            var doc = new DocumentModel();
+            doc.Styles.Styles.Add(new StyleDefinition
+            {
+                StyleId = 42,
+                Name = "toc 1",
+                Type = StyleType.Paragraph,
+                ParagraphProperties = new ParagraphProperties
+                {
+                    SpaceBefore = 240,
+                    SpaceAfter = 120,
+                    LineSpacing = 276
+                },
+                RunProperties = new RunProperties
+                {
+                    IsBold = true,
+                    FontSize = 20,
+                    FontSizeCs = 20
+                }
+            });
+
+            doc.Paragraphs.Add(new ParagraphModel
+            {
+                Properties = new ParagraphProperties { StyleIndex = 42 },
+                Runs =
+                {
+                    new RunModel { Text = "Entry\t1", IsHyperlink = true, HyperlinkBookmark = "tocTarget" }
+                }
+            });
+
+            byte[] pkg;
+            using (var ms = new MemoryStream())
+            {
+                var zw = new ZipWriter(ms);
+                zw.WriteDocument(doc);
+                zw.Dispose();
+                pkg = ms.ToArray();
+            }
+
+            using var zip = new System.IO.Compression.ZipArchive(new MemoryStream(pkg), System.IO.Compression.ZipArchiveMode.Read);
+            var stylesXml = new StreamReader(zip.GetEntry("word/styles.xml").Open()).ReadToEnd();
+
+            Assert.Contains("styleId=\"toc1\"", stylesXml, StringComparison.Ordinal);
+            Assert.Contains("<w:tabs><w:tab w:val=\"right\" w:leader=\"dot\"", stylesXml, StringComparison.Ordinal);
+            Assert.Contains("w:pos=\"9360\"", stylesXml, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void TocBookmarkHyperlink_DoesNotForceHyperlinkCharacterStyle()
+        {
+            var doc = new DocumentModel();
+            var para = new ParagraphModel();
+            para.Runs.Add(new RunModel
+            {
+                Text = "Entry\t1",
+                IsHyperlink = true,
+                HyperlinkBookmark = "_Toc123"
+            });
+            doc.Paragraphs.Add(para);
+
+            byte[] pkg;
+            using (var ms = new MemoryStream())
+            {
+                var zw = new ZipWriter(ms);
+                zw.WriteDocument(doc);
+                zw.Dispose();
+                pkg = ms.ToArray();
+            }
+
+            using var zip = new System.IO.Compression.ZipArchive(new MemoryStream(pkg), System.IO.Compression.ZipArchiveMode.Read);
+            var documentXml = new StreamReader(zip.GetEntry("word/document.xml").Open()).ReadToEnd();
+
+            Assert.Contains("anchor=\"_Toc123\"", documentXml, StringComparison.Ordinal);
+            Assert.DoesNotContain("<w:rStyle w:val=\"Hyperlink\" />", documentXml, StringComparison.Ordinal);
+            Assert.Contains("<w:noProof", documentXml, StringComparison.Ordinal);
+            Assert.Contains("<w:tab", documentXml, StringComparison.Ordinal);
         }
 
         [Fact]
@@ -1702,6 +1825,115 @@ namespace Nedev.FileConverters.DocToDocx.Tests
         }
 
         [Fact]
+        public void SampleList1Doc_LoadDocument_PreservesParagraphAListMetadata()
+        {
+            var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+            var inputPath = Path.Combine(repoRoot, "samples", "list1.doc");
+
+            var document = DocToDocxConverter.LoadDocument(inputPath);
+
+            var paragraphA = document.Paragraphs.FirstOrDefault(p => string.Equals(p.Text, "A", StringComparison.Ordinal));
+            Assert.NotNull(paragraphA);
+            Assert.True(
+                (paragraphA!.Properties?.ListFormatId ?? paragraphA.ListFormatId) > 0,
+                "Expected paragraph 'A' to retain list metadata from the source DOC.");
+
+            var listDefinition = document.NumberingDefinitions
+                .FirstOrDefault(definition => definition.Id == (paragraphA.Properties?.ListFormatId ?? paragraphA.ListFormatId));
+
+            Assert.NotNull(listDefinition);
+
+            var usedLevels = listDefinition!.Levels.Take(5).ToList();
+            Assert.Equal(5, usedLevels.Count);
+            Assert.Equal(usedLevels[0].Text, usedLevels[3].Text);
+            Assert.Equal(usedLevels[1].Text, usedLevels[4].Text);
+            Assert.NotEqual(usedLevels[0].Text, usedLevels[1].Text);
+            Assert.NotEqual(usedLevels[1].Text, usedLevels[2].Text);
+            Assert.NotEqual(usedLevels[0].RunProperties?.FontName, usedLevels[1].RunProperties?.FontName);
+            Assert.NotEqual(usedLevels[1].RunProperties?.FontName, usedLevels[2].RunProperties?.FontName);
+        }
+
+        [Fact]
+        public void SampleList1Doc_Conversion_PreservesMultilevelBulletGlyphPattern()
+        {
+            var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+            var inputPath = Path.Combine(repoRoot, "samples", "list1.doc");
+            var outputPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".docx");
+
+            try
+            {
+                DocToDocxConverter.Convert(inputPath, outputPath);
+
+                using var archive = new ZipArchive(File.OpenRead(outputPath), ZipArchiveMode.Read);
+                var documentEntry = archive.GetEntry("word/document.xml");
+                var numberingEntry = archive.GetEntry("word/numbering.xml");
+                Assert.NotNull(documentEntry);
+                Assert.NotNull(numberingEntry);
+
+                var documentXml = XDocument.Load(documentEntry!.Open());
+                var numberingXml = XDocument.Load(numberingEntry!.Open());
+                XNamespace w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+
+                string[] paragraphTexts = ["A", "c", "d", "e", "f"];
+                var levelDetails = paragraphTexts
+                    .Select(text => ResolveListLevel(numberingXml, documentXml, w, text))
+                    .ToList();
+
+                Assert.All(levelDetails, detail => Assert.False(string.IsNullOrWhiteSpace(detail.LevelText)));
+                Assert.Equal(levelDetails[0].LevelText, levelDetails[3].LevelText);
+                Assert.Equal(levelDetails[1].LevelText, levelDetails[4].LevelText);
+                Assert.NotEqual(levelDetails[0].LevelText, levelDetails[1].LevelText);
+                Assert.NotEqual(levelDetails[1].LevelText, levelDetails[2].LevelText);
+                Assert.Equal(levelDetails[0].LevelFont, levelDetails[3].LevelFont);
+                Assert.Equal(levelDetails[1].LevelFont, levelDetails[4].LevelFont);
+                Assert.NotEqual(levelDetails[0].LevelFont, levelDetails[1].LevelFont);
+                Assert.NotEqual(levelDetails[1].LevelFont, levelDetails[2].LevelFont);
+            }
+            finally
+            {
+                if (File.Exists(outputPath))
+                    File.Delete(outputPath);
+            }
+
+            static (string LevelText, string? LevelFont) ResolveListLevel(XDocument numberingXml, XDocument documentXml, XNamespace w, string paragraphText)
+            {
+                var paragraph = documentXml
+                    .Descendants(w + "p")
+                    .FirstOrDefault(element => string.Equals(string.Concat(element.Descendants(w + "t").Select(text => text.Value)), paragraphText, StringComparison.Ordinal));
+
+                Assert.NotNull(paragraph);
+
+                var numPr = paragraph!.Element(w + "pPr")?.Element(w + "numPr");
+                Assert.NotNull(numPr);
+
+                var numId = numPr!.Element(w + "numId")?.Attribute(w + "val")?.Value;
+                var ilvl = numPr.Element(w + "ilvl")?.Attribute(w + "val")?.Value;
+                Assert.False(string.IsNullOrWhiteSpace(numId));
+                Assert.False(string.IsNullOrWhiteSpace(ilvl));
+
+                var num = numberingXml
+                    .Descendants(w + "num")
+                    .FirstOrDefault(element => string.Equals(element.Attribute(w + "numId")?.Value, numId, StringComparison.Ordinal));
+                Assert.NotNull(num);
+
+                var abstractNumId = num!.Element(w + "abstractNumId")?.Attribute(w + "val")?.Value;
+                Assert.False(string.IsNullOrWhiteSpace(abstractNumId));
+
+                var level = numberingXml
+                    .Descendants(w + "abstractNum")
+                    .FirstOrDefault(element => string.Equals(element.Attribute(w + "abstractNumId")?.Value, abstractNumId, StringComparison.Ordinal))
+                    ?.Elements(w + "lvl")
+                    .FirstOrDefault(element => string.Equals(element.Attribute(w + "ilvl")?.Value, ilvl, StringComparison.Ordinal));
+
+                Assert.NotNull(level);
+
+                return (
+                    level!.Element(w + "lvlText")?.Attribute(w + "val")?.Value ?? string.Empty,
+                    level.Element(w + "rPr")?.Element(w + "rFonts")?.Attribute(w + "ascii")?.Value);
+            }
+        }
+
+        [Fact]
         public void SampleTableDoc_Conversion_DoesNotHang()
         {
             var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
@@ -2375,6 +2607,7 @@ namespace Nedev.FileConverters.DocToDocx.Tests
                 var firstRowCells = rows[0].Elements(w + "tc").ToList();
                 Assert.Equal(2, firstRowCells.Count);
                 Assert.True(firstRowCells[0].Descendants(w + "tbl").Any(), "Expected the nested table to stay in the first cell of the second top-level table.");
+                Assert.Equal(w + "p", firstRowCells[0].Elements().Last().Name);
                 Assert.False(firstRowCells[1].Descendants(w + "gridSpan").Any(), "Expected the first-row second cell to remain a standalone cell without horizontal merge markup.");
                 Assert.False(firstRowCells[1].Descendants(w + "vMerge").Any(), "Expected the first-row second cell to remain a standalone cell without vertical merge markup.");
             }
@@ -2457,6 +2690,57 @@ namespace Nedev.FileConverters.DocToDocx.Tests
                 Assert.True(titleIndex >= 0, "Expected converted document to contain the 表格嵌套 paragraph.");
                 Assert.True(titleIndex + 1 < bodyElements.Count, "Expected a body element after the 表格嵌套 paragraph.");
                 Assert.Equal(w + "tbl", bodyElements[titleIndex + 1].Name);
+            }
+            finally
+            {
+                if (File.Exists(outputPath))
+                    File.Delete(outputPath);
+            }
+        }
+
+        [Fact]
+        public void SampleTableDoc_Conversion_PreservesMergedCellSectionAsDirectTwoColumnTable()
+        {
+            var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+            var inputPath = Path.Combine(repoRoot, "samples", "table.doc");
+            var outputPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".docx");
+
+            try
+            {
+                DocToDocxConverter.Convert(inputPath, outputPath);
+
+                using var archive = new ZipArchive(File.OpenRead(outputPath), ZipArchiveMode.Read);
+                var documentXml = new StreamReader(archive.GetEntry("word/document.xml").Open()).ReadToEnd();
+                var xDocument = XDocument.Parse(documentXml);
+                XNamespace w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+                var bodyElements = xDocument.Root?
+                    .Element(w + "body")?
+                    .Elements()
+                    .ToList();
+
+                Assert.NotNull(bodyElements);
+
+                var titleIndex = bodyElements!.FindIndex(element =>
+                    element.Name == w + "p" &&
+                    string.Concat(element.Descendants(w + "t").Select(text => text.Value)).Contains("单元格合并", StringComparison.Ordinal));
+
+                Assert.True(titleIndex >= 0, "Expected converted document to contain the 单元格合并 paragraph.");
+                var mergeTable = bodyElements
+                    .Skip(titleIndex + 1)
+                    .TakeWhile(element =>
+                        element.Name != w + "p" ||
+                        string.IsNullOrWhiteSpace(string.Concat(element.Descendants(w + "t").Select(text => text.Value))))
+                    .FirstOrDefault(element => element.Name == w + "tbl");
+
+                Assert.NotNull(mergeTable);
+                Assert.Equal(w + "tbl", mergeTable.Name);
+                Assert.False(mergeTable.Descendants(w + "tbl").Any(), "Expected 单元格合并 to remain a direct top-level table instead of a synthesized nested wrapper.");
+
+                var rows = mergeTable.Elements(w + "tr").ToList();
+                Assert.NotEmpty(rows);
+
+                var firstRowCells = rows[0].Elements(w + "tc").ToList();
+                Assert.Equal(2, firstRowCells.Count);
             }
             finally
             {

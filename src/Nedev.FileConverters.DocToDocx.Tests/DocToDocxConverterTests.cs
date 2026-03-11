@@ -1288,6 +1288,258 @@ public class DocToDocxConverterTests
     }
 
     [Fact]
+    public void LoadDocument_Sample1Doc_PreservesNestedTableBesideSiblingCellContent()
+    {
+        var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+        var inputPath = Path.Combine(repoRoot, "samples", "sample1.doc");
+
+        var document = DocToDocxConverter.LoadDocument(inputPath);
+        var table = document.Tables.First(table =>
+            table.Rows.Count == 1 &&
+            table.Rows[0].Cells.Count >= 2 &&
+            table.Rows[0].Cells[0].Paragraphs.Any(paragraph => paragraph.Type == ParagraphType.NestedTable && paragraph.NestedTable != null) &&
+            table.Rows[0].Cells.Skip(1).Any(cell =>
+                cell.Paragraphs.Any(paragraph => paragraph.Text.Contains("To the left is a table inside a table", StringComparison.Ordinal))));
+
+        var firstCell = table.Rows[0].Cells[0];
+        var siblingCell = table.Rows[0].Cells.First(cell =>
+            cell.ColumnIndex > 0 &&
+            cell.Paragraphs.Any(paragraph => paragraph.Text.Contains("To the left is a table inside a table", StringComparison.Ordinal)));
+        var nestedTable = firstCell.Paragraphs
+            .Single(paragraph => paragraph.Type == ParagraphType.NestedTable && paragraph.NestedTable != null)
+            .NestedTable!;
+
+        Assert.Single(firstCell.Paragraphs.Where(paragraph => paragraph.Type == ParagraphType.NestedTable && paragraph.NestedTable != null));
+        Assert.DoesNotContain(firstCell.Paragraphs, paragraph =>
+            paragraph.Text.Contains("To the left is a table inside a table", StringComparison.Ordinal));
+        Assert.Equal(2, nestedTable.Rows.Count);
+        Assert.Equal(2, nestedTable.ColumnCount);
+        var nestedTopLeftCell = nestedTable.Rows[0].Cells.Single(cell => cell.ColumnIndex == 0);
+        var nestedTopRightCell = nestedTable.Rows[0].Cells.Single(cell => cell.ColumnIndex == 1);
+        var nestedBottomLeftCell = nestedTable.Rows[1].Cells.Single(cell => cell.ColumnIndex == 0);
+        var nestedBottomRightCell = nestedTable.Rows[1].Cells.Single(cell => cell.ColumnIndex == 1);
+
+        Assert.Equal(2, nestedTopLeftCell.RowSpan);
+        Assert.Equal(new[] { "One", "Three" }, nestedTopLeftCell.Paragraphs.Select(paragraph => paragraph.Text).Where(text => !string.IsNullOrWhiteSpace(text)).ToArray());
+        Assert.Equal("Two", string.Concat(nestedTopRightCell.Paragraphs.Select(paragraph => paragraph.Text)));
+        Assert.True(nestedBottomLeftCell.Paragraphs.All(paragraph => string.IsNullOrWhiteSpace(paragraph.Text)));
+        Assert.Equal("Four", string.Concat(nestedBottomRightCell.Paragraphs.Select(paragraph => paragraph.Text)));
+
+        Assert.Contains(siblingCell.Paragraphs, paragraph =>
+            paragraph.Text.Contains("To the left is a table inside a table, with some cells merged.", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void LoadDocument_Sample1Doc_DoesNotTreatTocHyperlinkArtifactsAsPictures()
+    {
+        var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+        var inputPath = Path.Combine(repoRoot, "samples", "sample1.doc");
+
+        var document = DocToDocxConverter.LoadDocument(inputPath);
+        var tocParagraphs = document.Paragraphs
+            .Where(paragraph => paragraph.Runs.Any(run =>
+                !string.IsNullOrEmpty(run.HyperlinkBookmark) &&
+                run.HyperlinkBookmark.StartsWith("_Toc", StringComparison.Ordinal)))
+            .ToList();
+
+        Assert.NotEmpty(tocParagraphs);
+        Assert.All(tocParagraphs, paragraph =>
+        {
+            Assert.DoesNotContain(paragraph.Runs, run => run.IsPicture);
+            Assert.Contains(paragraph.Runs, run => run.IsHyperlink && run.Text.Contains('\t'));
+        });
+    }
+
+    [Fact]
+    public void ConvertWithWarnings_Sample1Doc_KeepsNestedTableAndSiblingCellSeparated()
+    {
+        var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+        var inputPath = Path.Combine(repoRoot, "samples", "sample1.doc");
+        var outputPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".docx");
+
+        try
+        {
+            DocToDocxConverter.ConvertWithWarnings(inputPath, outputPath);
+
+            using var archive = ZipFile.OpenRead(outputPath);
+            var document = XDocument.Load(archive.GetEntry("word/document.xml")!.Open());
+            XNamespace w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+
+            var table = document
+                .Descendants(w + "tbl")
+                .First(tbl => string.Concat(tbl.Descendants(w + "t").Select(t => (string?)t))
+                    .Contains("To the left is a table inside a table, with some cells merged.", StringComparison.Ordinal));
+
+            var row = table.Elements(w + "tr").Single();
+            var cells = row.Elements(w + "tc").ToList();
+            var siblingCell = cells.Skip(1).First(tc =>
+                string.Concat(tc.Descendants(w + "t").Select(t => (string?)t))
+                    .Contains("To the left is a table inside a table, with some cells merged.", StringComparison.Ordinal));
+            var nestedTable = cells[0].Element(w + "tbl")!;
+            var nestedRows = nestedTable.Elements(w + "tr").ToList();
+
+            Assert.True(cells.Count >= 2);
+            Assert.NotNull(nestedTable);
+            Assert.DoesNotContain("To the left is a table inside a table", string.Concat(cells[0].Descendants(w + "t").Select(t => (string?)t)), StringComparison.Ordinal);
+            Assert.Equal(2, nestedRows.Count);
+            var topRowCells = nestedRows[0].Elements(w + "tc").ToList();
+            var bottomRowCells = nestedRows[1].Elements(w + "tc").ToList();
+
+            Assert.Equal(new[] { "OneThree", "Two" }, topRowCells.Select(tc => string.Concat(tc.Descendants(w + "t").Select(t => (string?)t))).ToArray());
+            Assert.Equal(new[] { string.Empty, "Four" }, bottomRowCells.Select(tc => string.Concat(tc.Descendants(w + "t").Select(t => (string?)t))).ToArray());
+            Assert.Equal("restart", (string?)topRowCells[0].Element(w + "tcPr")?.Element(w + "vMerge")?.Attribute(w + "val"));
+            Assert.NotNull(bottomRowCells[0].Element(w + "tcPr")?.Element(w + "vMerge"));
+            Assert.Equal("auto", (string?)nestedTable.Element(w + "tblPr")?.Element(w + "tblW")?.Attribute(w + "type"));
+            Assert.Null(nestedTable.Element(w + "tblPr")?.Element(w + "tblLayout"));
+            Assert.All(nestedTable.Descendants(w + "gridCol"), gridCol => Assert.Null(gridCol.Attribute(w + "w")));
+            Assert.All(nestedTable.Descendants(w + "tcW"), tcW => Assert.Null(tcW.Attribute(w + "w")));
+            Assert.Contains("To the left is a table inside a table, with some cells merged.", string.Concat(siblingCell.Descendants(w + "t").Select(t => (string?)t)), StringComparison.Ordinal);
+        }
+        finally
+        {
+            DeleteIfExists(outputPath);
+        }
+    }
+
+    [Fact]
+    public void ConvertWithWarnings_Sample1Doc_WritesTocEntriesWithoutDrawingArtifacts()
+    {
+        var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+        var inputPath = Path.Combine(repoRoot, "samples", "sample1.doc");
+        var outputPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".docx");
+
+        try
+        {
+            DocToDocxConverter.ConvertWithWarnings(inputPath, outputPath);
+
+            using var archive = ZipFile.OpenRead(outputPath);
+            var document = XDocument.Load(archive.GetEntry("word/document.xml")!.Open());
+            XNamespace w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+
+            var tocParagraphs = document
+                .Descendants(w + "p")
+                .Where(paragraph => paragraph.Descendants(w + "hyperlink")
+                    .Any(hyperlink => ((string?)hyperlink.Attribute(w + "anchor"))?.StartsWith("_Toc", StringComparison.Ordinal) == true))
+                .ToList();
+
+            Assert.NotEmpty(tocParagraphs);
+            Assert.All(tocParagraphs, paragraph =>
+            {
+                Assert.DoesNotContain(paragraph.Descendants(w + "drawing"), _ => true);
+                Assert.Contains(paragraph.Descendants(w + "tab"), _ => true);
+            });
+        }
+        finally
+        {
+            DeleteIfExists(outputPath);
+        }
+    }
+
+    [Fact]
+    public void ConvertWithWarnings_Sample1Doc_WritesTocStylesWithDotLeaderTabStops()
+    {
+        var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+        var inputPath = Path.Combine(repoRoot, "samples", "sample1.doc");
+        var outputPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".docx");
+
+        try
+        {
+            DocToDocxConverter.ConvertWithWarnings(inputPath, outputPath);
+
+            using var archive = ZipFile.OpenRead(outputPath);
+            var styles = XDocument.Load(archive.GetEntry("word/styles.xml")!.Open());
+            XNamespace w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+
+            foreach (var styleId in new[] { "toc1", "toc2" })
+            {
+                var style = styles
+                    .Descendants(w + "style")
+                    .FirstOrDefault(element =>
+                        string.Equals((string?)element.Attribute(w + "styleId"), styleId, StringComparison.OrdinalIgnoreCase));
+
+                Assert.NotNull(style);
+
+                var tab = style!
+                    .Descendants(w + "tab")
+                    .FirstOrDefault();
+
+                Assert.NotNull(tab);
+                Assert.Equal("right", (string?)tab!.Attribute(w + "val"));
+                Assert.Equal("dot", (string?)tab.Attribute(w + "leader"));
+            }
+        }
+        finally
+        {
+            DeleteIfExists(outputPath);
+        }
+    }
+
+    [Fact]
+    public void ConvertWithWarnings_Sample1Doc_DoesNotForceHyperlinkCharacterStyleOnTocEntries()
+    {
+        var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+        var inputPath = Path.Combine(repoRoot, "samples", "sample1.doc");
+        var outputPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".docx");
+
+        try
+        {
+            DocToDocxConverter.ConvertWithWarnings(inputPath, outputPath);
+
+            using var archive = ZipFile.OpenRead(outputPath);
+            var document = XDocument.Load(archive.GetEntry("word/document.xml")!.Open());
+            XNamespace w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+
+            var tocHyperlinks = document
+                .Descendants(w + "hyperlink")
+                .Where(hyperlink => ((string?)hyperlink.Attribute(w + "anchor"))?.StartsWith("_Toc", StringComparison.Ordinal) == true)
+                .ToList();
+
+            Assert.NotEmpty(tocHyperlinks);
+            Assert.All(tocHyperlinks, hyperlink =>
+            {
+                Assert.DoesNotContain(hyperlink.Descendants(w + "rStyle"), style =>
+                    string.Equals((string?)style.Attribute(w + "val"), "Hyperlink", StringComparison.Ordinal));
+            });
+        }
+        finally
+        {
+            DeleteIfExists(outputPath);
+        }
+    }
+
+    [Fact]
+    public void ConvertWithWarnings_Sample1Doc_MarksTocEntriesAsNoProof()
+    {
+        var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));
+        var inputPath = Path.Combine(repoRoot, "samples", "sample1.doc");
+        var outputPath = Path.Combine(Path.GetTempPath(), Guid.NewGuid() + ".docx");
+
+        try
+        {
+            DocToDocxConverter.ConvertWithWarnings(inputPath, outputPath);
+
+            using var archive = ZipFile.OpenRead(outputPath);
+            var document = XDocument.Load(archive.GetEntry("word/document.xml")!.Open());
+            XNamespace w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+
+            var tocHyperlinks = document
+                .Descendants(w + "hyperlink")
+                .Where(hyperlink => ((string?)hyperlink.Attribute(w + "anchor"))?.StartsWith("_Toc", StringComparison.Ordinal) == true)
+                .ToList();
+
+            Assert.NotEmpty(tocHyperlinks);
+            Assert.All(tocHyperlinks, hyperlink =>
+            {
+                Assert.Contains(hyperlink.Descendants(w + "noProof"), _ => true);
+            });
+        }
+        finally
+        {
+            DeleteIfExists(outputPath);
+        }
+    }
+
+    [Fact]
     public void Convert_ProgressEvent_FiresAtLeastOnce()
     {
         var repoRoot = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "..", "..", "..", "..", ".."));

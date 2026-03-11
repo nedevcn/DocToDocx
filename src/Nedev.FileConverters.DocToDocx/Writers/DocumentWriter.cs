@@ -1495,22 +1495,35 @@ public partial class DocumentWriter
             }
         }
 
-        // write a single run containing the sanitized text
+        bool isTableOfContentsBookmark = IsTableOfContentsBookmark(bookmarkTarget);
+        bool applyHyperlinkCharacterStyle = !isTableOfContentsBookmark;
+
+        // write a single run containing the sanitized text, preserving tabs and
+        // line-break semantics the same way as ordinary runs.
         _writer.WriteStartElement("w", "r", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
         _writer.WriteStartElement("w", "rPr", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
-        _writer.WriteStartElement("w", "rStyle", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
-        _writer.WriteAttributeString("w", "val", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", "Hyperlink");
-        _writer.WriteEndElement();
+        if (applyHyperlinkCharacterStyle)
+        {
+            _writer.WriteStartElement("w", "rStyle", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+            _writer.WriteAttributeString("w", "val", "http://schemas.openxmlformats.org/wordprocessingml/2006/main", "Hyperlink");
+            _writer.WriteEndElement();
+        }
+        if (isTableOfContentsBookmark)
+        {
+            _writer.WriteStartElement("w", "noProof", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
+            _writer.WriteEndElement();
+        }
         if (run.Properties != null && RunPropertiesHelper.HasRunProperties(run.Properties))
         {
             RunPropertiesHelper.WriteRunPropertiesContent(_writer, run.Properties, includeExtended: true, _document?.Theme);
         }
         _writer.WriteEndElement(); // w:rPr
-        _writer.WriteStartElement("w", "t", "http://schemas.openxmlformats.org/wordprocessingml/2006/main");
-        if (display.StartsWith(' ') || display.EndsWith(' ') || display.Contains("  "))
-            _writer.WriteAttributeString("xml", "space", "http://www.w3.org/XML/1998/namespace", "preserve");
-        _writer.WriteString(display);
-        _writer.WriteEndElement(); // w:t
+
+        var hyperlinkRun = new RunModel
+        {
+            Text = display
+        };
+        WriteRunText(hyperlinkRun);
         _writer.WriteEndElement(); // w:r
 
         _writer.WriteEndElement(); // w:hyperlink
@@ -2030,6 +2043,12 @@ public partial class DocumentWriter
             return true;
 
         return !string.IsNullOrEmpty(run.HyperlinkUrl);
+    }
+
+    private static bool IsTableOfContentsBookmark(string? bookmarkTarget)
+    {
+        return !string.IsNullOrEmpty(bookmarkTarget)
+            && bookmarkTarget.StartsWith("_Toc", StringComparison.Ordinal);
     }
     
     private void WriteRunText(RunModel run)

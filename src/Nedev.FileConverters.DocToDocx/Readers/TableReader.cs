@@ -246,6 +246,12 @@ public class TableReader
 
             if (isRowEnd)
             {
+                if (tapForParagraph != null &&
+                    (activeCtx.CurrentCellParagraphs.Count > 0 || activeCtx.CellsInCurrentRow.Count > 0))
+                {
+                    activeCtx.CurrentRowTap = MergeDeferredRowTap(activeCtx.CurrentRowTap, tapForParagraph);
+                }
+
                 if (activeCtx.CurrentCellParagraphs.Count == 0 &&
                     activeCtx.CellsInCurrentRow.Count == 0 &&
                     tapForParagraph != null &&
@@ -299,11 +305,32 @@ public class TableReader
                 };
 
                 cellParagraph.Runs.RemoveAll(r => string.IsNullOrEmpty(r.Text) && !r.IsPicture);
+
+                int trailingBoundaryCount = GetTrailingCellBoundaryColumnCount(para);
+                if (trailingBoundaryCount == 0 && textContent.Contains('\x07'))
+                {
+                    trailingBoundaryCount = 1;
+                }
+
+                if (trailingBoundaryCount > 1 &&
+                    activeCtx.CurrentCellParagraphs.Count > 0 &&
+                    activeCtx.CurrentCellParagraphs.All(p => p.Type == ParagraphType.NestedTable && p.NestedTable != null))
+                {
+                    // Some mixed parent/nested rows encode the first boundary for the
+                    // nested-table host cell and the second one for the following
+                    // sibling cell on the same paragraph. Close the nested cell first
+                    // so the trailing text lands in the next cell instead of being
+                    // swallowed into the nested-table cell.
+                    FlushCurrentCell(activeCtx);
+                    trailingBoundaryCount--;
+                }
+
                 activeCtx.CurrentCellParagraphs.Add(cellParagraph);
 
-                if (textContent.Contains('\x07'))
+                for (int boundaryIndex = 0; boundaryIndex < trailingBoundaryCount; boundaryIndex++)
                 {
-                    // This paragraph ended the cell.
+                    // A paragraph can carry more than one trailing cell marker when a
+                    // row ends with additional blank cells.
                     FlushCurrentCell(activeCtx);
                 }
             }
@@ -693,9 +720,12 @@ public class TableReader
 
             int nextSectionTitleIndex = FindNextStandaloneParagraphIndex(document, paragraphIndex + 1);
             bool looksLikeNestedSectionTitle = LooksLikeNestedSectionTitle(currentParagraph.Text);
+            if (!looksLikeNestedSectionTitle)
+                continue;
+
             var placeholderChild = TryBuildNestedPlaceholderTable(document, paragraphIndex, nextSectionTitleIndex);
 
-            if (!looksLikeNestedSectionTitle && placeholderChild == null)
+            if (placeholderChild == null)
                 continue;
 
             var nestedTable = topLevelTables.FirstOrDefault(table =>
@@ -1182,6 +1212,16 @@ public class TableReader
             return true;
 
         var rowCandidates = BuildRecoveredCellRows(paragraph, GetRowCandidates(paragraph).ToList());
+        if (rowCandidates.Count == 0 &&
+            !string.IsNullOrEmpty(paragraph.RawText) &&
+            paragraph.RawText.All(ch => ch == '\x07'))
+        {
+            int markerOnlyColumnCount = tapForParagraph?.CellWidths?.Length ?? GetMarkerHintColumnCount(paragraph);
+            if (markerOnlyColumnCount >= 2)
+            {
+                rowCandidates = BuildMarkerOnlyRecoveredRows(paragraph, paragraph.RawText.Length, markerOnlyColumnCount);
+            }
+        }
 
         if (rowCandidates.Count == 0)
             return false;
@@ -1273,6 +1313,40 @@ public class TableReader
         }
 
         return true;
+    }
+
+    private static List<List<RecoveredCell>> BuildMarkerOnlyRecoveredRows(ParagraphModel paragraph, int markerCount, int columnCount)
+    {
+        var rows = new List<List<RecoveredCell>>();
+        if (markerCount <= 0 || columnCount <= 0)
+            return rows;
+
+        int remainder = markerCount % columnCount;
+        if (remainder > 0 && markerCount > columnCount)
+        {
+            rows.Add(BuildMarkerOnlyRecoveredRow(paragraph, remainder));
+        }
+
+        int remainingMarkers = markerCount - (rows.Count > 0 ? remainder : 0);
+        while (remainingMarkers > 0)
+        {
+            int cellCount = Math.Min(columnCount, remainingMarkers);
+            rows.Add(BuildMarkerOnlyRecoveredRow(paragraph, cellCount));
+            remainingMarkers -= cellCount;
+        }
+
+        return rows;
+    }
+
+    private static List<RecoveredCell> BuildMarkerOnlyRecoveredRow(ParagraphModel paragraph, int cellCount)
+    {
+        var row = new List<RecoveredCell>(cellCount);
+        for (int cellIndex = 0; cellIndex < cellCount; cellIndex++)
+        {
+            row.Add(new RecoveredCell { SourceParagraph = paragraph });
+        }
+
+        return row;
     }
 
     private static bool TryExtractTrailingCompactRowParagraph(List<List<RecoveredCell>> rowCandidates, int columnCount, out RecoveredCell trailingCell)
@@ -1796,6 +1870,10 @@ public class TableReader
                BordersEqual(left.BorderInsideH, right.BorderInsideH) &&
                BordersEqual(left.BorderInsideV, right.BorderInsideV) &&
                CellBordersEqual(left.CellBorders, right.CellBorders) &&
+               CellMergesEqual(left.CellMerges, right.CellMerges) &&
+               CellShadingsEqual(left.CellShadings, right.CellShadings) &&
+               ((left.CellVerticalAlignments == null && right.CellVerticalAlignments == null) ||
+                (left.CellVerticalAlignments != null && right.CellVerticalAlignments != null && left.CellVerticalAlignments.SequenceEqual(right.CellVerticalAlignments))) &&
                ((left.CellWidths == null && right.CellWidths == null) ||
                 (left.CellWidths != null && right.CellWidths != null && left.CellWidths.SequenceEqual(right.CellWidths)));
     }
@@ -1854,6 +1932,59 @@ public class TableReader
                 !BordersEqual(leftBorder.Bottom, rightBorder.Bottom) ||
                 !BordersEqual(leftBorder.Left, rightBorder.Left) ||
                 !BordersEqual(leftBorder.Right, rightBorder.Right))
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool CellMergesEqual(CellMergeFlags[]? left, CellMergeFlags[]? right)
+    {
+        if (ReferenceEquals(left, right))
+            return true;
+
+        if (left == null || right == null || left.Length != right.Length)
+            return false;
+
+        for (int i = 0; i < left.Length; i++)
+        {
+            if (left[i].HorizFirst != right[i].HorizFirst ||
+                left[i].HorizMerged != right[i].HorizMerged ||
+                left[i].VertFirst != right[i].VertFirst ||
+                left[i].VertMerged != right[i].VertMerged)
+            {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static bool CellShadingsEqual(ShadingInfo?[]? left, ShadingInfo?[]? right)
+    {
+        if (ReferenceEquals(left, right))
+            return true;
+
+        if (left == null || right == null || left.Length != right.Length)
+            return false;
+
+        for (int i = 0; i < left.Length; i++)
+        {
+            var leftShading = left[i];
+            var rightShading = right[i];
+
+            if (ReferenceEquals(leftShading, rightShading))
+                continue;
+
+            if (leftShading == null || rightShading == null)
+                return false;
+
+            if (leftShading.Pattern != rightShading.Pattern ||
+                leftShading.PatternVal != rightShading.PatternVal ||
+                leftShading.ForegroundColor != rightShading.ForegroundColor ||
+                leftShading.BackgroundColor != rightShading.BackgroundColor)
             {
                 return false;
             }
@@ -2880,6 +3011,30 @@ public class TableReader
             existingTap.CellWidths = deferredTap.CellWidths.ToArray();
         }
 
+        if (deferredTap.CellMerges != null)
+        {
+            if (existingTap.CellMerges == null || existingTap.CellMerges.Length < deferredTap.CellMerges.Length)
+            {
+                existingTap.CellMerges = deferredTap.CellMerges.Select(flags => new CellMergeFlags
+                {
+                    HorizFirst = flags.HorizFirst,
+                    HorizMerged = flags.HorizMerged,
+                    VertFirst = flags.VertFirst,
+                    VertMerged = flags.VertMerged
+                }).ToArray();
+            }
+            else
+            {
+                for (int i = 0; i < deferredTap.CellMerges.Length; i++)
+                {
+                    existingTap.CellMerges[i].HorizFirst |= deferredTap.CellMerges[i].HorizFirst;
+                    existingTap.CellMerges[i].HorizMerged |= deferredTap.CellMerges[i].HorizMerged;
+                    existingTap.CellMerges[i].VertFirst |= deferredTap.CellMerges[i].VertFirst;
+                    existingTap.CellMerges[i].VertMerged |= deferredTap.CellMerges[i].VertMerged;
+                }
+            }
+        }
+
         if (existingTap.TableWidth == 0 && deferredTap.TableWidth != 0)
         {
             existingTap.TableWidth = deferredTap.TableWidth;
@@ -3084,6 +3239,13 @@ public class TableReader
             widthTemplate ??= GetWidthTemplate(effectiveRowTaps, tapColumnCount);
         }
 
+        if (TryRebuildNestedColumnMajorSingleCellTable(table, ctx.SourceParagraphs, effectiveRowTaps, ctx.Level, out var nestedColumnCount))
+        {
+            tapColumnCount = Math.Max(tapColumnCount, nestedColumnCount);
+            widthTemplate ??= GetWidthTemplate(effectiveRowTaps, tapColumnCount)
+                ?? BuildCompactWidthTemplate(effectiveRowTaps.FirstOrDefault(tap => tap != null), tapColumnCount, _documentProperties);
+        }
+
         if (TryRebuildCompactTrailingEmptyColumnTable(table, ctx.SourceParagraphs, out var compactColumnCount, out var compactWidthTemplate))
         {
             tapColumnCount = Math.Max(tapColumnCount, compactColumnCount);
@@ -3098,19 +3260,23 @@ public class TableReader
             }
         }
 
-        foreach (var row in table.Rows)
+        bool preserveJaggedMarkerOnlyRows = ShouldPreserveMarkerOnlyCompactRows(ctx.SourceParagraphs, table, tapColumnCount);
+        if (!preserveJaggedMarkerOnlyRows)
         {
-            while (row.Cells.Count < tapColumnCount)
+            foreach (var row in table.Rows)
             {
-                int columnIndex = row.Cells.Count;
-                row.Cells.Add(new TableCellModel
+                while (row.Cells.Count < tapColumnCount)
                 {
-                    Index = columnIndex,
-                    ColumnIndex = columnIndex,
-                    RowIndex = row.Index,
-                    Paragraphs = new List<ParagraphModel> { new() },
-                    Properties = new TableCellProperties()
-                });
+                    int columnIndex = row.Cells.Count;
+                    row.Cells.Add(new TableCellModel
+                    {
+                        Index = columnIndex,
+                        ColumnIndex = columnIndex,
+                        RowIndex = row.Index,
+                        Paragraphs = new List<ParagraphModel> { new() },
+                        Properties = new TableCellProperties()
+                    });
+                }
             }
         }
 
@@ -3339,6 +3505,139 @@ public class TableReader
         return true;
     }
 
+    private static bool TryRebuildNestedColumnMajorSingleCellTable(
+        TableModel table,
+        List<ParagraphModel> sourceParagraphs,
+        List<TapBase?> rowTaps,
+        int level,
+        out int columnCount)
+    {
+        columnCount = 0;
+
+        if (level <= 1 || table.Rows.Count < 2)
+            return false;
+
+        if (table.Rows.Any(row => row.Cells.Count != 1))
+            return false;
+
+        var contentParagraphs = table.Rows
+            .SelectMany(row => row.Cells[0].Paragraphs)
+            .Where(paragraph =>
+                paragraph.Type == ParagraphType.Normal &&
+                (!string.IsNullOrWhiteSpace(paragraph.Text) || paragraph.Runs.Any(run => !string.IsNullOrWhiteSpace(run.Text))))
+            .ToList();
+
+        if (contentParagraphs.Count <= table.Rows.Count || contentParagraphs.Count % table.Rows.Count != 0)
+            return false;
+
+        int emptySourceParagraphCount = sourceParagraphs.Count(paragraph =>
+            paragraph.Type == ParagraphType.TableCell &&
+            string.IsNullOrWhiteSpace(paragraph.Text));
+        if (emptySourceParagraphCount == 0)
+            return false;
+
+        columnCount = contentParagraphs.Count / table.Rows.Count;
+        if (columnCount < 2)
+            return false;
+
+        var rebuiltRows = new List<TableRowModel>(table.Rows.Count);
+        var rowParagraphQueues = table.Rows
+            .Select(row => new Queue<ParagraphModel>(row.Cells[0].Paragraphs.Where(paragraph =>
+                paragraph.Type == ParagraphType.Normal &&
+                (!string.IsNullOrWhiteSpace(paragraph.Text) || paragraph.Runs.Any(run => !string.IsNullOrWhiteSpace(run.Text))))))
+            .ToList();
+        var remainingColumnsPerRow = Enumerable.Repeat(columnCount, table.Rows.Count).ToArray();
+
+        for (int rowIndex = 0; rowIndex < table.Rows.Count; rowIndex++)
+        {
+            var originalRow = table.Rows[rowIndex];
+            var rowTap = rowIndex < rowTaps.Count ? rowTaps[rowIndex] : rowTaps.LastOrDefault();
+            var rebuiltRow = new TableRowModel
+            {
+                Index = rowIndex,
+                Properties = originalRow.Properties,
+                Cells = new List<TableCellModel>(columnCount)
+            };
+
+            for (int columnIndex = 0; columnIndex < columnCount; columnIndex++)
+            {
+                var cell = new TableCellModel
+                {
+                    RowIndex = rowIndex,
+                    Paragraphs = new List<ParagraphModel> { new() },
+                    Properties = new TableCellProperties()
+                };
+
+                ConfigureRebuiltCell(cell, rowTap, columnIndex, 1);
+                rebuiltRow.Cells.Add(cell);
+            }
+
+            rebuiltRows.Add(rebuiltRow);
+        }
+
+        for (int columnIndex = 0; columnIndex < columnCount; columnIndex++)
+        {
+            for (int rowIndex = 0; rowIndex < table.Rows.Count; rowIndex++)
+            {
+                var rowTap = rowIndex < rowTaps.Count ? rowTaps[rowIndex] : rowTaps.LastOrDefault();
+                var mergeFlags = GetCellMergeFlags(rowTap, columnIndex);
+                var targetCell = rebuiltRows[rowIndex].Cells[columnIndex];
+                var paragraphQueue = rowParagraphQueues[rowIndex];
+                TableCellModel? verticalOwner = null;
+
+                if (mergeFlags?.VertMerged == true)
+                {
+                    verticalOwner = FindVerticalMergeOwner(rebuiltRows, columnIndex, rowIndex);
+                }
+                else if (rowIndex > 0 && paragraphQueue.Count < remainingColumnsPerRow[rowIndex])
+                {
+                    int ownerRowIndex = FindStructuralVerticalMergeOwnerRow(rowParagraphQueues, remainingColumnsPerRow, rowIndex);
+                    if (ownerRowIndex >= 0)
+                    {
+                        verticalOwner = rebuiltRows[ownerRowIndex].Cells[columnIndex];
+                    }
+                }
+
+                if (verticalOwner != null)
+                {
+                    var ownerRowIndex = verticalOwner.RowIndex;
+                    var ownerQueue = rowParagraphQueues[ownerRowIndex];
+                    if (ownerQueue.Count > 0)
+                    {
+                        AppendParagraphToCell(verticalOwner, ownerQueue.Dequeue());
+                    }
+
+                    verticalOwner.RowSpan = Math.Max(verticalOwner.RowSpan, rowIndex - ownerRowIndex + 1);
+                    remainingColumnsPerRow[rowIndex]--;
+                    continue;
+                }
+
+                if (paragraphQueue.Count > 0)
+                {
+                    var paragraph = paragraphQueue.Dequeue();
+
+                    if (mergeFlags?.HorizMerged == true)
+                    {
+                        var horizontalOwner = FindHorizontalMergeOwner(rebuiltRows[rowIndex], columnIndex);
+                        if (horizontalOwner != null)
+                        {
+                            AppendParagraphToCell(horizontalOwner, paragraph);
+                            remainingColumnsPerRow[rowIndex]--;
+                            continue;
+                        }
+                    }
+
+                    targetCell.Paragraphs = new List<ParagraphModel> { paragraph };
+                }
+
+                remainingColumnsPerRow[rowIndex]--;
+            }
+        }
+
+        table.Rows = rebuiltRows;
+        return true;
+    }
+
     private TapBase? ResolveParagraphExactTap(ParagraphModel paragraph)
     {
         TapBase? bestTap = null;
@@ -3474,6 +3773,21 @@ public class TableReader
         return flattenedCells.Count > 0;
     }
 
+    private static bool ShouldPreserveMarkerOnlyCompactRows(List<ParagraphModel> sourceParagraphs, TableModel table, int tapColumnCount)
+    {
+        if (tapColumnCount < 2 || sourceParagraphs.Count != 1)
+            return false;
+
+        var sourceParagraph = sourceParagraphs[0];
+        if (string.IsNullOrEmpty(sourceParagraph.RawText) || !sourceParagraph.RawText.All(ch => ch == '\x07'))
+            return false;
+
+        return table.Rows
+            .Select(row => row.Cells.Count)
+            .Distinct()
+            .Count() > 1;
+    }
+
     private static void ConfigureRebuiltCell(TableCellModel cell, TapBase? rowTap, int columnIndex, int columnSpan)
     {
         cell.Index = columnIndex;
@@ -3482,7 +3796,6 @@ public class TableReader
         cell.RowSpan = Math.Max(1, cell.RowSpan);
 
         cell.Properties ??= new TableCellProperties();
-
         if (rowTap?.CellWidths != null && rowTap.CellWidths.Length > columnIndex)
         {
             int width = 0;
@@ -3522,6 +3835,59 @@ public class TableReader
         {
             cell.Properties.VerticalAlignment = (VerticalAlignment)rowTap.CellVerticalAlignments[columnIndex];
         }
+    }
+
+    private static CellMergeFlags? GetCellMergeFlags(TapBase? rowTap, int columnIndex)
+    {
+        if (rowTap?.CellMerges == null || columnIndex < 0 || columnIndex >= rowTap.CellMerges.Length)
+            return null;
+
+        return rowTap.CellMerges[columnIndex];
+    }
+
+    private static TableCellModel? FindHorizontalMergeOwner(TableRowModel row, int columnIndex)
+    {
+        for (int candidateIndex = columnIndex - 1; candidateIndex >= 0; candidateIndex--)
+        {
+            var candidateCell = row.Cells[candidateIndex];
+            if (candidateCell.ColumnIndex < columnIndex)
+                return candidateCell;
+        }
+
+        return null;
+    }
+
+    private static TableCellModel? FindVerticalMergeOwner(List<TableRowModel> rows, int columnIndex, int rowIndex)
+    {
+        for (int candidateRowIndex = rowIndex - 1; candidateRowIndex >= 0; candidateRowIndex--)
+        {
+            var candidateCell = rows[candidateRowIndex].Cells[columnIndex];
+            if (candidateCell.RowSpan >= rowIndex - candidateRowIndex || CellHasContent(candidateCell))
+                return candidateCell;
+        }
+
+        return null;
+    }
+
+    private static int FindStructuralVerticalMergeOwnerRow(List<Queue<ParagraphModel>> rowParagraphQueues, int[] remainingColumnsPerRow, int rowIndex)
+    {
+        for (int candidateRowIndex = rowIndex - 1; candidateRowIndex >= 0; candidateRowIndex--)
+        {
+            if (rowParagraphQueues[candidateRowIndex].Count > remainingColumnsPerRow[candidateRowIndex])
+                return candidateRowIndex;
+        }
+
+        return -1;
+    }
+
+    private static void AppendParagraphToCell(TableCellModel cell, ParagraphModel paragraph)
+    {
+        if (cell.Paragraphs.Count == 1 && string.IsNullOrWhiteSpace(cell.Paragraphs[0].Text) && cell.Paragraphs[0].Runs.Count == 0)
+        {
+            cell.Paragraphs.Clear();
+        }
+
+        cell.Paragraphs.Add(paragraph);
     }
 
     private static int[]? GetWidthTemplate(List<TapBase?> rowTaps, int tapColumnCount)

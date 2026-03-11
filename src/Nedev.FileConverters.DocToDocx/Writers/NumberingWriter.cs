@@ -55,7 +55,9 @@ public class NumberingWriter
             .ToList();
 
         var usedListIds = document.Paragraphs
-            .Select(paragraph => paragraph.Properties?.ListFormatId ?? paragraph.ListFormatId)
+            .Select(paragraph => (paragraph.Properties?.ListFormatId ?? 0) > 0
+                ? paragraph.Properties!.ListFormatId
+                : paragraph.ListFormatId)
             .Where(listId => listId > 0)
             .Distinct()
             .OrderBy(listId => listId)
@@ -115,7 +117,13 @@ public class NumberingWriter
 
         for (int lvl = 0; lvl < 9; lvl++)
         {
-            WriteLevel(lvl, NumberFormat.Decimal, $"%{lvl + 1}.", 1);
+            WriteLevel(new NumberingLevel
+            {
+                Level = lvl,
+                NumberFormat = NumberFormat.Decimal,
+                Text = $"%{lvl + 1}.",
+                Start = 1
+            });
         }
 
         _writer.WriteEndElement();
@@ -150,33 +158,44 @@ public class NumberingWriter
         {
             foreach (var level in numDef.Levels)
             {
-                WriteLevel(level.Level, level.NumberFormat, level.Text ?? $"%{level.Level + 1}.", level.Start);
+                WriteLevel(level);
             }
         }
         else
         {
             // Fallback: write a single bullet level
-            WriteLevel(0, NumberFormat.Bullet, "\u00B7", 1);
+            WriteLevel(new NumberingLevel
+            {
+                Level = 0,
+                NumberFormat = NumberFormat.Bullet,
+                Text = "\u00B7",
+                Start = 1
+            });
         }
 
         _writer.WriteEndElement(); // w:abstractNum
     }
 
-    private void WriteLevel(int level, NumberFormat numFmt, string prefix, int start)
+    private void WriteLevel(NumberingLevel level)
     {
+        var indentLeft = level.ParagraphProperties?.IndentLeft;
+        var hanging = level.ParagraphProperties?.IndentFirstLine < 0
+            ? Math.Abs(level.ParagraphProperties.IndentFirstLine)
+            : 360;
+
         _writer.WriteStartElement("w", "lvl", WNs);
-        _writer.WriteAttributeString("w", "ilvl", WNs, level.ToString());
+        _writer.WriteAttributeString("w", "ilvl", WNs, level.Level.ToString());
 
         _writer.WriteStartElement("w", "start", WNs);
-        _writer.WriteAttributeString("w", "val", WNs, start.ToString());
+        _writer.WriteAttributeString("w", "val", WNs, level.Start.ToString());
         _writer.WriteEndElement();
 
         _writer.WriteStartElement("w", "numFmt", WNs);
-        _writer.WriteAttributeString("w", "val", WNs, GetNumberFormatValue(numFmt));
+        _writer.WriteAttributeString("w", "val", WNs, GetNumberFormatValue(level.NumberFormat));
         _writer.WriteEndElement();
 
         _writer.WriteStartElement("w", "lvlText", WNs);
-        _writer.WriteAttributeString("w", "val", WNs, prefix);
+        _writer.WriteAttributeString("w", "val", WNs, level.Text ?? $"%{level.Level + 1}.");
         _writer.WriteEndElement();
 
         _writer.WriteStartElement("w", "lvlJc", WNs);
@@ -185,10 +204,15 @@ public class NumberingWriter
 
         _writer.WriteStartElement("w", "pPr", WNs);
         _writer.WriteStartElement("w", "ind", WNs);
-        _writer.WriteAttributeString("w", "left", WNs, (720 + level * 720).ToString());
-        _writer.WriteAttributeString("w", "hanging", WNs, "360");
+        _writer.WriteAttributeString("w", "left", WNs, (indentLeft.GetValueOrDefault(720 + level.Level * 720)).ToString());
+        _writer.WriteAttributeString("w", "hanging", WNs, hanging.ToString());
         _writer.WriteEndElement();
         _writer.WriteEndElement(); // w:pPr
+
+        if (level.RunProperties != null && RunPropertiesHelper.HasRunProperties(level.RunProperties))
+        {
+            RunPropertiesHelper.WriteStyleRunProperties(_writer, level.RunProperties);
+        }
 
         _writer.WriteEndElement(); // w:lvl
     }

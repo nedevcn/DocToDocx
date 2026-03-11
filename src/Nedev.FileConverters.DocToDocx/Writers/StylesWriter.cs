@@ -314,6 +314,43 @@ public class StylesWriter
             DateIns = source.DateIns
         };
     }
+
+    private bool IsTableOfContentsStyle(string? styleId)
+    {
+        if (string.IsNullOrWhiteSpace(styleId))
+        {
+            return false;
+        }
+
+        if (!styleId.StartsWith("toc", StringComparison.OrdinalIgnoreCase))
+        {
+            return false;
+        }
+
+        return styleId.Length == 3 || char.IsDigit(styleId[3]);
+    }
+
+    private int GetDefaultTableOfContentsTabPosition()
+    {
+        int pageWidth = _document?.Properties.PageWidth ?? 12240;
+        int marginLeft = _document?.Properties.MarginLeft ?? 1440;
+        int marginRight = _document?.Properties.MarginRight ?? 1440;
+        int textWidth = pageWidth - marginLeft - marginRight;
+        return Math.Clamp(textWidth, 1, 31680);
+    }
+
+    private void WriteTableOfContentsTabStop()
+    {
+        const string wNs = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+
+        _writer.WriteStartElement("w", "tabs", wNs);
+        _writer.WriteStartElement("w", "tab", wNs);
+        _writer.WriteAttributeString("w", "val", wNs, "right");
+        _writer.WriteAttributeString("w", "leader", wNs, "dot");
+        _writer.WriteAttributeString("w", "pos", wNs, GetDefaultTableOfContentsTabPosition().ToString());
+        _writer.WriteEndElement();
+        _writer.WriteEndElement();
+    }
     
     private void WriteNormalStyle()
     {
@@ -529,7 +566,7 @@ public class StylesWriter
         // Paragraph-level properties for this style (if any)
         if (style.ParagraphProperties != null)
         {
-            WriteStyleParagraphProperties(style.ParagraphProperties);
+            WriteStyleParagraphProperties(style.ParagraphProperties, styleId);
         }
 
         // Run-level properties for this style (if any)
@@ -787,7 +824,7 @@ public class StylesWriter
     /// Writes w:pPr for a style, using the same mapping as document-level paragraph properties
     /// but without list/numbering.
     /// </summary>
-    private void WriteStyleParagraphProperties(ParagraphProperties props)
+    private void WriteStyleParagraphProperties(ParagraphProperties props, string? styleId = null)
     {
         const string wNs = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
         _writer.WriteStartElement("w", "pPr", wNs);
@@ -818,6 +855,11 @@ public class StylesWriter
             if (props.BorderLeft != null) WriteStyleBorder("left", props.BorderLeft);
             if (props.BorderRight != null) WriteStyleBorder("right", props.BorderRight);
             _writer.WriteEndElement();
+        }
+
+        if (IsTableOfContentsStyle(styleId))
+        {
+            WriteTableOfContentsTabStop();
         }
 
         // Spacing
