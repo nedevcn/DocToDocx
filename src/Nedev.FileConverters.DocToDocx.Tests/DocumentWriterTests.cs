@@ -388,6 +388,79 @@ namespace Nedev.FileConverters.DocToDocx.Tests
         }
 
         [Fact]
+        public void WriteDocument_NumberingInstances_EmitFormattingOnlyOverridesWithoutStartOverride()
+        {
+            var doc = new DocumentModel();
+            doc.NumberingDefinitions.Add(new NumberingDefinition
+            {
+                Id = 42,
+                Levels =
+                {
+                    new NumberingLevel
+                    {
+                        Level = 0,
+                        NumberFormat = NumberFormat.Decimal,
+                        Text = "%1.",
+                        Start = 1,
+                        Alignment = 0
+                    }
+                }
+            });
+            doc.ListFormatOverrides.Add(new ListFormatOverride
+            {
+                OverrideId = 7,
+                ListId = 42,
+                Levels =
+                {
+                    new ListLevelOverride
+                    {
+                        Level = 0,
+                        HasStartAt = false,
+                        HasFormattingOverride = true,
+                        Alignment = 1,
+                        NumberFormat = NumberFormat.Bullet,
+                        NumberText = "*"
+                    }
+                }
+            });
+            doc.Paragraphs.Add(new ParagraphModel
+            {
+                Properties = new ParagraphProperties
+                {
+                    ListFormatId = 7,
+                    ListLevel = 0
+                },
+                Runs = { new RunModel { Text = "item" } }
+            });
+
+            byte[] package;
+            using (var ms = new MemoryStream())
+            {
+                var zw = new ZipWriter(ms);
+                zw.WriteDocument(doc);
+                zw.Dispose();
+                package = ms.ToArray();
+            }
+
+            using var zip = new ZipArchive(new MemoryStream(package), ZipArchiveMode.Read);
+            var numberingXml = XDocument.Load(zip.GetEntry("word/numbering.xml")!.Open());
+            XNamespace w = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+
+            var levelOverride = numberingXml
+                .Descendants(w + "num")
+                .First(element => string.Equals(element.Attribute(w + "numId")?.Value, "7", StringComparison.Ordinal))
+                .Elements(w + "lvlOverride")
+                .First(element => string.Equals(element.Attribute(w + "ilvl")?.Value, "0", StringComparison.Ordinal));
+
+            Assert.Null(levelOverride.Element(w + "startOverride"));
+            var overrideLevel = levelOverride.Element(w + "lvl");
+            Assert.NotNull(overrideLevel);
+            Assert.Equal("bullet", overrideLevel!.Element(w + "numFmt")?.Attribute(w + "val")?.Value);
+            Assert.Equal("*", overrideLevel.Element(w + "lvlText")?.Attribute(w + "val")?.Value);
+            Assert.Equal("center", overrideLevel.Element(w + "lvlJc")?.Attribute(w + "val")?.Value);
+        }
+
+        [Fact]
         public void WriteDocument_Annotations_UseThemeAwareRunProperties()
         {
             var doc = new DocumentModel

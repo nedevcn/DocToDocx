@@ -474,6 +474,126 @@ public class DocBinaryReaderRegressionTests
     }
 
     [Fact]
+    public void ListReader_ReadPlfLfo_ParsesFormattingOnlyLfOlvlOverrides()
+    {
+        using var tableStream = new MemoryStream();
+        using (var writer = new BinaryWriter(tableStream, Encoding.Unicode, leaveOpen: true))
+        {
+            writer.Write(new byte[4]);
+            writer.Write(1);
+            writer.Write(42);
+            writer.Write(0u);
+            writer.Write(0u);
+            writer.Write((byte)1);
+            writer.Write((byte)0);
+            writer.Write((byte)0);
+            writer.Write((byte)0);
+
+            writer.Write(0);
+            writer.Write((byte)0x20);
+            writer.Write((byte)0);
+            writer.Write((ushort)0);
+
+            writer.Write(1);
+            writer.Write((byte)23);
+            writer.Write((byte)1);
+            writer.Write((byte)0);
+            writer.Write((byte)0);
+            writer.Write(new byte[9]);
+            writer.Write((byte)0);
+            writer.Write(0);
+            writer.Write(0);
+            writer.Write((byte)0);
+            writer.Write((byte)0);
+            writer.Write((byte)0);
+            writer.Write((byte)0);
+            writer.Write((ushort)1);
+            writer.Write(new[] { '*' });
+        }
+
+        tableStream.Position = 0;
+
+        var fib = CreateSyntheticFibReader(fibReader =>
+        {
+            SetAutoProperty(fibReader, nameof(FibReader.FcPlfLfo), 4u);
+            SetAutoProperty(fibReader, nameof(FibReader.LcbPlfLfo), (uint)(tableStream.Length - 4));
+        });
+
+        using var tableReader = new BinaryReader(tableStream, Encoding.Unicode, leaveOpen: true);
+        var listReader = new ListReader(tableReader, fib);
+        SetAutoProperty(listReader, nameof(ListReader.ListFormats), new List<ListFormat>
+        {
+            new() { ListId = 42, Type = ListType.Bullet }
+        });
+
+        var readPlfLfoMethod = typeof(ListReader).GetMethod("ReadPlfLfo", BindingFlags.Instance | BindingFlags.NonPublic);
+        Assert.NotNull(readPlfLfoMethod);
+
+        readPlfLfoMethod!.Invoke(listReader, Array.Empty<object>());
+
+        var overrideDefinition = Assert.Single(listReader.ListFormatOverrides.Where(listOverride => listOverride.OverrideId == 1 && listOverride.ListId == 42));
+        var levelOverride = Assert.Single(overrideDefinition.Levels);
+        Assert.True(levelOverride.HasFormattingOverride);
+        Assert.False(levelOverride.HasStartAt);
+        Assert.Equal(NumberFormat.Bullet, levelOverride.NumberFormat);
+        Assert.Equal("*", levelOverride.NumberText);
+        Assert.Equal(1, levelOverride.Alignment);
+    }
+
+    [Fact]
+    public void ListReader_ReadPlfLfo_MalformedLfOlvlFormattingOverride_EmitsWarningAndKeepsStartOverride()
+    {
+        using var tableStream = new MemoryStream();
+        using (var writer = new BinaryWriter(tableStream, Encoding.Default, leaveOpen: true))
+        {
+            writer.Write(new byte[4]);
+            writer.Write(1);
+            writer.Write(42);
+            writer.Write(0u);
+            writer.Write(0u);
+            writer.Write((byte)1);
+            writer.Write((byte)0);
+            writer.Write((byte)0);
+            writer.Write((byte)0);
+
+            writer.Write(7);
+            writer.Write((byte)0x30);
+            writer.Write((byte)0);
+            writer.Write((ushort)0);
+        }
+
+        tableStream.Position = 0;
+
+        var fib = CreateSyntheticFibReader(fibReader =>
+        {
+            SetAutoProperty(fibReader, nameof(FibReader.FcPlfLfo), 4u);
+            SetAutoProperty(fibReader, nameof(FibReader.LcbPlfLfo), (uint)(tableStream.Length - 4));
+        });
+
+        using var tableReader = new BinaryReader(tableStream, Encoding.Default, leaveOpen: true);
+        var listReader = new ListReader(tableReader, fib);
+        SetAutoProperty(listReader, nameof(ListReader.ListFormats), new List<ListFormat>
+        {
+            new() { ListId = 42, Type = ListType.Simple }
+        });
+
+        var diagnostics = new List<ConversionDiagnostic>();
+        using (Logger.BeginDiagnosticCapture(diagnostics))
+        {
+            var readPlfLfoMethod = typeof(ListReader).GetMethod("ReadPlfLfo", BindingFlags.Instance | BindingFlags.NonPublic);
+            Assert.NotNull(readPlfLfoMethod);
+            readPlfLfoMethod!.Invoke(listReader, Array.Empty<object>());
+        }
+
+        var overrideDefinition = Assert.Single(listReader.ListFormatOverrides.Where(listOverride => listOverride.OverrideId == 1 && listOverride.ListId == 42));
+        var levelOverride = Assert.Single(overrideDefinition.Levels);
+        Assert.True(levelOverride.HasStartAt);
+        Assert.False(levelOverride.HasFormattingOverride);
+        Assert.Equal(7, levelOverride.StartAt);
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Message.Contains("LFOLVL formatting override", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public void StyleReader_InvalidFontTableRange_FallsBackToDefaultsAndEmitsWarning()
     {
         using var stream = new MemoryStream(new byte[16]);

@@ -534,7 +534,21 @@ public class ListReader
             overriddenLevel = ReadEmbeddedLevelFormat(level, listType, endPos);
             if (overriddenLevel == null)
             {
-                return false;
+                Logger.Warning($"Skipped malformed LFOLVL formatting override for list level {level}.");
+
+                if (hasStartAt && startAt > 0)
+                {
+                    levelOverride = new ListLevelOverride
+                    {
+                        Level = level,
+                        StartAt = startAt,
+                        HasStartAt = true,
+                        HasFormattingOverride = false
+                    };
+                }
+
+                _tableReader.BaseStream.Position = endPos;
+                return true;
             }
         }
 
