@@ -145,16 +145,15 @@ public class TextboxReader
         if (string.IsNullOrEmpty(text))
             return paragraphs;
 
-        // Split by paragraph marks, tracking CP positions
-        var lines = text.Split(new[] { '\r', '\n' }, StringSplitOptions.RemoveEmptyEntries);
         int paraIndex = 0;
-        int currentCp = startCp;
+        int segmentStart = 0;
+        int paragraphStartCp = startCp;
 
-        foreach (var line in lines)
+        for (int position = 0; position <= text.Length; position++)
         {
-            if (string.IsNullOrWhiteSpace(line))
+            bool atEnd = position == text.Length;
+            if (!atEnd && !IsParagraphSeparator(text[position]))
             {
-                currentCp += line.Length + 1; // +1 for the delimiter
                 continue;
             }
 
@@ -164,6 +163,8 @@ public class TextboxReader
                 Type = ParagraphType.Normal
             };
 
+            int segmentLength = position - segmentStart;
+
             // Try to get actual CHP properties from FkpParser
             RunProperties? runProps = null;
             ParagraphProperties? paragraphProps = null;
@@ -171,13 +172,13 @@ public class TextboxReader
             {
                 try
                 {
-                    var chp = _fkpParser.GetChpAtCp(currentCp);
+                    var chp = _fkpParser.GetChpAtCp(paragraphStartCp);
                     if (chp != null)
                     {
                         runProps = _fkpParser.ConvertToRunProperties(chp, _styles);
                     }
 
-                    var pap = _fkpParser.GetPapAtCp(currentCp);
+                    var pap = _fkpParser.GetPapAtCp(paragraphStartCp);
                     if (pap != null)
                     {
                         paragraphProps = _fkpParser.ConvertToParagraphProperties(pap, _styles);
@@ -191,19 +192,41 @@ public class TextboxReader
 
             paragraph.Properties = paragraphProps;
 
-            paragraph.Runs.Add(new RunModel
+            if (segmentLength > 0)
             {
-                Text = line.Trim(),
-                CharacterPosition = currentCp,
-                CharacterLength = line.Trim().Length,
-                Properties = runProps ?? new RunProperties()
-            });
+                paragraph.Runs.Add(new RunModel
+                {
+                    Text = text.Substring(segmentStart, segmentLength),
+                    CharacterPosition = paragraphStartCp,
+                    CharacterLength = segmentLength,
+                    Properties = runProps ?? new RunProperties()
+                });
+            }
 
             paragraphs.Add(paragraph);
-            currentCp += line.Length + 1; // +1 for paragraph separator
+
+            if (atEnd)
+            {
+                break;
+            }
+
+            int separatorLength = 1;
+            if (text[position] == '\r' && position + 1 < text.Length && text[position + 1] == '\n')
+            {
+                separatorLength = 2;
+                position++;
+            }
+
+            segmentStart = position + 1;
+            paragraphStartCp = startCp + segmentStart;
         }
 
         return paragraphs;
+    }
+
+    private static bool IsParagraphSeparator(char ch)
+    {
+        return ch == '\r' || ch == '\n';
     }
 
     private string CleanTextboxText(string text)
@@ -238,6 +261,6 @@ public class TextboxReader
             }
         }
 
-        return sb.ToString().Trim();
+        return sb.ToString();
     }
 }

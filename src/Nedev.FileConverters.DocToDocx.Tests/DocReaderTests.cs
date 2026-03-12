@@ -161,6 +161,44 @@ public class DocReaderTests
     }
 
     [Fact]
+    public void ExtractFields_ReturnsStructuredFieldsFromStoryParagraphs()
+    {
+        var paragraphs = new List<ParagraphModel>
+        {
+            new()
+            {
+                Runs =
+                {
+                    new RunModel { IsField = true, FieldCode = "PAGE \\* MERGEFORMAT" },
+                    new RunModel { Text = "1" }
+                }
+            },
+            new()
+            {
+                Runs =
+                {
+                    new RunModel { IsField = true, FieldCode = "HYPERLINK \"https://example.com\"" }
+                }
+            }
+        };
+
+        var fields = DocReader.ExtractFields(paragraphs, new FieldReader());
+
+        Assert.Collection(
+            fields,
+            field =>
+            {
+                Assert.Equal(FieldType.PageNumber, field.Type);
+                Assert.Equal("MERGEFORMAT", field.Switches["*"]);
+            },
+            field =>
+            {
+                Assert.Equal(FieldType.Hyperlink, field.Type);
+                Assert.Equal("\"https://example.com\"", field.Arguments);
+            });
+    }
+
+    [Fact]
     public void MergeTextboxShapesIntoTextboxes_CopiesRecoveredLayout_AndRemovesDuplicateShapes()
     {
         var document = new DocumentModel();
@@ -244,8 +282,8 @@ public class DocReaderTests
 
         DocReader.AttachTextboxAnchorHints(document, new[]
         {
-            new TextboxAnchorFieldInfo { FieldStartCharacterPosition = 5 },
-            new TextboxAnchorFieldInfo { FieldStartCharacterPosition = 25 }
+            new StoryFieldInfo { FieldStartCharacterPosition = 5 },
+            new StoryFieldInfo { FieldStartCharacterPosition = 25 }
         });
 
         Assert.Equal(5, document.Textboxes[0].AnchorCharacterPosition);
@@ -268,7 +306,7 @@ public class DocReaderTests
             text.LastIndexOf(FieldReader.FieldEndChar)
         };
 
-        var fields = DocReader.BuildTextboxAnchorFields(text, text.Length, plcPositions);
+        var fields = DocReader.BuildStoryFields(text, 0, text.Length, plcPositions);
 
         Assert.Equal(2, fields.Count);
         Assert.Equal(plcPositions[0], fields[0].FieldStartCharacterPosition);
@@ -277,6 +315,20 @@ public class DocReaderTests
         Assert.Equal(plcPositions[3], fields[1].FieldStartCharacterPosition);
         Assert.Equal(plcPositions[4], fields[1].FieldSeparatorCharacterPosition);
         Assert.Equal(plcPositions[5], fields[1].FieldEndCharacterPosition);
+    }
+
+    [Fact]
+    public void BuildStoryFields_UsesAbsoluteStoryOffsets()
+    {
+        const string text = "prefix\u0013 FIELD \u0014result\u0015suffix";
+        var positions = new[] { 6, 14, 21 };
+
+        var fields = DocReader.BuildStoryFields(text, 6, text.Length, positions);
+
+        var field = Assert.Single(fields);
+        Assert.Equal(6, field.FieldStartCharacterPosition);
+        Assert.Equal(14, field.FieldSeparatorCharacterPosition);
+        Assert.Equal(21, field.FieldEndCharacterPosition);
     }
 
     private static void AddChpRange(Dictionary<int, ChpBase> map, int start, int end, int fontSize)

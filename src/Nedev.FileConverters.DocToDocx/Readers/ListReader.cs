@@ -70,6 +70,7 @@ public class ListReader
                     NumberFormat = lvl.NumberFormat,
                     Text = lvl.NumberText ?? "%" + (i + 1),
                     Start = lvl.StartAt,
+                    Alignment = lvl.Alignment,
                     ParagraphProperties = lvl.ParagraphProperties,
                     RunProperties = lvl.RunProperties
                 };
@@ -85,7 +86,8 @@ public class ListReader
                         Level = i,
                         NumberFormat = NumberFormat.Decimal,
                         Text = "%" + (i + 1),
-                        Start = 1
+                        Start = 1,
+                        Alignment = 0
                     });
                 }
             }
@@ -198,100 +200,7 @@ public class ListReader
     /// </summary>
     private ListLevel ReadLvlf(int levelIndex, ListType listType, long endPos)
     {
-        var level = new ListLevel { Level = levelIndex };
-
-        // Read LVLF fixed portion (28 bytes)
-        level.StartAt = _tableReader.ReadInt32();        // iStartAt
-        byte nfc = _tableReader.ReadByte();              // nfc
-        byte jcByte = _tableReader.ReadByte();           // jc (bits 0-1)
-        _tableReader.ReadByte();                         // flags
-        _tableReader.ReadByte();                         // flags2
-        var rgbxchNums = _tableReader.ReadBytes(9);      // rgbxchNums
-        _tableReader.ReadByte();                         // ixchFollow
-        _tableReader.ReadInt32();                        // dxaIndentSav
-        _tableReader.ReadInt32();                        // reserved
-        byte cbGrpprlChpx = _tableReader.ReadByte();
-        byte cbGrpprlPapx = _tableReader.ReadByte();
-        _tableReader.ReadByte();                         // ilvlRestartLim
-        _tableReader.ReadByte();                         // grfhic
-
-        // Map nfc to NumberFormat 
-        level.NumberFormat = nfc switch
-        {
-            0 => NumberFormat.Decimal,
-            1 => NumberFormat.UpperRoman,
-            2 => NumberFormat.LowerRoman,
-            3 => NumberFormat.UpperLetter,
-            4 => NumberFormat.LowerLetter,
-            5 => NumberFormat.OrdinalNumber,
-            6 => NumberFormat.CardinalText,
-            7 => NumberFormat.OrdinalText,
-            10 => NumberFormat.DecimalFullWidth,
-            11 => NumberFormat.DecimalHalfWidth,
-            12 => NumberFormat.JapaneseCounting,
-            14 => NumberFormat.DecimalEnclosedCircle,
-            22 => NumberFormat.DecimalZero,
-            23 => NumberFormat.Bullet,
-            30 => NumberFormat.TaiwaneseCountingThousand,
-            31 => NumberFormat.TaiwaneseDigital,
-            33 => NumberFormat.ChineseCounting,
-            34 => NumberFormat.ChineseCountingThousand,
-            35 => NumberFormat.KoreanDigital,
-            38 => NumberFormat.KoreanCounting,
-            39 => NumberFormat.Hebrew1,
-            41 => NumberFormat.ArabicAlpha,
-            45 => NumberFormat.Hebrew2,
-            46 => NumberFormat.ArabicAbjad,
-            47 => NumberFormat.HindiVowels,
-            _ => nfc == 23 || (listType == ListType.Bullet && levelIndex == 0) ? NumberFormat.Bullet : NumberFormat.Decimal
-        };
-
-        level.Alignment = jcByte & 0x03; // 0=left, 1=center, 2=right
-
-        // Read grpprlPapx (PAP SPRM data)
-        if (cbGrpprlPapx > 0 && _tableReader.BaseStream.Position + cbGrpprlPapx <= endPos)
-        {
-            var papxData = _tableReader.ReadBytes(cbGrpprlPapx);
-            // Extract indent from PAP SPRMs (sprmPDxaLeft = 0x840F, sprmPDxaLeft1 = 0x8411)
-            level.Indent = ExtractIndentFromSprm(papxData);
-        }
-
-        // Read grpprlChpx (CHP SPRM data)
-        if (cbGrpprlChpx > 0 && _tableReader.BaseStream.Position + cbGrpprlChpx <= endPos)
-        {
-            var chpxData = _tableReader.ReadBytes(cbGrpprlChpx);
-            var chp = new ChpBase();
-            var sprmParser = new SprmParser(_tableReader, 0);
-            sprmParser.ApplyToChp(chpxData, chp);
-            level.RunProperties = ConvertToRunProperties(chp);
-        }
-
-        // Read xst (number text string)
-        if (_tableReader.BaseStream.Position + 2 <= endPos)
-        {
-            ushort xstLen = _tableReader.ReadUInt16();
-            if (xstLen > 0 && xstLen < 256 && _tableReader.BaseStream.Position + xstLen * 2 <= endPos)
-            {
-                var xstBytes = _tableReader.ReadBytes(xstLen * 2);
-                var xstText = Encoding.Unicode.GetString(xstBytes);
-
-                // Convert placeholder bytes (0x00-0x08 mean level 1-9) to %N format
-                var sb = new StringBuilder();
-                foreach (char c in xstText)
-                {
-                    if (c >= '\x00' && c <= '\x08')
-                    {
-                        sb.Append('%');
-                        sb.Append((int)c + 1);
-                    }
-                    else
-                    {
-                        sb.Append(c);
-                    }
-                }
-                level.NumberText = sb.ToString();
-            }
-        }
+        var level = ReadLevelFormat(levelIndex, listType, endPos);
 
         // Defaults
         if (string.IsNullOrEmpty(level.NumberText))
@@ -303,6 +212,59 @@ public class ListReader
         if (level.Indent == 0)
         {
             level.Indent = 720 * (levelIndex + 1);
+        }
+
+        return level;
+    }
+
+    private ListLevel ReadLevelFormat(int levelIndex, ListType listType, long endPos)
+    {
+        var level = new ListLevel { Level = levelIndex };
+
+        level.StartAt = _tableReader.ReadInt32();
+        byte nfc = _tableReader.ReadByte();
+        byte jcByte = _tableReader.ReadByte();
+        _tableReader.ReadByte();
+        _tableReader.ReadByte();
+        _tableReader.ReadBytes(9);
+        _tableReader.ReadByte();
+        _tableReader.ReadInt32();
+        _tableReader.ReadInt32();
+        byte cbGrpprlChpx = _tableReader.ReadByte();
+        byte cbGrpprlPapx = _tableReader.ReadByte();
+        _tableReader.ReadByte();
+        _tableReader.ReadByte();
+
+        level.NumberFormat = MapNumberFormat(nfc, listType, levelIndex);
+        level.Alignment = jcByte & 0x03;
+
+        if (cbGrpprlPapx > 0 && _tableReader.BaseStream.Position + cbGrpprlPapx <= endPos)
+        {
+            var papxData = _tableReader.ReadBytes(cbGrpprlPapx);
+            level.Indent = ExtractIndentFromSprm(papxData);
+
+            var pap = new PapBase();
+            new SprmParser(_tableReader, 0).ApplyToPap(papxData, pap);
+            level.ParagraphProperties = ConvertToParagraphProperties(pap);
+        }
+
+        if (cbGrpprlChpx > 0 && _tableReader.BaseStream.Position + cbGrpprlChpx <= endPos)
+        {
+            var chpxData = _tableReader.ReadBytes(cbGrpprlChpx);
+            var chp = new ChpBase();
+            var sprmParser = new SprmParser(_tableReader, 0);
+            sprmParser.ApplyToChp(chpxData, chp);
+            level.RunProperties = ConvertToRunProperties(chp);
+        }
+
+        if (_tableReader.BaseStream.Position + 2 <= endPos)
+        {
+            ushort xstLen = _tableReader.ReadUInt16();
+            if (xstLen > 0 && xstLen < 256 && _tableReader.BaseStream.Position + xstLen * 2 <= endPos)
+            {
+                var xstBytes = _tableReader.ReadBytes(xstLen * 2);
+                level.NumberText = ParseLevelText(xstBytes);
+            }
         }
 
         return level;
@@ -417,9 +379,72 @@ public class ListReader
         if (lfoCount <= 0 || lfoCount > 1000)
             return;
 
+        if ((endPos - _tableReader.BaseStream.Position) < lfoCount * 16L)
+        {
+            ListFormatOverrides = ReadLegacyListFormatOverrides(lfoCount, endPos);
+            return;
+        }
+
+        var lfoRecords = new List<LfoRecord>(lfoCount);
+        for (int index = 0; index < lfoCount && _tableReader.BaseStream.Position + 16 <= endPos; index++)
+        {
+            try
+            {
+                int listId = _tableReader.ReadInt32();
+                _tableReader.ReadUInt32();
+                _tableReader.ReadUInt32();
+                byte overrideLevelCount = _tableReader.ReadByte();
+                _tableReader.ReadByte();
+                _tableReader.ReadByte();
+                _tableReader.ReadByte();
+
+                if (listId <= 0 || !ListFormats.Any(format => format.ListId == listId))
+                {
+                    listId = index < ListFormats.Count ? ListFormats[index].ListId : 0;
+                }
+
+                lfoRecords.Add(new LfoRecord(index + 1, listId, overrideLevelCount));
+            }
+            catch
+            {
+                break;
+            }
+        }
+
+        if (lfoRecords.Count == 0)
+        {
+            ListFormatOverrides = ReadLegacyListFormatOverrides(lfoCount, endPos);
+            return;
+        }
+
         var overrides = new List<ListFormatOverride>();
 
-        for (int i = 0; i < lfoCount && _tableReader.BaseStream.Position + 20 <= endPos; i++)
+        foreach (var lfoRecord in lfoRecords)
+        {
+            if (lfoRecord.ListId <= 0)
+            {
+                SkipLevelOverrides(lfoRecord.OverrideLevelCount, endPos);
+                continue;
+            }
+
+            var listOverride = new ListFormatOverride
+            {
+                OverrideId = lfoRecord.OverrideId,
+                ListId = lfoRecord.ListId
+            };
+
+            ReadLevelOverrides(listOverride, lfoRecord.OverrideLevelCount, endPos);
+            overrides.Add(listOverride);
+        }
+
+        ListFormatOverrides = NormalizeListFormatOverrides(overrides);
+    }
+
+    private List<ListFormatOverride> ReadLegacyListFormatOverrides(int lfoCount, long endPos)
+    {
+        var overrides = new List<ListFormatOverride>();
+
+        for (int i = 0; i < lfoCount && _tableReader.BaseStream.Position + 24 <= endPos; i++)
         {
             try
             {
@@ -454,8 +479,105 @@ public class ListReader
             }
         }
 
-        ListFormatOverrides = NormalizeListFormatOverrides(overrides);
+        return NormalizeListFormatOverrides(overrides);
     }
+
+    private void ReadLevelOverrides(ListFormatOverride listOverride, int overrideLevelCount, long endPos)
+    {
+        var listType = GetListType(listOverride.ListId);
+        for (int index = 0; index < overrideLevelCount && _tableReader.BaseStream.Position + 8 <= endPos; index++)
+        {
+            if (!TryReadLevelOverride(listType, out var levelOverride, endPos))
+            {
+                break;
+            }
+
+            if (levelOverride != null)
+            {
+                listOverride.Levels.Add(levelOverride);
+            }
+        }
+    }
+
+    private void SkipLevelOverrides(int overrideLevelCount, long endPos)
+    {
+        for (int index = 0; index < overrideLevelCount && _tableReader.BaseStream.Position + 8 <= endPos; index++)
+        {
+            if (!TryReadLevelOverride(ListType.Numbered, out _, endPos))
+            {
+                break;
+            }
+        }
+    }
+
+    private bool TryReadLevelOverride(ListType listType, out ListLevelOverride? levelOverride, long endPos)
+    {
+        levelOverride = null;
+        if (_tableReader.BaseStream.Position + 8 > endPos)
+        {
+            return false;
+        }
+
+        int startAt = _tableReader.ReadInt32();
+        byte flags = _tableReader.ReadByte();
+        _tableReader.ReadByte();
+        _tableReader.ReadUInt16();
+
+        int level = flags & 0x0F;
+        bool hasStartAt = (flags & 0x10) != 0;
+        bool hasFormatting = (flags & 0x20) != 0;
+
+        ListLevel? overriddenLevel = null;
+
+        if (hasFormatting)
+        {
+            overriddenLevel = ReadEmbeddedLevelFormat(level, listType, endPos);
+            if (overriddenLevel == null)
+            {
+                return false;
+            }
+        }
+
+        if ((hasStartAt && startAt > 0) || overriddenLevel != null)
+        {
+            levelOverride = new ListLevelOverride
+            {
+                Level = level,
+                StartAt = hasStartAt && startAt > 0 ? startAt : 0,
+                HasStartAt = hasStartAt && startAt > 0,
+                HasFormattingOverride = overriddenLevel != null,
+                Alignment = overriddenLevel?.Alignment ?? 0,
+                NumberFormat = overriddenLevel?.NumberFormat,
+                NumberText = overriddenLevel?.NumberText,
+                ParagraphProperties = overriddenLevel?.ParagraphProperties,
+                RunProperties = overriddenLevel?.RunProperties
+            };
+        }
+
+        return true;
+    }
+
+    private ListLevel? ReadEmbeddedLevelFormat(int levelIndex, ListType listType, long endPos)
+    {
+        const int fixedSize = 28;
+        if (_tableReader.BaseStream.Position + fixedSize > endPos)
+        {
+            return null;
+        }
+
+        long start = _tableReader.BaseStream.Position;
+        try
+        {
+            return ReadLevelFormat(levelIndex, listType, endPos);
+        }
+        catch
+        {
+            _tableReader.BaseStream.Position = start;
+            return null;
+        }
+    }
+
+    private readonly record struct LfoRecord(int OverrideId, int ListId, byte OverrideLevelCount);
 
     private List<ListFormatOverride> NormalizeListFormatOverrides(List<ListFormatOverride> overrides)
     {
@@ -472,6 +594,18 @@ public class ListReader
 
         foreach (var listFormat in ListFormats.Where(format => format.ListId > 0))
         {
+            int sequentialOverrideId = ListFormats.IndexOf(listFormat) + 1;
+            if (sequentialOverrideId > 0 && !existingIds.Contains(sequentialOverrideId))
+            {
+                normalizedOverrides.Add(new ListFormatOverride
+                {
+                    OverrideId = sequentialOverrideId,
+                    ListId = listFormat.ListId
+                });
+
+                existingIds.Add(sequentialOverrideId);
+            }
+
             if (existingIds.Contains(listFormat.ListId))
             {
                 continue;
@@ -482,6 +616,8 @@ public class ListReader
                 OverrideId = listFormat.ListId,
                 ListId = listFormat.ListId
             });
+
+            existingIds.Add(listFormat.ListId);
         }
 
         normalizedOverrides.Sort((left, right) => left.OverrideId.CompareTo(right.OverrideId));
@@ -513,7 +649,8 @@ public class ListReader
             listOverride.Levels.Add(new ListLevelOverride
             {
                 Level = lvl,
-                StartAt = startAt
+                StartAt = startAt,
+                HasStartAt = true
             });
         }
 
@@ -589,6 +726,98 @@ public class ListReader
         props.FontName = ResolveFontName(chp.FontIndex);
 
         return baseProps == null ? props : MergeRunProperties(baseProps, props);
+    }
+
+    private ListType GetListType(int listId)
+    {
+        return ListFormats.FirstOrDefault(format => format.ListId == listId)?.Type ?? ListType.Numbered;
+    }
+
+    private static NumberFormat MapNumberFormat(byte nfc, ListType listType, int levelIndex)
+    {
+        return nfc switch
+        {
+            0 => NumberFormat.Decimal,
+            1 => NumberFormat.UpperRoman,
+            2 => NumberFormat.LowerRoman,
+            3 => NumberFormat.UpperLetter,
+            4 => NumberFormat.LowerLetter,
+            5 => NumberFormat.OrdinalNumber,
+            6 => NumberFormat.CardinalText,
+            7 => NumberFormat.OrdinalText,
+            10 => NumberFormat.DecimalFullWidth,
+            11 => NumberFormat.DecimalHalfWidth,
+            12 => NumberFormat.JapaneseCounting,
+            14 => NumberFormat.DecimalEnclosedCircle,
+            22 => NumberFormat.DecimalZero,
+            23 => NumberFormat.Bullet,
+            30 => NumberFormat.TaiwaneseCountingThousand,
+            31 => NumberFormat.TaiwaneseDigital,
+            33 => NumberFormat.ChineseCounting,
+            34 => NumberFormat.ChineseCountingThousand,
+            35 => NumberFormat.KoreanDigital,
+            38 => NumberFormat.KoreanCounting,
+            39 => NumberFormat.Hebrew1,
+            41 => NumberFormat.ArabicAlpha,
+            45 => NumberFormat.Hebrew2,
+            46 => NumberFormat.ArabicAbjad,
+            47 => NumberFormat.HindiVowels,
+            _ => nfc == 23 || (listType == ListType.Bullet && levelIndex == 0) ? NumberFormat.Bullet : NumberFormat.Decimal
+        };
+    }
+
+    private static string ParseLevelText(byte[] xstBytes)
+    {
+        var xstText = Encoding.Unicode.GetString(xstBytes);
+        var sb = new StringBuilder();
+        foreach (char c in xstText)
+        {
+            if (c >= '\x00' && c <= '\x08')
+            {
+                sb.Append('%');
+                sb.Append((int)c + 1);
+            }
+            else
+            {
+                sb.Append(c);
+            }
+        }
+
+        return sb.ToString();
+    }
+
+    private static ParagraphProperties ConvertToParagraphProperties(PapBase pap)
+    {
+        var styleIndex = pap.StyleId != 0 ? pap.StyleId : pap.Istd;
+        return new ParagraphProperties
+        {
+            StyleIndex = styleIndex,
+            Alignment = (ParagraphAlignment)pap.Justification,
+            IndentLeft = pap.IndentLeft,
+            IndentLeftChars = pap.IndentLeftChars,
+            IndentRight = pap.IndentRight,
+            IndentRightChars = pap.IndentRightChars,
+            IndentFirstLine = pap.IndentFirstLine,
+            IndentFirstLineChars = pap.IndentFirstLineChars,
+            SpaceBefore = pap.SpaceBefore,
+            SpaceBeforeLines = pap.SpaceBeforeLines,
+            SpaceAfter = pap.SpaceAfter,
+            SpaceAfterLines = pap.SpaceAfterLines,
+            LineSpacing = pap.LineSpacing,
+            LineSpacingMultiple = pap.LineSpacingMultiple,
+            HasExplicitLineSpacing = pap.HasExplicitLineSpacing,
+            KeepWithNext = pap.KeepWithNext,
+            KeepTogether = pap.KeepTogether,
+            PageBreakBefore = pap.PageBreakBefore,
+            BorderTop = pap.BorderTop,
+            BorderBottom = pap.BorderBottom,
+            BorderLeft = pap.BorderLeft,
+            BorderRight = pap.BorderRight,
+            ListFormatId = pap.ListFormatId,
+            ListLevel = pap.ListLevel,
+            OutlineLevel = pap.OutlineLevel,
+            Shading = pap.Shading
+        };
     }
 
     private RunProperties? GetRunPropertiesFromCharacterStyle(ushort styleId)

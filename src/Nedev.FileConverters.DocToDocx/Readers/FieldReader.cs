@@ -41,6 +41,10 @@ public class FieldReader
         @"^(\w+)\s*(.*)$",
         RegexOptions.Compiled);
 
+    private static readonly Regex FieldSwitchRegex = new(
+        @"\\([@#*]|[\p{L}\p{N}_]+)\s*(?:""([^""]*)""|'([^']*)'|(\S+))?",
+        RegexOptions.Compiled);
+
     /// <summary>
     /// Parses a field code string and returns field information.
     /// </summary>
@@ -167,9 +171,9 @@ public class FieldReader
         if (string.IsNullOrWhiteSpace(args))
             return switches;
 
-        // Match switches: \switch [value]
-        var switchRegex = new Regex(@"\\(\w+)\s*(?:""([^""]*)""|'([^']*)'|(\S+))?");
-        var matches = switchRegex.Matches(args);
+        // Match switches: \switch [value], including the special one-character
+        // field switches Word uses for date, numeric, and formatting controls.
+        var matches = FieldSwitchRegex.Matches(args);
 
         foreach (Match match in matches)
         {

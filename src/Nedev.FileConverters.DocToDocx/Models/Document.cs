@@ -750,6 +750,7 @@ public abstract class NoteModelBase
     public string? ReferenceMark { get; set; }
     public List<RunModel> Runs { get; set; } = new();
     public List<ParagraphModel> Paragraphs { get; set; } = new();
+    public List<FieldModel> Fields { get; set; } = new();
     public int CharacterPosition { get; set; }
     public int CharacterLength { get; set; }
 }
@@ -779,6 +780,9 @@ public class AnnotationModel
     public string? Initials { get; set; }
     public List<RunModel> Runs { get; set; } = new();
     public List<ParagraphModel> Paragraphs { get; set; } = new();
+    public List<FieldModel> Fields { get; set; } = new();
+    public int StoryStartCharacterPosition { get; set; } = -1;
+    public int StoryEndCharacterPosition { get; set; } = -1;
     public int StartCharacterPosition { get; set; }
     public int EndCharacterPosition { get; set; }
 }
@@ -792,6 +796,7 @@ public class TextboxModel
     public string? Name { get; set; }
     public List<ParagraphModel> Paragraphs { get; set; } = new();
     public List<RunModel> Runs { get; set; } = new();
+    public List<FieldModel> Fields { get; set; } = new();
     public int StoryStartCharacterPosition { get; set; } = -1;
     public int StoryEndCharacterPosition { get; set; } = -1;
     public int AnchorCharacterPosition { get; set; } = -1;

@@ -12,6 +12,7 @@ public class NumberingWriter
     {
         public int NumId { get; init; }
         public int AbstractNumId { get; init; }
+        public NumberingDefinition? BaseDefinition { get; init; }
         public List<ListLevelOverride> LevelOverrides { get; init; } = new();
     }
 
@@ -129,6 +130,7 @@ public class NumberingWriter
             {
                 NumId = numId,
                 AbstractNumId = abstractNumId,
+                BaseDefinition = definitions[abstractNumId],
                 LevelOverrides = listOverride != null
                     ? GetEffectiveLevelOverrides(definitions[abstractNumId], listOverride)
                     : new List<ListLevelOverride>()
@@ -149,12 +151,13 @@ public class NumberingWriter
 
         foreach (var levelOverride in listOverride.Levels.OrderBy(level => level.Level))
         {
-            if (levelOverride.StartAt <= 0)
+            bool hasEffectiveStartOverride = levelOverride.HasStartAt && levelOverride.StartAt > 0;
+            if (hasEffectiveStartOverride && baseStarts.TryGetValue(levelOverride.Level, out var baseStart) && baseStart == levelOverride.StartAt)
             {
-                continue;
+                hasEffectiveStartOverride = false;
             }
 
-            if (baseStarts.TryGetValue(levelOverride.Level, out var baseStart) && baseStart == levelOverride.StartAt)
+            if (!hasEffectiveStartOverride && !levelOverride.HasFormattingOverride)
             {
                 continue;
             }
@@ -162,7 +165,14 @@ public class NumberingWriter
             effectiveOverrides.Add(new ListLevelOverride
             {
                 Level = levelOverride.Level,
-                StartAt = levelOverride.StartAt
+                StartAt = levelOverride.StartAt,
+                HasStartAt = hasEffectiveStartOverride,
+                HasFormattingOverride = levelOverride.HasFormattingOverride,
+                Alignment = levelOverride.Alignment,
+                NumberFormat = levelOverride.NumberFormat,
+                NumberText = levelOverride.NumberText,
+                ParagraphProperties = levelOverride.ParagraphProperties,
+                RunProperties = levelOverride.RunProperties
             });
         }
 
@@ -291,7 +301,7 @@ public class NumberingWriter
         _writer.WriteEndElement();
 
         _writer.WriteStartElement("w", "lvlJc", WNs);
-        _writer.WriteAttributeString("w", "val", WNs, "left");
+        _writer.WriteAttributeString("w", "val", WNs, GetLevelAlignmentValue(level.Alignment));
         _writer.WriteEndElement();
 
         _writer.WriteStartElement("w", "pPr", WNs);
@@ -323,9 +333,17 @@ public class NumberingWriter
             _writer.WriteStartElement("w", "lvlOverride", WNs);
             _writer.WriteAttributeString("w", "ilvl", WNs, levelOverride.Level.ToString());
 
-            _writer.WriteStartElement("w", "startOverride", WNs);
-            _writer.WriteAttributeString("w", "val", WNs, levelOverride.StartAt.ToString());
-            _writer.WriteEndElement();
+            if (levelOverride.HasStartAt)
+            {
+                _writer.WriteStartElement("w", "startOverride", WNs);
+                _writer.WriteAttributeString("w", "val", WNs, levelOverride.StartAt.ToString());
+                _writer.WriteEndElement();
+            }
+
+            if (levelOverride.HasFormattingOverride)
+            {
+                WriteLevel(BuildOverrideLevel(instance.BaseDefinition, levelOverride));
+            }
 
             _writer.WriteEndElement();
         }
@@ -380,6 +398,36 @@ public class NumberingWriter
             NumberFormat.JapaneseDigitalHundredCount => "japaneseDigitalHundredCount",
             NumberFormat.JapaneseDigitalThousandCount => "japaneseDigitalThousandCount",
             _ => "decimal"
+        };
+    }
+
+    private static NumberingLevel BuildOverrideLevel(NumberingDefinition? baseDefinition, ListLevelOverride levelOverride)
+    {
+        var baseLevel = baseDefinition?.Levels.FirstOrDefault(level => level.Level == levelOverride.Level);
+
+        return new NumberingLevel
+        {
+            Level = levelOverride.Level,
+            Start = levelOverride.HasStartAt && levelOverride.StartAt > 0
+                ? levelOverride.StartAt
+                : baseLevel?.Start ?? 1,
+            Alignment = levelOverride.HasFormattingOverride
+                ? levelOverride.Alignment
+                : baseLevel?.Alignment ?? 0,
+            NumberFormat = levelOverride.NumberFormat ?? baseLevel?.NumberFormat ?? NumberFormat.Decimal,
+            Text = levelOverride.NumberText ?? baseLevel?.Text ?? $"%{levelOverride.Level + 1}.",
+            ParagraphProperties = levelOverride.ParagraphProperties ?? baseLevel?.ParagraphProperties,
+            RunProperties = levelOverride.RunProperties ?? baseLevel?.RunProperties
+        };
+    }
+
+    private static string GetLevelAlignmentValue(int alignment)
+    {
+        return alignment switch
+        {
+            1 => "center",
+            2 => "right",
+            _ => "left"
         };
     }
 }

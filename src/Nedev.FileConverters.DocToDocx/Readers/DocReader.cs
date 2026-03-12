@@ -4,7 +4,7 @@ using Nedev.FileConverters.DocToDocx.Utils;
 
 namespace Nedev.FileConverters.DocToDocx.Readers;
 
-internal sealed class TextboxAnchorFieldInfo
+internal sealed class StoryFieldInfo
 {
     public int FieldStartCharacterPosition { get; set; }
     public int? FieldSeparatorCharacterPosition { get; set; }
@@ -362,6 +362,13 @@ public class DocReader : IDisposable
             MergeTextboxShapesIntoTextboxes(Document);
         }
 
+        if (_globalChpMap != null && _globalPapMap != null)
+        {
+            PopulateStructuredStoryContent();
+        }
+
+        ValidateStoryFieldPlcs();
+
         // Step 10: Read headers/footers
         if (_headerFooterReader != null)
         {
@@ -380,6 +387,9 @@ public class DocReader : IDisposable
                     hf.Paragraphs = HeaderFooterParagraphsLookReasonable(hf.Text, paragraphs)
                         ? paragraphs
                         : new List<ParagraphModel>();
+                    hf.Fields = hf.Paragraphs.Count > 0
+                        ? ExtractFields(hf.Paragraphs, _fieldReader)
+                        : new List<FieldModel>();
                 }
             }
 
@@ -394,6 +404,111 @@ public class DocReader : IDisposable
         ExtractVbaProject();
 
         IsLoaded = true;
+    }
+
+    private void PopulateStructuredStoryContent()
+    {
+        PopulateStructuredNotes(Document.Footnotes, _fibReader!.CcpText);
+        PopulateStructuredNotes(Document.Endnotes, _fibReader!.CcpText + _fibReader.CcpFtn + _fibReader.CcpHdd + _fibReader.CcpAtn);
+        PopulateStructuredAnnotations(Document.Annotations);
+        PopulateStructuredTextboxes(Document.Textboxes);
+    }
+
+    private void PopulateStructuredNotes<TNote>(IEnumerable<TNote> notes, int storyStartCp) where TNote : NoteModelBase
+    {
+        foreach (var note in notes)
+        {
+            if (note.CharacterLength <= 0)
+                continue;
+
+            int absoluteStartCp = storyStartCp + note.CharacterPosition;
+            int absoluteEndCp = absoluteStartCp + note.CharacterLength;
+            PopulateStructuredStoryRange(note.Paragraphs, note.Runs, note.Fields, absoluteStartCp, absoluteEndCp);
+        }
+    }
+
+    private void PopulateStructuredAnnotations(IEnumerable<AnnotationModel> annotations)
+    {
+        foreach (var annotation in annotations)
+        {
+            if (annotation.StoryStartCharacterPosition < 0 || annotation.StoryEndCharacterPosition <= annotation.StoryStartCharacterPosition)
+                continue;
+
+            PopulateStructuredStoryRange(annotation.Paragraphs, annotation.Runs, annotation.Fields, annotation.StoryStartCharacterPosition, annotation.StoryEndCharacterPosition);
+        }
+    }
+
+    private void PopulateStructuredTextboxes(IEnumerable<TextboxModel> textboxes)
+    {
+        foreach (var textbox in textboxes)
+        {
+            if (textbox.StoryStartCharacterPosition < 0 || textbox.StoryEndCharacterPosition <= textbox.StoryStartCharacterPosition)
+                continue;
+
+            PopulateStructuredStoryRange(textbox.Paragraphs, textbox.Runs, textbox.Fields, textbox.StoryStartCharacterPosition, textbox.StoryEndCharacterPosition);
+
+            var firstParagraphWithProps = textbox.Paragraphs.FirstOrDefault(paragraph => paragraph.Properties != null);
+            if (firstParagraphWithProps?.Properties != null)
+            {
+                textbox.HorizontalAlignment = firstParagraphWithProps.Properties.Alignment switch
+                {
+                    ParagraphAlignment.Center => TextboxHorizontalAlignment.Center,
+                    ParagraphAlignment.Right => TextboxHorizontalAlignment.Right,
+                    _ => TextboxHorizontalAlignment.Left
+                };
+            }
+        }
+    }
+
+    private void PopulateStructuredStoryRange(List<ParagraphModel> paragraphsTarget, List<RunModel> runsTarget, List<FieldModel>? fieldsTarget, int absoluteStartCp, int absoluteEndCp)
+    {
+        if (_globalChpMap == null || _globalPapMap == null || _textReader == null)
+            return;
+
+        absoluteStartCp = Math.Clamp(absoluteStartCp, 0, _textReader.Text.Length);
+        absoluteEndCp = Math.Clamp(absoluteEndCp, absoluteStartCp, _textReader.Text.Length);
+        if (absoluteEndCp <= absoluteStartCp)
+            return;
+
+        int localImageCounter = _globalImageCounter;
+        var paragraphs = ParseParagraphsRange(_textReader.Text, absoluteStartCp, absoluteEndCp, _globalChpMap, _globalPapMap, ref localImageCounter);
+        if (paragraphs.Count == 0)
+            return;
+
+        paragraphsTarget.Clear();
+        paragraphsTarget.AddRange(paragraphs);
+
+        runsTarget.Clear();
+        runsTarget.AddRange(paragraphs.SelectMany(paragraph => paragraph.Runs));
+
+        if (fieldsTarget != null)
+        {
+            fieldsTarget.Clear();
+            fieldsTarget.AddRange(ExtractFields(paragraphs, _fieldReader));
+        }
+
+        _globalImageCounter = localImageCounter;
+    }
+
+    internal static List<FieldModel> ExtractFields(IEnumerable<ParagraphModel> paragraphs, FieldReader? fieldReader)
+    {
+        if (fieldReader == null)
+            return new List<FieldModel>();
+
+        var fields = new List<FieldModel>();
+        foreach (var run in paragraphs.SelectMany(paragraph => paragraph.Runs))
+        {
+            if (!run.IsField || string.IsNullOrWhiteSpace(run.FieldCode))
+                continue;
+
+            var field = fieldReader.ParseField(run.FieldCode);
+            if (field != null)
+            {
+                fields.Add(field);
+            }
+        }
+
+        return fields;
     }
 
     internal static void MergeTextboxShapesIntoTextboxes(DocumentModel document)
@@ -445,7 +560,7 @@ public class DocReader : IDisposable
         document.Shapes.RemoveAll(shape => matchedShapeIds.Contains(shape.Id));
     }
 
-    internal static void AttachTextboxAnchorHints(DocumentModel document, IReadOnlyList<TextboxAnchorFieldInfo> anchorFields)
+    internal static void AttachTextboxAnchorHints(DocumentModel document, IReadOnlyList<StoryFieldInfo> anchorFields)
     {
         if (document.Textboxes.Count == 0 || anchorFields.Count == 0 || document.Paragraphs.Count == 0)
             return;
@@ -486,48 +601,16 @@ public class DocReader : IDisposable
         }
     }
 
-    private List<TextboxAnchorFieldInfo> ReadTextboxAnchorFields()
+    private List<StoryFieldInfo> ReadTextboxAnchorFields()
     {
-        var plcCharacterPositions = new List<int>();
         if (_fibReader == null || _tableReader == null || _textReader == null)
-            return new List<TextboxAnchorFieldInfo>();
+            return new List<StoryFieldInfo>();
 
         if (_fibReader.FcPlcfFldTxbx == 0 || _fibReader.LcbPlcfFldTxbx < 10)
-            return new List<TextboxAnchorFieldInfo>();
+            return new List<StoryFieldInfo>();
 
-        try
-        {
-            _tableReader.BaseStream.Seek(_fibReader.FcPlcfFldTxbx, SeekOrigin.Begin);
-            int n = (int)((_fibReader.LcbPlcfFldTxbx - 4) / 6);
-            if (n <= 0)
-                return new List<TextboxAnchorFieldInfo>();
-
-            var cpArray = new int[n + 1];
-            for (int i = 0; i <= n; i++)
-            {
-                cpArray[i] = _tableReader.ReadInt32();
-            }
-
-            for (int i = 0; i < n; i++)
-            {
-                if (_tableReader.BaseStream.Position + 2 > _tableReader.BaseStream.Length)
-                    break;
-
-                _tableReader.ReadUInt16();
-                int cp = cpArray[i];
-                if (cp < 0 || cp >= _fibReader.CcpText || cp >= _textReader.Text.Length)
-                    continue;
-
-                plcCharacterPositions.Add(cp);
-            }
-        }
-        catch (Exception ex)
-        {
-            Logger.Warning("Failed to read textbox anchor field PLC; continuing with sequence-based textbox matching.", ex);
-            return new List<TextboxAnchorFieldInfo>();
-        }
-
-        var anchorFields = BuildTextboxAnchorFields(_textReader.Text, _fibReader.CcpText, plcCharacterPositions);
+        var plcCharacterPositions = ReadFieldPlcCharacterPositions(_fibReader.FcPlcfFldTxbx, _fibReader.LcbPlcfFldTxbx, _fibReader.CcpText, "textbox anchor");
+        var anchorFields = BuildStoryFields(_textReader.Text, 0, _fibReader.CcpText, plcCharacterPositions);
         if (plcCharacterPositions.Count > 0 && anchorFields.Count == 0)
         {
             Logger.Warning("Textbox anchor field PLC was present but no complete textbox field boundaries could be reconstructed; continuing with sequence-based textbox matching.");
@@ -536,20 +619,20 @@ public class DocReader : IDisposable
         return anchorFields;
     }
 
-    internal static List<TextboxAnchorFieldInfo> BuildTextboxAnchorFields(string text, int mainDocumentLength, IReadOnlyList<int> plcCharacterPositions)
+    internal static List<StoryFieldInfo> BuildStoryFields(string text, int storyStartCp, int storyEndCp, IReadOnlyList<int> plcCharacterPositions)
     {
-        var anchorFields = new List<TextboxAnchorFieldInfo>();
-        var openFields = new Stack<TextboxAnchorFieldInfo>();
+        var anchorFields = new List<StoryFieldInfo>();
+        var openFields = new Stack<StoryFieldInfo>();
 
         foreach (int cp in plcCharacterPositions.Distinct().OrderBy(cp => cp))
         {
-            if (cp < 0 || cp >= mainDocumentLength || cp >= text.Length)
+            if (cp < storyStartCp || cp >= storyEndCp || cp >= text.Length)
                 continue;
 
             switch (text[cp])
             {
                 case FieldReader.FieldStartChar:
-                    openFields.Push(new TextboxAnchorFieldInfo { FieldStartCharacterPosition = cp });
+                    openFields.Push(new StoryFieldInfo { FieldStartCharacterPosition = cp });
                     break;
 
                 case FieldReader.FieldSeparatorChar:
@@ -572,6 +655,81 @@ public class DocReader : IDisposable
 
         anchorFields.Sort((left, right) => left.FieldStartCharacterPosition.CompareTo(right.FieldStartCharacterPosition));
         return anchorFields;
+    }
+
+    private List<int> ReadFieldPlcCharacterPositions(uint fc, uint lcb, int storyLength, string storyLabel)
+    {
+        var plcCharacterPositions = new List<int>();
+        if (_tableReader == null)
+            return plcCharacterPositions;
+
+        if (!_tableReader.CanReadRange(fc, lcb) || lcb < 10)
+        {
+            Logger.Warning($"Skipped {storyLabel} field PLC because range 0x{fc:X}/0x{lcb:X} is invalid.");
+            return plcCharacterPositions;
+        }
+
+        try
+        {
+            _tableReader.BaseStream.Seek(fc, SeekOrigin.Begin);
+            int n = (int)((lcb - 4) / 6);
+            if (n <= 0)
+                return plcCharacterPositions;
+
+            var cpArray = new int[n + 1];
+            for (int i = 0; i <= n; i++)
+            {
+                cpArray[i] = _tableReader.ReadInt32();
+            }
+
+            for (int i = 0; i < n; i++)
+            {
+                if (_tableReader.BaseStream.Position + 2 > _tableReader.BaseStream.Length)
+                    break;
+
+                _tableReader.ReadUInt16();
+                int cp = cpArray[i];
+                if (cp < 0 || cp >= storyLength)
+                    continue;
+
+                plcCharacterPositions.Add(cp);
+            }
+        }
+        catch (Exception ex)
+        {
+            Logger.Warning($"Failed to read {storyLabel} field PLC.", ex);
+            return new List<int>();
+        }
+
+        return plcCharacterPositions;
+    }
+
+    private void ValidateStoryFieldPlcs()
+    {
+        if (_fibReader == null || _textReader == null)
+            return;
+
+        ValidateStoryFieldPlc("header/footer", _fibReader.FcPlcfFldHdr, _fibReader.LcbPlcfFldHdr, _fibReader.CcpText + _fibReader.CcpFtn, _fibReader.CcpHdd);
+        ValidateStoryFieldPlc("footnote", _fibReader.FcPlcfFldFtn, _fibReader.LcbPlcfFldFtn, _fibReader.CcpText, _fibReader.CcpFtn);
+        ValidateStoryFieldPlc("annotation", _fibReader.FcPlcfFldAtn, _fibReader.LcbPlcfFldAtn, _fibReader.CcpText + _fibReader.CcpFtn + _fibReader.CcpHdd, _fibReader.CcpAtn);
+        ValidateStoryFieldPlc("endnote", _fibReader.FcPlcfFldEdn, _fibReader.LcbPlcfFldEdn, _fibReader.CcpText + _fibReader.CcpFtn + _fibReader.CcpHdd + _fibReader.CcpAtn, _fibReader.CcpEdn);
+    }
+
+    private void ValidateStoryFieldPlc(string storyLabel, uint fc, uint lcb, int storyStartCp, int storyLength)
+    {
+        if (fc == 0 || lcb < 10 || storyLength <= 0 || _textReader == null)
+            return;
+
+        var relativeCharacterPositions = ReadFieldPlcCharacterPositions(fc, lcb, storyLength, storyLabel);
+        if (relativeCharacterPositions.Count == 0)
+            return;
+
+        var absoluteCharacterPositions = relativeCharacterPositions.Select(cp => storyStartCp + cp).ToList();
+        var fields = BuildStoryFields(_textReader.Text, storyStartCp, storyStartCp + storyLength, absoluteCharacterPositions);
+        if (fields.Count == 0)
+        {
+            Logger.Warning($"{storyLabel} field PLC was present but no complete field boundaries could be reconstructed from the story text.");
+        }
     }
 
     private static ShapeModel? FindBestTextboxShapeMatch(TextboxModel textbox, IReadOnlyList<ShapeModel> textboxShapes, ISet<int> matchedShapeIds)

@@ -364,6 +364,13 @@ public class ListLevelOverride
 {
     public int Level { get; set; }
     public int StartAt { get; set; }
+    public bool HasStartAt { get; set; } = true;
+    public bool HasFormattingOverride { get; set; }
+    public int Alignment { get; set; }
+    public NumberFormat? NumberFormat { get; set; }
+    public string? NumberText { get; set; }
+    public ParagraphProperties? ParagraphProperties { get; set; }
+    public RunProperties? RunProperties { get; set; }
 }
 
 /// <summary>
@@ -384,6 +391,7 @@ public class NumberingLevel
     public NumberFormat NumberFormat { get; set; }
     public string? Text { get; set; }
     public int Start { get; set; } = 1;
+    public int Alignment { get; set; }
     public ParagraphProperties? ParagraphProperties { get; set; }
     public RunProperties? RunProperties { get; set; }
 }
@@ -397,6 +405,7 @@ public class HeaderFooterModel
     public int SectionIndex { get; set; }
     public string Text { get; set; } = string.Empty;
     public List<ParagraphModel> Paragraphs { get; set; } = new();
+    public List<FieldModel> Fields { get; set; } = new();
     public int CharacterPosition { get; set; }
     public int CharacterLength { get; set; }
     public string? RelationshipId { get; set; }

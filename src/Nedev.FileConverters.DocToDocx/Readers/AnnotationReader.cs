@@ -126,6 +126,8 @@ public class AnnotationReader
                 Id = i.ToString(),
                 StartCharacterPosition = anchorCps[i],
                 EndCharacterPosition = anchorCps[i], // For now, single-point anchor
+                StoryStartCharacterPosition = atnGlobalStart + txtCps[i],
+                StoryEndCharacterPosition = atnGlobalStart + txtCps[i + 1],
                 Date = DttmHelper.ParseDttm(dttms[i]),
                 Author = (authorIndices[i] >= 0 && authorIndices[i] < authors.Count) ? authors[authorIndices[i]] : "Unknown"
             };
