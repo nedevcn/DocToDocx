@@ -38,6 +38,8 @@ public static class BiffChartScanner
                     ParseBiffStream(biffBytes, model);
                     return;
                 }
+
+                Logger.Warning($"Embedded chart source '{model.SourceStreamName ?? "<unknown>"}' is a compound file but does not contain a Workbook/Book stream; leaving placeholder chart data.");
             }
             catch (Exception ex)
             {

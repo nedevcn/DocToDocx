@@ -1,5 +1,6 @@
 using System.Xml;
 using Nedev.FileConverters.DocToDocx.Models;
+using Nedev.FileConverters.DocToDocx.Utils;
 
 namespace Nedev.FileConverters.DocToDocx.Writers;
 
@@ -7,6 +8,7 @@ public class NumberingWriter
 {
     private readonly XmlWriter _writer;
     private const string WNs = "http://schemas.openxmlformats.org/wordprocessingml/2006/main";
+    private DocumentModel? _document;
 
     private sealed class NumberingInstanceDefinition
     {
@@ -29,6 +31,7 @@ public class NumberingWriter
 
     public void WriteNumbering(DocumentModel document)
     {
+        _document = document;
         _writer.WriteStartDocument();
         _writer.WriteStartElement("w", "numbering", WNs);
         _writer.WriteAttributeString("xmlns", "w", null, WNs);
@@ -61,6 +64,7 @@ public class NumberingWriter
 
         _writer.WriteEndElement();
         _writer.WriteEndDocument();
+        _document = null;
     }
 
     private static NumberingPackage BuildNumberingDefinitions(DocumentModel document)
@@ -280,11 +284,6 @@ public class NumberingWriter
 
     private void WriteLevel(NumberingLevel level)
     {
-        var indentLeft = level.ParagraphProperties?.IndentLeft;
-        var hanging = level.ParagraphProperties?.IndentFirstLine < 0
-            ? Math.Abs(level.ParagraphProperties.IndentFirstLine)
-            : 360;
-
         _writer.WriteStartElement("w", "lvl", WNs);
         _writer.WriteAttributeString("w", "ilvl", WNs, level.Level.ToString());
 
@@ -304,16 +303,11 @@ public class NumberingWriter
         _writer.WriteAttributeString("w", "val", WNs, GetLevelAlignmentValue(level.Alignment));
         _writer.WriteEndElement();
 
-        _writer.WriteStartElement("w", "pPr", WNs);
-        _writer.WriteStartElement("w", "ind", WNs);
-        _writer.WriteAttributeString("w", "left", WNs, (indentLeft.GetValueOrDefault(720 + level.Level * 720)).ToString());
-        _writer.WriteAttributeString("w", "hanging", WNs, hanging.ToString());
-        _writer.WriteEndElement();
-        _writer.WriteEndElement(); // w:pPr
+        WriteLevelParagraphProperties(level);
 
         if (level.RunProperties != null && RunPropertiesHelper.HasRunProperties(level.RunProperties))
         {
-            RunPropertiesHelper.WriteStyleRunProperties(_writer, level.RunProperties);
+            RunPropertiesHelper.WriteStyleRunProperties(_writer, level.RunProperties, _document?.Theme);
         }
 
         _writer.WriteEndElement(); // w:lvl
@@ -427,6 +421,364 @@ public class NumberingWriter
         {
             1 => "center",
             2 => "right",
+            _ => "left"
+        };
+    }
+
+    private void WriteLevelParagraphProperties(NumberingLevel level)
+    {
+        var props = level.ParagraphProperties;
+        int defaultIndentLeft = 720 + level.Level * 720;
+        int defaultHanging = 360;
+        bool hasParagraphFormatting = props != null &&
+            (props.KeepWithNext || props.KeepTogether || props.PageBreakBefore ||
+             props.BorderTop != null || props.BorderBottom != null || props.BorderLeft != null || props.BorderRight != null ||
+             props.Shading != null ||
+             props.SpaceBefore > 0 || props.SpaceBeforeLines > 0 || props.SpaceAfter > 0 || props.SpaceAfterLines > 0 ||
+             props.HasExplicitLineSpacing || props.LineSpacing != 240 || props.LineSpacingMultiple != 1 ||
+             props.IndentLeft != 0 || props.IndentLeftChars != 0 || props.IndentRight != 0 || props.IndentRightChars != 0 ||
+             props.IndentFirstLine != 0 || props.IndentFirstLineChars != 0 ||
+             props.Alignment != ParagraphAlignment.Left ||
+             !props.WordWrap || !props.Kinsoku || !props.SnapToGrid || !props.AutoSpaceDe || !props.AutoSpaceDn ||
+             props.TopLinePunct || props.OverflowPunct ||
+             (props.OutlineLevel >= 0 && props.OutlineLevel < 9));
+
+        _writer.WriteStartElement("w", "pPr", WNs);
+
+        if (props?.KeepWithNext == true)
+        {
+            _writer.WriteStartElement("w", "keepNext", WNs);
+            _writer.WriteEndElement();
+        }
+
+        if (props?.KeepTogether == true)
+        {
+            _writer.WriteStartElement("w", "keepLines", WNs);
+            _writer.WriteEndElement();
+        }
+
+        if (props?.PageBreakBefore == true)
+        {
+            _writer.WriteStartElement("w", "pageBreakBefore", WNs);
+            _writer.WriteEndElement();
+        }
+
+        if (props != null && (props.BorderTop != null || props.BorderBottom != null || props.BorderLeft != null || props.BorderRight != null))
+        {
+            _writer.WriteStartElement("w", "pBdr", WNs);
+            if (props.BorderTop != null) WriteBorder("top", props.BorderTop);
+            if (props.BorderBottom != null) WriteBorder("bottom", props.BorderBottom);
+            if (props.BorderLeft != null) WriteBorder("left", props.BorderLeft);
+            if (props.BorderRight != null) WriteBorder("right", props.BorderRight);
+            _writer.WriteEndElement();
+        }
+
+        if (props?.Shading != null)
+        {
+            WriteShading(props.Shading);
+        }
+
+        bool hasExplicitLineSpacing = props != null && (props.HasExplicitLineSpacing || props.LineSpacing != 240 || props.LineSpacingMultiple != 1);
+        if (props != null && (props.SpaceBefore > 0 || props.SpaceBeforeLines > 0 || props.SpaceAfter > 0 || props.SpaceAfterLines > 0 || hasExplicitLineSpacing))
+        {
+            _writer.WriteStartElement("w", "spacing", WNs);
+            if (props.SpaceBeforeLines > 0)
+                _writer.WriteAttributeString("w", "beforeLines", WNs, props.SpaceBeforeLines.ToString());
+            else if (props.SpaceBefore > 0)
+                _writer.WriteAttributeString("w", "before", WNs, props.SpaceBefore.ToString());
+
+            if (props.SpaceAfterLines > 0)
+                _writer.WriteAttributeString("w", "afterLines", WNs, props.SpaceAfterLines.ToString());
+            else if (props.SpaceAfter > 0)
+                _writer.WriteAttributeString("w", "after", WNs, props.SpaceAfter.ToString());
+
+            if (hasExplicitLineSpacing)
+            {
+                int lineVal = props.LineSpacing;
+                string lineRule;
+                if (props.LineSpacingMultiple == 1)
+                {
+                    lineRule = "auto";
+                }
+                else if (lineVal < 0)
+                {
+                    lineVal = Math.Abs(lineVal);
+                    lineRule = "exact";
+                }
+                else
+                {
+                    lineRule = "atLeast";
+                }
+
+                _writer.WriteAttributeString("w", "line", WNs, lineVal.ToString());
+                _writer.WriteAttributeString("w", "lineRule", WNs, lineRule);
+            }
+
+            _writer.WriteEndElement();
+        }
+
+        WriteIndentation(props, defaultIndentLeft, defaultHanging, level.RunProperties);
+
+        if (props != null && props.Alignment != ParagraphAlignment.Left)
+        {
+            _writer.WriteStartElement("w", "jc", WNs);
+            _writer.WriteAttributeString("w", "val", WNs, GetParagraphAlignmentValue(props.Alignment));
+            _writer.WriteEndElement();
+        }
+
+        if (props != null && props.OutlineLevel >= 0 && props.OutlineLevel < 9)
+        {
+            _writer.WriteStartElement("w", "outlineLvl", WNs);
+            _writer.WriteAttributeString("w", "val", WNs, props.OutlineLevel.ToString());
+            _writer.WriteEndElement();
+        }
+
+        if (props != null && !props.WordWrap)
+        {
+            _writer.WriteStartElement("w", "wordWrap", WNs);
+            _writer.WriteAttributeString("w", "val", WNs, "0");
+            _writer.WriteEndElement();
+        }
+
+        if (props != null && !props.Kinsoku)
+        {
+            _writer.WriteStartElement("w", "kinsoku", WNs);
+            _writer.WriteAttributeString("w", "val", WNs, "0");
+            _writer.WriteEndElement();
+        }
+
+        if (props != null && !props.SnapToGrid)
+        {
+            _writer.WriteStartElement("w", "snapToGrid", WNs);
+            _writer.WriteAttributeString("w", "val", WNs, "0");
+            _writer.WriteEndElement();
+        }
+
+        if (props != null && !props.AutoSpaceDe)
+        {
+            _writer.WriteStartElement("w", "autoSpaceDE", WNs);
+            _writer.WriteAttributeString("w", "val", WNs, "0");
+            _writer.WriteEndElement();
+        }
+
+        if (props != null && !props.AutoSpaceDn)
+        {
+            _writer.WriteStartElement("w", "autoSpaceDN", WNs);
+            _writer.WriteAttributeString("w", "val", WNs, "0");
+            _writer.WriteEndElement();
+        }
+
+        if (props != null && props.TopLinePunct)
+        {
+            _writer.WriteStartElement("w", "topLinePunct", WNs);
+            _writer.WriteEndElement();
+        }
+
+        if (props != null && props.OverflowPunct)
+        {
+            _writer.WriteStartElement("w", "overflowPunct", WNs);
+            _writer.WriteEndElement();
+        }
+
+        if (!hasParagraphFormatting)
+        {
+            // Preserve the previous default numbering indent behaviour even when no explicit pPr exists.
+            // The indentation was already emitted by WriteIndentation above.
+        }
+
+        _writer.WriteEndElement();
+    }
+
+    private void WriteIndentation(ParagraphProperties? props, int defaultIndentLeft, int defaultHanging, RunProperties? runProperties)
+    {
+        int fontSizeHalfPoints = runProperties?.FontSize > 0 ? runProperties.FontSize : 24;
+        int indentLeft = defaultIndentLeft;
+        if (props != null)
+        {
+            if (props.IndentLeft != 0)
+            {
+                indentLeft = props.IndentLeft;
+            }
+            else if (props.IndentLeftChars != 0)
+            {
+                indentLeft = ConvertCharacterIndentToTwips(props.IndentLeftChars, fontSizeHalfPoints);
+            }
+        }
+
+        int? indentRight = null;
+        if (props != null)
+        {
+            indentRight = props.IndentRight != 0
+                ? props.IndentRight
+                : props.IndentRightChars != 0
+                    ? ConvertCharacterIndentToTwips(props.IndentRightChars, fontSizeHalfPoints)
+                    : null;
+        }
+
+        int? firstLine = null;
+        int? hanging = null;
+        if (props != null)
+        {
+            if (props.IndentFirstLineChars > 0)
+            {
+                firstLine = props.IndentFirstLine > 0
+                    ? props.IndentFirstLine
+                    : ConvertCharacterIndentToTwips(props.IndentFirstLineChars, fontSizeHalfPoints);
+            }
+            else if (props.IndentFirstLineChars < 0)
+            {
+                hanging = props.IndentFirstLine < 0
+                    ? Math.Abs(props.IndentFirstLine)
+                    : ConvertCharacterIndentToTwips(props.IndentFirstLineChars, fontSizeHalfPoints);
+            }
+            else if (props.IndentFirstLine > 0)
+            {
+                firstLine = props.IndentFirstLine;
+            }
+            else if (props.IndentFirstLine < 0)
+            {
+                hanging = Math.Abs(props.IndentFirstLine);
+            }
+        }
+
+        hanging ??= defaultHanging;
+
+        _writer.WriteStartElement("w", "ind", WNs);
+        _writer.WriteAttributeString("w", "left", WNs, indentLeft.ToString());
+        if (props != null && props.IndentLeftChars != 0)
+            _writer.WriteAttributeString("w", "leftChars", WNs, props.IndentLeftChars.ToString());
+        if (indentRight.HasValue)
+            _writer.WriteAttributeString("w", "right", WNs, indentRight.Value.ToString());
+        if (props != null && props.IndentRightChars != 0)
+            _writer.WriteAttributeString("w", "rightChars", WNs, props.IndentRightChars.ToString());
+        if (firstLine.HasValue && firstLine.Value > 0)
+            _writer.WriteAttributeString("w", "firstLine", WNs, firstLine.Value.ToString());
+        if (props != null && props.IndentFirstLineChars > 0)
+            _writer.WriteAttributeString("w", "firstLineChars", WNs, props.IndentFirstLineChars.ToString());
+        if (hanging.HasValue && hanging.Value > 0)
+            _writer.WriteAttributeString("w", "hanging", WNs, hanging.Value.ToString());
+        if (props != null && props.IndentFirstLineChars < 0)
+            _writer.WriteAttributeString("w", "hangingChars", WNs, Math.Abs(props.IndentFirstLineChars).ToString());
+        _writer.WriteEndElement();
+    }
+
+    private void WriteBorder(string position, BorderInfo border)
+    {
+        if (border.Style == BorderStyle.None || IsLikelyMalformedBorder(border))
+            return;
+
+        string? themeColor = ColorHelper.GetThemeColorName(border.Color);
+        string? resolvedThemeHex = ColorHelper.ResolveThemeColorHex(border.Color, _document?.Theme);
+        _writer.WriteStartElement("w", position, WNs);
+        _writer.WriteAttributeString("w", "val", WNs, GetBorderStyle(border.Style));
+        _writer.WriteAttributeString("w", "sz", WNs, border.Width.ToString());
+        _writer.WriteAttributeString("w", "space", WNs, border.Space.ToString());
+        _writer.WriteAttributeString("w", "color", WNs, resolvedThemeHex ?? ColorHelper.ResolveColorHex(border.Color, _document?.Theme));
+        if (themeColor != null)
+            _writer.WriteAttributeString("w", "themeColor", WNs, themeColor);
+        _writer.WriteEndElement();
+    }
+
+    private void WriteShading(ShadingInfo shading)
+    {
+        string? foregroundThemeColor = ColorHelper.GetThemeColorName(shading.ForegroundColor);
+        string? foregroundThemeHex = ColorHelper.ResolveThemeColorHex(shading.ForegroundColor, _document?.Theme);
+        string? backgroundThemeColor = ColorHelper.GetThemeColorName(shading.BackgroundColor);
+        string? backgroundThemeHex = ColorHelper.ResolveThemeColorHex(shading.BackgroundColor, _document?.Theme);
+        _writer.WriteStartElement("w", "shd", WNs);
+        _writer.WriteAttributeString("w", "val", WNs, !string.IsNullOrEmpty(shading.PatternVal) ? shading.PatternVal : ShadingPatternToShdVal(shading.Pattern));
+        if (shading.ForegroundColor != 0)
+        {
+            _writer.WriteAttributeString("w", "color", WNs, foregroundThemeHex ?? ColorHelper.ResolveColorHex(shading.ForegroundColor, _document?.Theme));
+            if (foregroundThemeColor != null)
+                _writer.WriteAttributeString("w", "themeColor", WNs, foregroundThemeColor);
+        }
+        _writer.WriteAttributeString("w", "fill", WNs, backgroundThemeHex ?? ColorHelper.ResolveColorHex(shading.BackgroundColor, _document?.Theme, fallback: "FFFFFF"));
+        if (backgroundThemeColor != null)
+            _writer.WriteAttributeString("w", "themeFill", WNs, backgroundThemeColor);
+        _writer.WriteEndElement();
+    }
+
+    private static string ShadingPatternToShdVal(ShadingPattern pattern)
+    {
+        return pattern switch
+        {
+            ShadingPattern.Clear => "clear",
+            ShadingPattern.Solid => "solid",
+            ShadingPattern.Percent5 => "pct5",
+            ShadingPattern.Percent10 => "pct10",
+            ShadingPattern.Percent20 => "pct20",
+            ShadingPattern.Percent25 => "pct25",
+            ShadingPattern.Percent30 => "pct30",
+            ShadingPattern.Percent40 => "pct40",
+            ShadingPattern.Percent50 => "pct50",
+            ShadingPattern.Percent60 => "pct60",
+            ShadingPattern.Percent70 => "pct70",
+            ShadingPattern.Percent75 => "pct75",
+            ShadingPattern.Percent80 => "pct80",
+            ShadingPattern.Percent90 => "pct90",
+            ShadingPattern.LightHorizontal => "thinHorzStripe",
+            ShadingPattern.DarkHorizontal => "horzStripe",
+            ShadingPattern.LightVertical => "thinVertStripe",
+            ShadingPattern.DarkVertical => "vertStripe",
+            ShadingPattern.LightDiagonalDown => "thinDiagStripe",
+            ShadingPattern.LightDiagonalUp => "thinReverseDiagStripe",
+            ShadingPattern.DarkDiagonalDown => "diagStripe",
+            ShadingPattern.DarkDiagonalUp => "reverseDiagStripe",
+            ShadingPattern.DarkGrid => "horzCross",
+            ShadingPattern.DarkTrellis => "diagCross",
+            ShadingPattern.LightGray => "pct25",
+            ShadingPattern.MediumGray => "pct50",
+            ShadingPattern.DarkGray => "pct75",
+            _ => "clear"
+        };
+    }
+
+    private static string GetBorderStyle(BorderStyle style)
+    {
+        return style switch
+        {
+            BorderStyle.Single => "single",
+            BorderStyle.Thick => "thick",
+            BorderStyle.Double => "double",
+            BorderStyle.Dotted => "dotted",
+            BorderStyle.Dashed => "dash",
+            BorderStyle.DotDash => "dotDash",
+            BorderStyle.DotDotDash => "dotDotDash",
+            BorderStyle.Triple => "triple",
+            BorderStyle.ThinThickSmallGap => "thinThickSmallGap",
+            BorderStyle.ThickThinSmallGap => "thickThinSmallGap",
+            BorderStyle.ThinThickThinSmallGap => "thinThickThinSmallGap",
+            BorderStyle.ThinThickMediumGap => "thinThickMediumGap",
+            BorderStyle.ThickThinMediumGap => "thickThinMediumGap",
+            BorderStyle.ThinThickThinMediumGap => "thinThickThinMediumGap",
+            BorderStyle.ThinThickLargeGap => "thinThickLargeGap",
+            BorderStyle.ThickThinLargeGap => "thickThinLargeGap",
+            BorderStyle.ThinThickThinLargeGap => "thinThickThinLargeGap",
+            BorderStyle.Wave => "wave",
+            _ => "nil"
+        };
+    }
+
+    private static bool IsLikelyMalformedBorder(BorderInfo border)
+    {
+        return border.Width > 96 && border.Color == 255;
+    }
+
+    private static int ConvertCharacterIndentToTwips(int characterUnits, int fontSizeHalfPoints)
+    {
+        int fontSizePoints = fontSizeHalfPoints > 0 ? Math.Max(1, fontSizeHalfPoints / 2) : 12;
+        return (int)Math.Round(characterUnits * fontSizePoints * 10d);
+    }
+
+    private static string GetParagraphAlignmentValue(ParagraphAlignment alignment)
+    {
+        return alignment switch
+        {
+            ParagraphAlignment.Center => "center",
+            ParagraphAlignment.Right => "right",
+            ParagraphAlignment.Justify => "both",
+            ParagraphAlignment.Distributed => "distribute",
             _ => "left"
         };
     }

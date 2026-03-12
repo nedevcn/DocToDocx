@@ -7,6 +7,7 @@ using System.Text;
 using Nedev.FileConverters.DocToDocx.Models;
 using Nedev.FileConverters.DocToDocx.Readers;
 using Nedev.FileConverters.DocToDocx.Utils;
+using Nedev.FileConverters.DocToDocx.Writers;
 using Xunit;
 
 namespace Nedev.FileConverters.DocToDocx.Tests
@@ -323,6 +324,27 @@ namespace Nedev.FileConverters.DocToDocx.Tests
             var diagnostic = Assert.Single(diagnostics);
             Assert.Equal(Logger.LogLevel.Warning, diagnostic.Level);
             Assert.Contains("Failed to parse BIFF shared string table completely", diagnostic.Message, StringComparison.Ordinal);
+        }
+
+        [Fact]
+        public void TryPopulateChart_CfbWithoutWorkbookStream_EmitsUnsupportedContainerDiagnostic()
+        {
+            var model = new ChartModel
+            {
+                SourceBytes = new CfbBuilder().Build(),
+                SourceStreamName = "ChartWithoutWorkbook"
+            };
+            var diagnostics = new List<ConversionDiagnostic>();
+
+            using (Logger.BeginDiagnosticCapture(diagnostics))
+            {
+                BiffChartScanner.TryPopulateChart(model);
+            }
+
+            var diagnostic = Assert.Single(diagnostics);
+            Assert.Equal(Logger.LogLevel.Warning, diagnostic.Level);
+            Assert.Contains("does not contain a Workbook/Book stream", diagnostic.Message, StringComparison.Ordinal);
+            Assert.Contains("ChartWithoutWorkbook", diagnostic.Message, StringComparison.Ordinal);
         }
 
         [Theory]

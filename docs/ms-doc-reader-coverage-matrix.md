@@ -45,8 +45,8 @@ This matrix tracks the read layer against the major MS-DOC structures exposed by
 | --- | --- | --- | --- | --- |
 | Bookmarks | FcPlcfBkf/FcPlcfBkl/FcSttbfBkmk | Readers/BookmarkReader.cs | Partial | Core bookmark ranges and names are parsed. Complex bookmark variants are not fully validated. |
 | Fields in main story | FcPlcfFldMom | Readers/DocReader.cs + Readers/FieldReader.cs | Partial | Body field characters are interpreted during run parsing. |
-| Fields in headers/footnotes/annotations/endnotes | FcPlcfFldHdr/Ftn/Atn/Edn | Readers/DocReader.cs | Partial | Field PLCs are read and validated against story text for diagnostics, but no dedicated field-model reader exists yet. |
-| Fields in textbox story | FcPlcfFldTxbx | Readers/DocReader.cs | Partial | Used only for textbox anchor hints, not as a full story field parser. |
+| Fields in headers/footnotes/annotations/endnotes | FcPlcfFldHdr/Ftn/Atn/Edn | Readers/DocReader.cs | Partial | Field PLCs are validated against their story text, and reparsed story content now emits field models on the corresponding note/annotation/header-footer containers. |
+| Fields in textbox story | FcPlcfFldTxbx | Readers/DocReader.cs | Partial | Textbox story content reparses into field models and the textbox field PLC is now validated against the combined textbox subdocument; anchor matching still uses heuristics. |
 | Sections | FcPlcfSed/LcbPlcfSed | Readers/SectionReader.cs | Covered | SEPX records are applied with defaults on failure. |
 | Floating shape anchors | FcPlcSpaMom/LcbPlcSpaMom | Readers/FspaReader.cs | Partial | Bounding boxes and anchors are best-effort. |
 | Revision authors | FcSttbfRgtlv/LcbSttbfRgtlv | Readers/DocReader.cs | Covered | String table is loaded into the model. |
@@ -64,6 +64,6 @@ This matrix tracks the read layer against the major MS-DOC structures exposed by
 ## Priority Follow-Ups
 
 1. Replace the remaining simplified LFO and LFOLVL parsing with spec-structured instance and level override decoding.
-2. Add dedicated field PLC readers for header, footnote, annotation, endnote, and textbox stories.
+2. Separate textbox anchor matching from textbox story field PLC semantics so `PlcfFldTxbx` no longer doubles as a heuristic anchor source.
 3. Add a structured reader for header textbox stories instead of only counting them through global CcpHdrTxbx.
 4. Reduce best-effort branches in OfficeArt, OLE, and image extraction by converting current warnings into explicit unsupported-case diagnostics.

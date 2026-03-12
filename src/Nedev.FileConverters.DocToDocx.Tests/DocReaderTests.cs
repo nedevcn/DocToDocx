@@ -331,6 +331,20 @@ public class DocReaderTests
         Assert.Equal(21, field.FieldEndCharacterPosition);
     }
 
+    [Fact]
+    public void BuildStoryFields_UsesTextboxStorySubdocumentOffsets()
+    {
+        const string text = "bodybody\u0013 SHAPE \u0014textbox\u0015tail";
+        var positions = new[] { 8, 16, 24 };
+
+        var fields = DocReader.BuildStoryFields(text, 8, text.Length, positions);
+
+        var field = Assert.Single(fields);
+        Assert.Equal(8, field.FieldStartCharacterPosition);
+        Assert.Equal(16, field.FieldSeparatorCharacterPosition);
+        Assert.Equal(24, field.FieldEndCharacterPosition);
+    }
+
     private static void AddChpRange(Dictionary<int, ChpBase> map, int start, int end, int fontSize)
     {
         var chp = new ChpBase { FontSize = (byte)fontSize };

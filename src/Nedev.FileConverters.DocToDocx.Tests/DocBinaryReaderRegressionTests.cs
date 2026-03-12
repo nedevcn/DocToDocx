@@ -695,6 +695,31 @@ public class DocBinaryReaderRegressionTests
         Assert.Contains(diagnostics, diagnostic => diagnostic.Message.Contains("PlcfSed range", StringComparison.Ordinal));
     }
 
+    [Fact]
+    public void ImageReader_TruncatedImageSignature_EmitsWarningInsteadOfSilentlySkipping()
+    {
+        using var wordStream = new MemoryStream(new byte[16]);
+        using var dataStream = new MemoryStream(new byte[]
+        {
+            0x42, 0x4D,
+            0x10, 0x00, 0x00, 0x00,
+            0x00, 0x00, 0x00, 0x00
+        });
+        var fib = CreateSyntheticFibReader(_ => { });
+
+        using var wordReader = new BinaryReader(wordStream, Encoding.Default, leaveOpen: true);
+        using var dataReader = new BinaryReader(dataStream, Encoding.Default, leaveOpen: true);
+        var imageReader = new ImageReader(wordReader, dataReader, fib);
+        var diagnostics = new List<ConversionDiagnostic>();
+
+        using (Logger.BeginDiagnosticCapture(diagnostics))
+        {
+            imageReader.ExtractImages(new DocumentModel());
+        }
+
+        Assert.Contains(diagnostics, diagnostic => diagnostic.Message.Contains("image signature", StringComparison.Ordinal) && diagnostic.Message.Contains("truncated or malformed", StringComparison.Ordinal));
+    }
+
     private static byte[] BuildFontTable(byte[] ffn)
     {
         using var stream = new MemoryStream();

@@ -344,8 +344,30 @@ namespace Nedev.FileConverters.DocToDocx.Tests
                         NumberText = "%1)",
                         ParagraphProperties = new ParagraphProperties
                         {
+                            KeepWithNext = true,
                             IndentLeft = 1440,
-                            IndentFirstLine = -360
+                            IndentFirstLine = -360,
+                            SpaceBefore = 120,
+                            SpaceAfter = 240,
+                            WordWrap = false,
+                            Kinsoku = false,
+                            SnapToGrid = false,
+                            AutoSpaceDe = false,
+                            AutoSpaceDn = false,
+                            TopLinePunct = true,
+                            OverflowPunct = true,
+                            BorderTop = new BorderInfo
+                            {
+                                Style = BorderStyle.Single,
+                                Width = 8,
+                                Color = unchecked((int)0x00FF0000),
+                                Space = 0
+                            },
+                            Shading = new ShadingInfo
+                            {
+                                Pattern = ShadingPattern.Clear,
+                                BackgroundColor = unchecked((int)0x0000FF00)
+                            }
                         }
                     }
                 }
@@ -385,6 +407,20 @@ namespace Nedev.FileConverters.DocToDocx.Tests
             Assert.Equal("upperLetter", overrideLevel!.Element(w + "numFmt")?.Attribute(w + "val")?.Value);
             Assert.Equal("%1)", overrideLevel.Element(w + "lvlText")?.Attribute(w + "val")?.Value);
             Assert.Equal("right", overrideLevel.Element(w + "lvlJc")?.Attribute(w + "val")?.Value);
+            Assert.NotNull(overrideLevel.Element(w + "pPr")?.Element(w + "keepNext"));
+            Assert.Equal("120", overrideLevel.Element(w + "pPr")?.Element(w + "spacing")?.Attribute(w + "before")?.Value);
+            Assert.Equal("240", overrideLevel.Element(w + "pPr")?.Element(w + "spacing")?.Attribute(w + "after")?.Value);
+            Assert.Equal("1440", overrideLevel.Element(w + "pPr")?.Element(w + "ind")?.Attribute(w + "left")?.Value);
+            Assert.Equal("360", overrideLevel.Element(w + "pPr")?.Element(w + "ind")?.Attribute(w + "hanging")?.Value);
+            Assert.Equal("single", overrideLevel.Element(w + "pPr")?.Element(w + "pBdr")?.Element(w + "top")?.Attribute(w + "val")?.Value);
+            Assert.Equal("00FF00", overrideLevel.Element(w + "pPr")?.Element(w + "shd")?.Attribute(w + "fill")?.Value);
+            Assert.Equal("0", overrideLevel.Element(w + "pPr")?.Element(w + "wordWrap")?.Attribute(w + "val")?.Value);
+            Assert.Equal("0", overrideLevel.Element(w + "pPr")?.Element(w + "kinsoku")?.Attribute(w + "val")?.Value);
+            Assert.Equal("0", overrideLevel.Element(w + "pPr")?.Element(w + "snapToGrid")?.Attribute(w + "val")?.Value);
+            Assert.Equal("0", overrideLevel.Element(w + "pPr")?.Element(w + "autoSpaceDE")?.Attribute(w + "val")?.Value);
+            Assert.Equal("0", overrideLevel.Element(w + "pPr")?.Element(w + "autoSpaceDN")?.Attribute(w + "val")?.Value);
+            Assert.NotNull(overrideLevel.Element(w + "pPr")?.Element(w + "topLinePunct"));
+            Assert.NotNull(overrideLevel.Element(w + "pPr")?.Element(w + "overflowPunct"));
         }
 
         [Fact]

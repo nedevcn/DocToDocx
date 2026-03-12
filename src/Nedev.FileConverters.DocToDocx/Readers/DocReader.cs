@@ -713,6 +713,7 @@ public class DocReader : IDisposable
         ValidateStoryFieldPlc("footnote", _fibReader.FcPlcfFldFtn, _fibReader.LcbPlcfFldFtn, _fibReader.CcpText, _fibReader.CcpFtn);
         ValidateStoryFieldPlc("annotation", _fibReader.FcPlcfFldAtn, _fibReader.LcbPlcfFldAtn, _fibReader.CcpText + _fibReader.CcpFtn + _fibReader.CcpHdd, _fibReader.CcpAtn);
         ValidateStoryFieldPlc("endnote", _fibReader.FcPlcfFldEdn, _fibReader.LcbPlcfFldEdn, _fibReader.CcpText + _fibReader.CcpFtn + _fibReader.CcpHdd + _fibReader.CcpAtn, _fibReader.CcpEdn);
+        ValidateStoryFieldPlc("textbox", _fibReader.FcPlcfFldTxbx, _fibReader.LcbPlcfFldTxbx, _fibReader.CcpText + _fibReader.CcpFtn + _fibReader.CcpHdd + _fibReader.CcpAtn + _fibReader.CcpEdn, _fibReader.CcpTxbx + _fibReader.CcpHdrTxbx);
     }
 
     private void ValidateStoryFieldPlc(string storyLabel, uint fc, uint lcb, int storyStartCp, int storyLength)
@@ -958,9 +959,9 @@ public class DocReader : IDisposable
             {
                 sourceBytes = _cfb.GetStreamBytes(name);
             }
-            catch
+            catch (Exception ex)
             {
-                // best-effort only; leave SourceBytes as null on failure
+                Logger.Warning($"Failed to read chart-like stream '{name}' from the compound file; chart metadata will be preserved without embedded source bytes.", ex);
             }
 
             var model = new ChartModel
@@ -3046,6 +3047,8 @@ public class ImageReader
                     pos += image.Data.Length;
                     continue;
                 }
+
+                Logger.Warning($"Detected a {type.Value} image signature at data-stream offset 0x{pos:X}, but the payload was truncated or malformed; skipping candidate image.");
             }
 
             pos++;
