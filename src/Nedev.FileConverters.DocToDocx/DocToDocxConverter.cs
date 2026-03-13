@@ -136,7 +136,8 @@ public static class DocToDocxConverter
             Convert(inputStream, outputStream, progress, password, enableHyperlinks, cancellationToken);
         }
 
-        return new ConversionResult(outputStream is FileStream fs ? fs.Name : null ?? "", diagnostics);
+        var outputPath = outputStream is FileStream fs ? fs.Name : null;
+        return new ConversionResult(outputPath ?? string.Empty, diagnostics);
     }
 
     /// <summary>

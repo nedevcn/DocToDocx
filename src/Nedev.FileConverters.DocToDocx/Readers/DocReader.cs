@@ -129,11 +129,19 @@ public class DocReader : IDisposable
             long wordDocumentClearPrefixLength = CalculateWordDocumentRc4ClearPrefixLength(rawFibPrefixLength, _wordDocStream.Length);
             Logger.Warning($"RC4 WordDocument decryption is preserving the first {wordDocumentClearPrefixLength} bytes as an unencrypted prefix based on the raw FIB length ({rawFibPrefixLength} bytes).");
 
-            // Wrap WordDocument stream
+            // Wrap WordDocument stream - safely dispose old resources before getting new ones
             _wordDocReader.Dispose();
             _wordDocStream.Dispose();
             
-            _wordDocStream = _cfb.GetStream("WordDocument");
+            try
+            {
+                _wordDocStream = _cfb.GetStream("WordDocument");
+            }
+            catch
+            {
+                _wordDocStream = null;
+                throw;
+            }
         }
         else if (_fibReader.FEncrypted && _fibReader.FObfuscated)
         {
@@ -142,9 +150,18 @@ public class DocReader : IDisposable
             _wordDocReader.Dispose();
             _wordDocStream.Dispose();
 
-            _wordDocStream = _cfb.GetDecryptedStream("WordDocument");
-            _tableStream.Dispose();
-            _tableStream = _cfb.GetDecryptedStream(tableName);
+            try
+            {
+                _wordDocStream = _cfb.GetDecryptedStream("WordDocument");
+                _tableStream.Dispose();
+                _tableStream = _cfb.GetDecryptedStream(tableName);
+            }
+            catch
+            {
+                _wordDocStream = null;
+                _tableStream = null;
+                throw;
+            }
         }
 
         // Initialize Table Reader (now we have raw or RC4-wrapped or XOR-wrapped table stream)
@@ -273,29 +290,60 @@ public class DocReader : IDisposable
     }
 
     /// <summary>
-    /// Loads and parses the document.
+    /// Loads and parses the document with comprehensive error handling and recovery.
     /// </summary>
     public void Load()
     {
-        // Step 1: Read document properties
-        Document.Properties = _dopReader!.Read();
+        try
+        {
+            LoadDocumentCore();
+        }
+        catch (Exception ex) when (ex is not OutOfMemoryException and not StackOverflowException)
+        {
+            Logger.Error("Critical error during document loading", ex);
+            throw new InvalidDataException(
+                $"Failed to load document: {ex.Message}. " +
+                "The document may be corrupted or uses an unsupported format.", ex);
+        }
+    }
 
-        // Step 1.5: Read style sheet and themes
-        _styleReader!.Read();
-        Document.Styles = _styleReader.Styles;
-        ThemeReader.Read(_cfb!, Document);
-        
-        // Step 1.6: Read revision authors
-        Document.RevisionAuthors = SttbfHelper.ReadSttbf(_tableReader!, _fibReader.FcSttbfRgtlv, _fibReader.LcbSttbfRgtlv);
+    private void LoadDocumentCore()
+    {
+        // Step 1: Read document properties (critical)
+        Document.Properties = SafeExecution.ExecuteWithFallback(
+            () => _dopReader!.Read(),
+            new DocumentProperties(),
+            "reading document properties");
 
-        // Step 2: Read list definitions
-        _listReader!.Styles = Document.Styles;
-        _listReader!.Read();
-        Document.NumberingDefinitions = _listReader.NumberingDefinitions;
-        Document.ListFormats = _listReader.ListFormats;
-        Document.ListFormatOverrides = _listReader.ListFormatOverrides;
+        // Step 1.5: Read style sheet and themes (non-critical)
+        SafeExecution.ExecuteBestEffort(() =>
+        {
+            _styleReader!.Read();
+            Document.Styles = _styleReader.Styles;
+        }, "reading styles");
 
-        // Step 3: Read text content via Piece Table (with per-run Lid for encoding)
+        SafeExecution.ExecuteBestEffort(() =>
+        {
+            ThemeReader.Read(_cfb!, Document);
+        }, "reading themes");
+
+        // Step 1.6: Read revision authors (non-critical)
+        SafeExecution.ExecuteBestEffort(() =>
+        {
+            Document.RevisionAuthors = SttbfHelper.ReadSttbf(_tableReader!, _fibReader.FcSttbfRgtlv, _fibReader.LcbSttbfRgtlv);
+        }, "reading revision authors");
+
+        // Step 2: Read list definitions (non-critical)
+        SafeExecution.ExecuteBestEffort(() =>
+        {
+            _listReader!.Styles = Document.Styles;
+            _listReader!.Read();
+            Document.NumberingDefinitions = _listReader.NumberingDefinitions;
+            Document.ListFormats = _listReader.ListFormats;
+            Document.ListFormatOverrides = _listReader.ListFormatOverrides;
+        }, "reading list definitions");
+
+        // Step 3: Read text content via Piece Table (critical)
         int totalCp = _fibReader!.CcpText + _fibReader.CcpFtn + _fibReader.CcpHdd + _fibReader.CcpAtn + _fibReader.CcpEdn + _fibReader.CcpTxbx + _fibReader.CcpHdrTxbx;
 
         totalCp = RepairFootnoteStoryLength(totalCp);
@@ -305,99 +353,124 @@ public class DocReader : IDisposable
         _globalPapMap = _fkpParser.ReadPapProperties();
         _textReader.SetTextFromPieces(totalCp, _globalChpMap);
 
+        // Step 3.5: Read bookmarks (non-critical)
         if (_bookmarkReader != null)
         {
-            _bookmarkReader.Read();
-            Document.Bookmarks = _bookmarkReader.Bookmarks.ToList();
+            SafeExecution.ExecuteBestEffort(() =>
+            {
+                _bookmarkReader.Read();
+                Document.Bookmarks = _bookmarkReader.Bookmarks.ToList();
+            }, "reading bookmarks");
         }
 
-        // Step 4: Parse paragraphs and runs
+        // Step 4: Parse paragraphs and runs (critical)
         int mainDocLength = Math.Min(_textReader.Text.Length, _fibReader.CcpText);
         Document.Paragraphs = ParseParagraphsRange(_textReader.Text, 0, mainDocLength, _globalChpMap, _globalPapMap, ref _globalImageCounter);
 
-        // Step 4.5: Parse sections
-        ParseSections();
+        // Step 4.5: Parse sections (non-critical)
+        SafeExecution.ExecuteBestEffort(ParseSections, "parsing sections");
 
-        // Step 5: Parse tables
-        _tableParseReader!.ParseTables(Document);
+        // Step 5: Parse tables (non-critical)
+        SafeExecution.ExecuteBestEffort(() => _tableParseReader!.ParseTables(Document), "parsing tables");
 
-        // Step 6: Extract images
-        _imageReader!.ExtractImages(Document);
+        // Step 6: Extract images (non-critical)
+        SafeExecution.ExecuteBestEffort(() => _imageReader!.ExtractImages(Document), "extracting images");
 
-        // Step 6.1: Scan for additional OLE objects in ObjectPool
-        ScanObjectPool(Document);
+        // Step 6.1: Scan for additional OLE objects in ObjectPool (non-critical)
+        SafeExecution.ExecuteBestEffort(() => ScanObjectPool(Document), "scanning ObjectPool");
 
-        // Step 6.5: Parse OfficeArt/Escher shapes and map basic anchors
+        // Step 6.5: Parse OfficeArt/Escher shapes and map basic anchors (non-critical)
         if (_officeArtReader != null)
         {
-            OfficeArtMapper.AttachShapes(Document, _officeArtReader, _fspaAnchors);
-            ApplyPictureShapeDisplaySizes(Document);
+            SafeExecution.ExecuteBestEffort(() =>
+            {
+                OfficeArtMapper.AttachShapes(Document, _officeArtReader, _fspaAnchors);
+                ApplyPictureShapeDisplaySizes(Document);
+            }, "parsing OfficeArt shapes");
         }
 
-        // Step 6.6: Best-effort chart detection
-        IdentifyCharts();
+        // Step 6.6: Best-effort chart detection (non-critical)
+        SafeExecution.ExecuteBestEffort(IdentifyCharts, "detecting charts");
 
-        // Step 7: Read footnotes
+        // Step 7: Read footnotes (non-critical)
         if (_footnoteReader != null)
         {
-            Document.Footnotes = _footnoteReader.ReadFootnotesWithOffset();
+            SafeExecution.ExecuteBestEffort(() =>
+            {
+                Document.Footnotes = _footnoteReader.ReadFootnotesWithOffset();
+            }, "reading footnotes");
         }
 
-        // Step 8: Read endnotes
+        // Step 8: Read endnotes (non-critical)
         if (_footnoteReader != null)
         {
-            Document.Endnotes = _footnoteReader.ReadEndnotesWithOffset();
+            SafeExecution.ExecuteBestEffort(() =>
+            {
+                Document.Endnotes = _footnoteReader.ReadEndnotesWithOffset();
+            }, "reading endnotes");
         }
 
+        // Step 8.5: Read annotations (non-critical)
         if (_annotationReader != null)
         {
-            Document.Annotations = _annotationReader.ReadAnnotations();
+            SafeExecution.ExecuteBestEffort(() =>
+            {
+                Document.Annotations = _annotationReader.ReadAnnotations();
+            }, "reading annotations");
         }
 
-        // Step 9: Read textboxes
+        // Step 9: Read textboxes (non-critical)
         if (_textboxReader != null)
         {
-            Document.Textboxes = _textboxReader.ReadTextboxes();
-            AttachTextboxAnchorHints(Document, ReadTextboxAnchorFields());
-            MergeTextboxShapesIntoTextboxes(Document);
+            SafeExecution.ExecuteBestEffort(() =>
+            {
+                Document.Textboxes = _textboxReader.ReadTextboxes();
+                AttachTextboxAnchorHints(Document, ReadTextboxAnchorFields());
+                MergeTextboxShapesIntoTextboxes(Document);
+            }, "reading textboxes");
         }
 
+        // Step 9.5: Populate structured story content (non-critical)
         if (_globalChpMap != null && _globalPapMap != null)
         {
-            PopulateStructuredStoryContent();
+            SafeExecution.ExecuteBestEffort(PopulateStructuredStoryContent, "populating structured story content");
         }
 
-        ValidateStoryFieldPlcs();
+        // Step 9.6: Validate story field PLCs (non-critical, diagnostic only)
+        SafeExecution.ExecuteBestEffort(ValidateStoryFieldPlcs, "validating story field PLCs");
 
-        // Step 10: Read headers/footers
+        // Step 10: Read headers/footers (non-critical)
         if (_headerFooterReader != null)
         {
-            _headerFooterReader.Read(Document);
-            
-            // Extract paragraphs for each header/footer
-            if (_globalChpMap != null && _globalPapMap != null)
+            SafeExecution.ExecuteBestEffort(() =>
             {
-                foreach (var hf in _headerFooterReader.Headers.Concat(_headerFooterReader.Footers))
+                _headerFooterReader.Read(Document);
+                
+                // Extract paragraphs for each header/footer
+                if (_globalChpMap != null && _globalPapMap != null)
                 {
-                    int headerStoryStartCp = _fibReader.CcpText + _fibReader.CcpFtn;
-                    int headerStoryEndCp = headerStoryStartCp + _fibReader.CcpHdd;
-                    int absoluteStartCp = Math.Clamp(headerStoryStartCp + hf.CharacterPosition, headerStoryStartCp, headerStoryEndCp);
-                    int absoluteEndCp = Math.Clamp(absoluteStartCp + hf.CharacterLength, absoluteStartCp, headerStoryEndCp);
-                    var paragraphs = ParseParagraphsRange(_textReader.Text, absoluteStartCp, absoluteEndCp, _globalChpMap, _globalPapMap, ref _globalImageCounter);
-                    hf.Paragraphs = HeaderFooterParagraphsLookReasonable(hf.Text, paragraphs)
-                        ? paragraphs
-                        : new List<ParagraphModel>();
-                    hf.Fields = hf.Paragraphs.Count > 0
-                        ? ExtractFields(hf.Paragraphs, _fieldReader)
-                        : new List<FieldModel>();
+                    foreach (var hf in _headerFooterReader.Headers.Concat(_headerFooterReader.Footers))
+                    {
+                        int headerStoryStartCp = _fibReader.CcpText + _fibReader.CcpFtn;
+                        int headerStoryEndCp = headerStoryStartCp + _fibReader.CcpHdd;
+                        int absoluteStartCp = Math.Clamp(headerStoryStartCp + hf.CharacterPosition, headerStoryStartCp, headerStoryEndCp);
+                        int absoluteEndCp = Math.Clamp(absoluteStartCp + hf.CharacterLength, absoluteStartCp, headerStoryEndCp);
+                        var paragraphs = ParseParagraphsRange(_textReader.Text, absoluteStartCp, absoluteEndCp, _globalChpMap, _globalPapMap, ref _globalImageCounter);
+                        hf.Paragraphs = HeaderFooterParagraphsLookReasonable(hf.Text, paragraphs)
+                            ? paragraphs
+                            : new List<ParagraphModel>();
+                        hf.Fields = hf.Paragraphs.Count > 0
+                            ? ExtractFields(hf.Paragraphs, _fieldReader)
+                            : new List<FieldModel>();
+                    }
                 }
-            }
 
-            _headerFooterReader.Headers.RemoveAll(h => !HeaderFooterContentHelper.HasUsableContent(h));
-            _headerFooterReader.Footers.RemoveAll(f => !HeaderFooterContentHelper.HasUsableContent(f));
+                _headerFooterReader.Headers.RemoveAll(h => !HeaderFooterContentHelper.HasUsableContent(h));
+                _headerFooterReader.Footers.RemoveAll(f => !HeaderFooterContentHelper.HasUsableContent(f));
 
-            Document.HeadersFooters.Headers = _headerFooterReader.Headers;
-            Document.HeadersFooters.Footers = _headerFooterReader.Footers;
+                Document.HeadersFooters.Headers = _headerFooterReader.Headers;
+                Document.HeadersFooters.Footers = _headerFooterReader.Footers;
+            }, "reading headers/footers");
         }
 
         // 11. Extract VBA Macros if present

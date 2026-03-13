@@ -42,7 +42,8 @@ public class TableReader
 {
     private const int MaxNestingDepth = 20;
     private const int MaxRowsPerTable = 10000;
-    private static readonly string _debugLogPath = Path.Combine(Path.GetTempPath(), "table_reader_debug.log");
+    private static readonly string _debugLogBaseName = "table_reader_debug";
+    private readonly string _debugLogPath;
     private DocumentProperties? _documentProperties;
     private readonly List<(int AfterParagraphIndex, List<ParagraphModel> Paragraphs)> _pendingRecoveredParagraphInsertions = new();
     private sealed class RecoveredCell
@@ -73,6 +74,8 @@ public class TableReader
         _tableReader = tableReader;
         _fib = fib;
         _fkpParser = fkpParser;
+        // Generate unique log file name to avoid conflicts in multi-threaded scenarios
+        _debugLogPath = Path.Combine(Path.GetTempPath(), $"{_debugLogBaseName}_{Guid.NewGuid():N}.log");
     }
 
     public void ParseTables(DocumentModel document)
@@ -3982,7 +3985,7 @@ public class TableReader
 
     
 
-    private static void Log(string message)
+    private void Log(string message)
     {
         try
         {

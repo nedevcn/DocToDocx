@@ -27,6 +27,7 @@
     <None Include="README.md" Pack="true" PackagePath="\" />
     <PackageReference Include="Nedev.FileConverters.Core" Version="0.1.0" />
     <PackageReference Include="System.Text.Encoding.CodePages" Version="8.0.0" />
+    <PackageReference Include="IsExternalInit" Version="1.0.3" PrivateAssets="all" />
   </ItemGroup>
 
 </Project>
